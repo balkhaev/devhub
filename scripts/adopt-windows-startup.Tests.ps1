@@ -40,6 +40,7 @@ Describe 'Apply backups and recovery' {
         (Test-Path -LiteralPath (Join-Path $result.Backup 'predict-paper-runtime.xml')) | Should Be $true
         $backup = Get-Content -LiteralPath (Join-Path $result.Backup 'backup.json') -Raw | ConvertFrom-Json
         $backup.Registry.Value | Should Match 'inference\.tray'
+        (Get-Content -LiteralPath (Join-Path $script:devhubStartupRoot '.state\startup\inference.ps1') -Raw) | Should Match '\-\-project.*inference.*\-\-script dev'
         (Get-Content -LiteralPath (Join-Path $script:devhubStartupRoot '.state\startup\predict-paper.ps1') -Raw) | Should Match "'predict/runtime'"
         Assert-MockCalled Set-ItemProperty -Scope It -Times 1 -Exactly -ParameterFilter { $Name -eq 'Inference' }
         Assert-MockCalled Set-ScheduledTask -Scope It -Times 1 -Exactly -ParameterFilter { $TaskName -eq 'predict-paper-runtime' -and $TaskPath -eq '\' }
@@ -91,8 +92,22 @@ Describe 'Known Windows startup classification' {
     It 'quotes paths literally and rejects executable service fragments' {
         $wrapper = Get-DevHubStartupWrapper "C:\a'b\bun.exe" "D:\space root\devhub" 'inference/queue'
         $wrapper | Should Match "a''b"
-        $wrapper | Should Match "'inference/queue'"
+        $wrapper | Should Match "\-\-project 'D:\\space root\\inference' \-\-script dev"
+        $wrapper | Should Not Match "start 'inference/queue'"
         { Get-DevHubStartupWrapper 'bun.exe' 'D:\code\devhub' 'inference/queue;other' } | Should Throw
+    }
+
+    It 'starts the complete Inference default group from its canonical project' {
+        $wrapper = Get-DevHubStartupWrapper 'bun.exe' 'D:\code\devhub' 'inference/queue'
+        $wrapper | Should Match "start \-\-project 'D:\\code\\inference' \-\-script dev"
+        $wrapper | Should Not Match '\-\-accept'
+        $wrapper | Should Not Match 'inference\.tray'
+    }
+
+    It 'preserves service routing for other startup targets' {
+        $wrapper = Get-DevHubStartupWrapper 'bun.exe' 'D:\code\devhub' 'predict/runtime'
+        $wrapper | Should Match "start 'predict/runtime'"
+        $wrapper | Should Not Match '\-\-project'
     }
 
     It 'uses a hidden PowerShell launch action' {

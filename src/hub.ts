@@ -140,6 +140,9 @@ const PORT_FREE_MS = 15_000;
 const NO_PORT_WARMUP_MS = 500;
 const START_POLL_MS = 500;
 const ANCESTORS = 4;
+const INFERENCE_TRAY = /(?:^|\s)-m\s+inference\.tray(?:\s|$)/;
+const INFERENCE_SERVER = /(?:^|\s)-m\s+inference\.cli(?:\s|$)/;
+const SERVE_ARGUMENT = /(?:^|\s)serve(?:\s|$)/;
 const WINDOWS_PATH = /[A-Za-z]:[\\/][^"'\s]+/g;
 /** Folders inside a checkout its servers run from: environments (.venv, .venv-laya), dependencies, sources. */
 const CHECKOUT_END =
@@ -727,9 +730,12 @@ export class Hub {
 		const ok = this.health.get(service.key)?.ok ?? false;
 		if (listening && !this.ownsPort(service, managed)) {
 			const pid = this.ports.get(service.port ?? 0);
+			const claim = this.claims.get(service.key);
 			return {
 				owner: pid === undefined ? null : this.owner(pid, service.port),
-				status: "busy",
+				status: this.detachedListenerReady(service, managed, claim)
+					? "running"
+					: "busy",
 			};
 		}
 		if (!service.port || (listening && ok)) {
@@ -738,6 +744,54 @@ export class Hub {
 		const warming =
 			Date.now() - managed.startedAt < this.runtime.startupTimeoutMs;
 		return { owner: null, status: warming ? "starting" : "unhealthy" };
+	}
+
+	/** Readiness only: detached listeners are never adopted into process ownership. */
+	private detachedListenerReady(
+		service: Service,
+		managed: Managed,
+		claim: Claim | undefined
+	): boolean {
+		if (
+			!service.detachedListener ||
+			managed.stopping ||
+			managed.exit ||
+			!alive(managed.pid) ||
+			!samePath(managed.cwd, service.workdir) ||
+			!claim?.holds ||
+			!claim.owner.checkout ||
+			!samePath(claim.owner.checkout, service.project.path)
+		) {
+			return false;
+		}
+		const health = this.health.get(service.key);
+		if (
+			!health?.ok ||
+			health.pid !== this.ports.get(service.port ?? 0) ||
+			this.services.filter((candidate) => candidate.port === service.port)
+				.length !== 1 ||
+			managed.command !== service.command ||
+			!INFERENCE_TRAY.test(managed.command) ||
+			!INFERENCE_SERVER.test(claim.owner.command) ||
+			!SERVE_ARGUMENT.test(claim.owner.command)
+		) {
+			return false;
+		}
+		const url = healthUrl(service);
+		if (!url) {
+			return false;
+		}
+		try {
+			const endpoint = new URL(url);
+			return (
+				endpoint.protocol === "http:" &&
+				endpoint.hostname === service.host &&
+				endpoint.port === String(service.port) &&
+				endpoint.pathname === "/health"
+			);
+		} catch {
+			return false;
+		}
 	}
 
 	private statusOf(service: Service): {
