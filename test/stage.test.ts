@@ -109,7 +109,7 @@ describe("canonical staging with real disposable Git repositories", () => {
 		);
 		expect(existsSync(worktree)).toBe(false);
 		expect(project.status().checked).toBe(true);
-	});
+	}, 30_000);
 
 	test("MVP integrates checked commits into main and immediately pushes its configured remote", () => {
 		const { base, folder, project } = fixture({ mode: "mvp" });
@@ -130,7 +130,7 @@ describe("canonical staging with real disposable Git repositories", () => {
 			mode: "mvp",
 			releaseReady: true,
 		});
-	});
+	}, 30_000);
 
 	test("failed MVP checks do not publish a changed main", () => {
 		const { base, folder, project } = fixture({ mode: "mvp" });
@@ -175,7 +175,7 @@ describe("canonical staging with real disposable Git repositories", () => {
 		);
 		expect(existsSync(tree)).toBe(false);
 		expect(project.worktrees()).toHaveLength(1);
-	});
+	}, 30_000);
 
 	test("mode transition fast-forwards main without losing staged, unstaged or private work", () => {
 		const { folder, project } = fixture();

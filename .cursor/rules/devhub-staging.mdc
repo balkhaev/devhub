@@ -3,21 +3,19 @@ description: Canonical DevHub staging and isolated task worktrees
 alwaysApply: true
 ---
 <!-- BEGIN:DEVHUB:WORKTREE-POLICY -->
-## DevHub staging and worktrees — owner policy, 2026-10-03
+## DevHub project modes and temporary worktrees — owner policy, 2026-10-03
 
-The canonical checkout is `D:/code/devhub`. Its local integration branch is
-`stage`; the release branch is `main`.
-Read the canonical [worktree policy](D:/code/devhub/.devhub/worktree.json) and
-[workflow](D:/code/devhub/WORKTREES.md) before changing repository state.
+The canonical checkout is `D:/code/devhub`. Read its [workflow policy](D:/code/devhub/.devhub/worktree.json) and the [shared workflow](D:/code/devhub/WORKTREES.md) before changing repository state. The policy selects MVP (canonical `main`, immediate checked publication) or Prod (canonical `stage`, controlled release).
 
-- Author task changes in an isolated worktree on `codex/<task>`, created from the canonical staging branch. Reuse a suitable existing task worktree; do not create another clone.
-- Integrate the completed task into the canonical staging checkout, then run final repository checks and inspect the application there. Worktree checks alone do not complete final validation.
-- DevHub starts every development service from the canonical project directory. Never run a dev server from a linked worktree or register a worktree as a second application. A worktree's dev command routes to the canonical checkout and displays only integrated changes.
-- Use `bun D:/code/devhub/src/stage.ts create|integrate|check|status|finish --project "D:/code/devhub" [task-or-ref-or-path]`; JavaScript repositories also expose `npm run worktree -- <command> [task-or-ref-or-path]` / `bun run worktree <command> [task-or-ref-or-path]`. Create takes a task name, integrate takes a Git ref or checkout path, finish takes the full worktree path.
-- Preserve unrelated edits, untracked files, ignored private files and other agents' work. If integration is unsafe, report the concrete conflict and keep both checkouts intact. Never reset, force-remove, stash all changes or bulk-merge existing worktrees to make staging clean.
-- Release happens only after canonical staging validation and when the current task explicitly authorizes release. Prior direct-to-main, automatic push/deploy, no-feature-branch and forced worktree-cleanup instructions are superseded by this staging policy. Project-specific release verification and security rules still apply when a release is authorized.
-- Remove a finished worktree only after its commits are contained in staging and its tracked, untracked and private ignored files are safely preserved. For Codex-managed worktrees use the app's archive operation so its attachment stays consistent.
+- Read the canonical `.devhub/worktree.json` before every task. It is the single authority for `mode`, branches, checks, publication and worktree location. Existing policies without `mode` mean Prod until explicitly migrated.
+- MVP: integrate the task's own changes into canonical `main`, run final repository checks and inspect the application there, then push `main` and run the configured production release and verify it. Explicit `remote: null` means a local-only project: retain checked changes in local `main` without push or cloud deployment. The owner's MVP instruction authorizes this publication for every task; do not ask for release permission again. Never include unrelated unfinished work in a task commit or release.
+- Prod: integrate into canonical `stage` and perform final checks and application review there. Promote to `main`, push and deploy only when the current task explicitly authorizes release. Project security and production verification requirements apply in both modes.
+- Use a temporary isolated `codex/<task>` worktree from the mode's integration branch when isolation is needed; reuse a suitable task worktree rather than another clone. Ordinary worktrees belong in the policy's `worktreeRoot`, under `D:/worktrees/<project>`, outside `D:/code`.
+- DevHub starts every dev service from the canonical project folder. Never run a dev server from a linked worktree or register a worktree as another application. Worktree dev commands route to the canonical checkout and show integrated code.
+- Use `bun D:/code/devhub/src/stage.ts create|integrate|check|status|publish|mode|finish --project <canonical-path> [operand]`. JavaScript repositories also expose `bun run worktree` / `npm run worktree --`. Mode changes use `mode mvp` or `mode prod`; divergent branch history is a blocker, never a reason to reset or force-push.
+- Preserve unrelated edits, untracked files, private ignored files and other agents' work. Never reset, stash all changes, force-remove another task or bulk-merge historical worktrees. If integration or publication fails, report the concrete blocker and preserve the task for recovery.
+- Leave no task worktree behind when the task ends, including failed tasks. For a completed ordinary worktree use `finish <full-worktree-path>` after its commits are contained in the integration branch; preserve private files outside `D:/code` before removal. For unfinished work preserve its branch, commits, changes and private files in a recovery archive before removing the checkout. Use the Codex app's archive operation for Codex-managed worktrees so attachments remain consistent.
 
-Production `build`, `start`, `deploy` and container entrypoints remain standalone.
+Production `build`, `start`, `deploy` and container entrypoints remain standalone. This mode-aware owner policy supersedes earlier all-stage, direct-main and worktree lifecycle rules where they conflict.
 <!-- END:DEVHUB:WORKTREE-POLICY -->
 

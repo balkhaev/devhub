@@ -38,14 +38,22 @@ function readOptional(file: string): string {
 	return existsSync(file) ? readFileSync(file, "utf8") : "";
 }
 
+function editorPolicyChanges(before: string, root: string): boolean {
+	return (
+		Boolean(before) &&
+		replaceOwnerPolicyBlock(before, ownerProjectPolicyBlock(root)) !== before
+	);
+}
+
 function fingerprint(
 	policy: string,
 	agents: string,
 	branch: string,
-	head: string | null
+	head: string | null,
+	cursor: string
 ): string {
 	return createHash("sha256")
-		.update(JSON.stringify([policy, agents, branch, head]))
+		.update(JSON.stringify([policy, agents, branch, head, cursor]))
 		.digest("hex");
 }
 
@@ -58,15 +66,17 @@ export function planMvpMode(
 	const root = primaryCheckout(folder);
 	const policyFile = join(root, ".devhub", "worktree.json");
 	const agentsFile = join(root, "AGENTS.md");
+	const cursorFile = join(root, ".cursor", "rules", "devhub-staging.mdc");
 	const before = readOptional(policyFile);
 	const agents = readOptional(agentsFile);
+	const cursor = readOptional(cursorFile);
 	const branch = gitOutput(root, ["symbolic-ref", "--short", "HEAD"], true);
 	const head = gitOutput(root, ["rev-parse", "--verify", "HEAD"], true) || null;
 	const plan: ProjectModePlan = {
 		blockers: [],
 		branch,
 		changes: [],
-		fingerprint: fingerprint(before, agents, branch, head),
+		fingerprint: fingerprint(before, agents, branch, head, cursor),
 		head,
 		id,
 		root,
@@ -87,6 +97,9 @@ export function planMvpMode(
 			replaceOwnerPolicyBlock(agents, ownerProjectPolicyBlock(root)) !== agents
 		) {
 			plan.changes.push(agentsFile);
+		}
+		if (editorPolicyChanges(cursor, root)) {
+			plan.changes.push(cursorFile);
 		}
 		if (branch !== "main") {
 			plan.changes.push("Git canonical branch → main");
@@ -169,6 +182,12 @@ export function applyMvpMode(reviewed: ProjectModePlan): ProjectModePlan {
 		}
 		const policyFile = join(current.root, ".devhub", "worktree.json");
 		const agentsFile = join(current.root, "AGENTS.md");
+		const cursorFile = join(
+			current.root,
+			".cursor",
+			"rules",
+			"devhub-staging.mdc"
+		);
 		const before = readFileSync(policyFile, "utf8");
 		const original = JSON.parse(before) as Record<string, unknown>;
 		const agents = readOptional(agentsFile);
@@ -203,6 +222,13 @@ export function applyMvpMode(reviewed: ProjectModePlan): ProjectModePlan {
 		}
 		if (agents !== instructions) {
 			writeAtomic(agentsFile, instructions);
+		}
+		const cursor = readOptional(cursorFile);
+		if (cursor) {
+			writeAtomic(
+				cursorFile,
+				replaceOwnerPolicyBlock(cursor, ownerProjectPolicyBlock(current.root))
+			);
 		}
 		return { ...current, branch: "main", status: "applied" };
 	});
