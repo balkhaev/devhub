@@ -6,6 +6,8 @@ import {
 	useState,
 } from "react";
 
+import { DialogPortal } from "./dialog-portal";
+
 /**
  * Asking before an action that stops something or spends something: a dialog of the page's own, in its colours,
  * that answers a promise. Escape and «Отмена» say no.
@@ -25,22 +27,28 @@ function Question({
 	const yes = useCallback(() => onAnswer(true), [onAnswer]);
 	const no = useCallback(() => onAnswer(false), [onAnswer]);
 	return (
-		<dialog
-			aria-label="Подтверждение"
-			className="confirm"
-			onCancel={no}
-			ref={dialog}
-		>
-			<p className="confirm__text">{text}</p>
-			<div className="confirm__actions">
-				<button className="button" onClick={no} type="button">
-					Отмена
-				</button>
-				<button className="button button--primary" onClick={yes} type="button">
-					Да
-				</button>
-			</div>
-		</dialog>
+		<DialogPortal>
+			<dialog
+				aria-label="Подтверждение"
+				className="confirm"
+				onCancel={no}
+				ref={dialog}
+			>
+				<p className="confirm__text">{text}</p>
+				<div className="confirm__actions">
+					<button className="button" onClick={no} type="button">
+						Отмена
+					</button>
+					<button
+						className="button button--primary"
+						onClick={yes}
+						type="button"
+					>
+						Да
+					</button>
+				</div>
+			</dialog>
+		</DialogPortal>
 	);
 }
 

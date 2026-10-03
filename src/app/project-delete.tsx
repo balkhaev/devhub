@@ -9,6 +9,7 @@ import {
 import type { ProjectView } from "../hub";
 import type { DeletionPlan } from "../projects";
 import { deleteProject, projectDeletionPlan } from "./api";
+import { DialogPortal } from "./dialog-portal";
 
 const PATH_LABELS = {
 	alias: "Старая копия",
@@ -110,60 +111,62 @@ export function DeleteProjectDialog({
 		[onClose, pending]
 	);
 	return (
-		<dialog
-			aria-labelledby="delete-project-title"
-			className="confirm confirm--delete"
-			onCancel={cancel}
-			ref={dialog}
-		>
-			<h2 id="delete-project-title">Удалить {project.name}?</h2>
-			<p>
-				Dev-сервисы проекта остановятся. Папки ниже удалятся с диска вместе со
-				всеми файлами без корзины, а проект исчезнет из пульта.
-			</p>
-			{plan ? (
-				<DeletionDetails plan={plan} />
-			) : (
-				<p className="delete-folder">
-					<code>{project.path}</code>
+		<DialogPortal>
+			<dialog
+				aria-labelledby="delete-project-title"
+				className="confirm confirm--delete"
+				onCancel={cancel}
+				ref={dialog}
+			>
+				<h2 id="delete-project-title">Удалить {project.name}?</h2>
+				<p>
+					Dev-сервисы проекта остановятся. Папки ниже удалятся с диска вместе со
+					всеми файлами без корзины, а проект исчезнет из пульта.
 				</p>
-			)}
-			{loading ? <p role="status">Проверяю папки и зависимости…</p> : null}
-			{error ? (
-				<p className="error" role="alert">
-					{error}
-				</p>
-			) : null}
-			{pending ? <p role="status">Останавливаю dev и удаляю файлы…</p> : null}
-			<div className="confirm__actions">
-				{error || (plan && plan.blockers.length > 0) ? (
+				{plan ? (
+					<DeletionDetails plan={plan} />
+				) : (
+					<p className="delete-folder">
+						<code>{project.path}</code>
+					</p>
+				)}
+				{loading ? <p role="status">Проверяю папки и зависимости…</p> : null}
+				{error ? (
+					<p className="error" role="alert">
+						{error}
+					</p>
+				) : null}
+				{pending ? <p role="status">Останавливаю dev и удаляю файлы…</p> : null}
+				<div className="confirm__actions">
+					{error || (plan && plan.blockers.length > 0) ? (
+						<button
+							className="button"
+							disabled={loading || pending}
+							onClick={load}
+							type="button"
+						>
+							Обновить список
+						</button>
+					) : null}
 					<button
 						className="button"
-						disabled={loading || pending}
-						onClick={load}
+						disabled={pending}
+						onClick={onClose}
 						type="button"
 					>
-						Обновить список
+						Отмена
 					</button>
-				) : null}
-				<button
-					className="button"
-					disabled={pending}
-					onClick={onClose}
-					type="button"
-				>
-					Отмена
-				</button>
-				<button
-					className="button button--danger"
-					disabled={!plan || plan.blockers.length > 0 || loading || pending}
-					onClick={remove}
-					type="button"
-				>
-					{pending ? "Удаляю…" : "Удалить проект"}
-				</button>
-			</div>
-		</dialog>
+					<button
+						className="button button--danger"
+						disabled={!plan || plan.blockers.length > 0 || loading || pending}
+						onClick={remove}
+						type="button"
+					>
+						{pending ? "Удаляю…" : "Удалить проект"}
+					</button>
+				</div>
+			</dialog>
+		</DialogPortal>
 	);
 }
 

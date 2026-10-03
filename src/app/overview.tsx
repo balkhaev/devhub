@@ -1,10 +1,16 @@
-import type { MouseEvent } from "react";
+import { type MouseEvent, useCallback } from "react";
 
 import type { ComposeView } from "../docker";
 import type { HubView, ProjectView } from "../hub";
 import { useAction } from "./actions";
 import { FrontendLink, ProjectControls } from "./project-controls";
 import { DeleteProjectButton } from "./project-delete";
+import {
+	FavoriteProjectButton,
+	ProjectCollapseButton,
+	ProjectStatus,
+} from "./project-preference-controls";
+import { favoriteProjects, useProjectPreferences } from "./project-preferences";
 import { projectRoute } from "./project-ui";
 import {
 	composeStatus,
@@ -96,65 +102,84 @@ function ProjectCard({
 }) {
 	const { dialog, error, pending, run } = useAction();
 	const { docker } = project;
+	const { preferences, toggleCollapse } = useProjectPreferences();
+	const collapsed = preferences.collapsed.overview.includes(project.id);
+	const details = `overview-project-${project.id}`;
+	const collapse = useCallback(
+		() => toggleCollapse("overview", project.id),
+		[project.id, toggleCollapse]
+	);
 	return (
-		<article className="card">
+		<article className={cx("card", collapsed && "card--collapsed")}>
 			<header className="card__head">
-				<div>
+				<div className="card__title">
 					<h2>
 						<a href={`#/${projectRoute(project.id)}`}>{project.name}</a>
 					</h2>
-					{project.description ? (
+					<ProjectStatus project={project} />
+					{!collapsed && project.description ? (
 						<p className="muted small">{project.description}</p>
 					) : null}
 				</div>
 				<div className="card__actions">
+					<FavoriteProjectButton project={project} />
+					<ProjectCollapseButton
+						collapsed={collapsed}
+						controls={details}
+						onToggle={collapse}
+						project={project}
+					/>
 					<FrontendLink project={project} />
 				</div>
 			</header>
-			<p className="card__folder muted small">
-				<span>dev · {project.currentBranch ?? "без Git-ветки"}</span>
-				<code>{project.path}</code>
-			</p>
-			<ProjectControls project={project} />
-			<ul className="card__services">
-				{project.services.map((service) => (
-					<li key={service.key}>
-						<a className="card__service" href={`#/${service.key}`}>
-							<span className={cx("dot", `dot--${service.status}`)} />
-							<span>{service.name}</span>
+			<div hidden={collapsed} id={details}>
+				<p className="card__folder muted small">
+					<span>dev · {project.currentBranch ?? "без Git-ветки"}</span>
+					<code>{project.path}</code>
+				</p>
+				<ProjectControls project={project} />
+				<ul className="card__services">
+					{project.services.map((service) => (
+						<li key={service.key}>
+							<a className="card__service" href={`#/${service.key}`}>
+								<span className={cx("dot", `dot--${service.status}`)} />
+								<span>{service.name}</span>
+								<span className="muted small">
+									{service.port ? `:${service.port}` : ""}{" "}
+									{STATUS_SHORT[service.status]}
+								</span>
+							</a>
+						</li>
+					))}
+					{docker ? (
+						<li className="card__service card__docker">
+							<span className={cx("dot", `dot--${composeStatus(docker)}`)} />
+							<a className="card__docker-link" href={`#/docker/${docker.name}`}>
+								Docker {docker.name}
+								{docker.wanted.length > 0
+									? ` (${docker.wanted.join(", ")})`
+									: ""}
+							</a>
 							<span className="muted small">
-								{service.port ? `:${service.port}` : ""}{" "}
-								{STATUS_SHORT[service.status]}
+								{composeWords(docker, dockerUp)}
 							</span>
-						</a>
-					</li>
-				))}
-				{docker ? (
-					<li className="card__service card__docker">
-						<span className={cx("dot", `dot--${composeStatus(docker)}`)} />
-						<a className="card__docker-link" href={`#/docker/${docker.name}`}>
-							Docker {docker.name}
-							{docker.wanted.length > 0 ? ` (${docker.wanted.join(", ")})` : ""}
-						</a>
-						<span className="muted small">
-							{composeWords(docker, dockerUp)}
-						</span>
-						<ComposeButtons
-							dockerUp={dockerUp}
-							pending={pending}
-							project={docker}
-							run={run}
-						/>
-					</li>
-				) : null}
-			</ul>
-			{error ? <p className="error small">{error}</p> : null}
-			<footer className="card__footer">
-				<a className="muted small" href={`#/${projectRoute(project.id)}`}>
-					Управление проектом
-				</a>
-				<DeleteProjectButton onDeleted={onDeleted} project={project} />
-			</footer>
+							<ComposeButtons
+								dockerUp={dockerUp}
+								pending={pending}
+								project={docker}
+								run={run}
+							/>
+						</li>
+					) : null}
+				</ul>
+				{error ? <p className="error small">{error}</p> : null}
+				<footer className="card__footer">
+					<a className="muted small" href={`#/${projectRoute(project.id)}`}>
+						Управление проектом
+					</a>
+					<DeleteProjectButton onDeleted={onDeleted} project={project} />
+				</footer>
+			</div>
 			{dialog}
 		</article>
 	);
@@ -294,6 +319,7 @@ export function Overview({
 	onDeleted: (id: string) => void;
 	view: HubView;
 }) {
+	const { preferences } = useProjectPreferences();
 	const services = view.projects.flatMap((project) => project.services);
 	const up = services.filter((service) => isUp(service.status));
 	const managed = services.filter((service) => service.managed);
@@ -329,14 +355,16 @@ export function Overview({
 			<section>
 				<h2 className="section-title">Проекты</h2>
 				<div className="cards">
-					{view.projects.map((project) => (
-						<ProjectCard
-							dockerUp={view.docker.available}
-							key={project.id}
-							onDeleted={onDeleted}
-							project={project}
-						/>
-					))}
+					{favoriteProjects(view.projects, preferences.favorites).map(
+						(project) => (
+							<ProjectCard
+								dockerUp={view.docker.available}
+								key={project.id}
+								onDeleted={onDeleted}
+								project={project}
+							/>
+						)
+					)}
 				</div>
 			</section>
 			<DockerSection available={view.docker.available} others={others} />
