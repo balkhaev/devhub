@@ -1,6 +1,7 @@
 import type { ProjectView } from "../hub";
 import { FrontendLink, ProjectControls } from "./project-controls";
 import { DeleteProjectButton } from "./project-delete";
+import { ProjectModeBadge, ProjectModeControl } from "./project-mode";
 import { FavoriteProjectButton } from "./project-preference-controls";
 import { mainFrontend } from "./project-ui";
 import { cx, STATUS_WORDS } from "./words";
@@ -15,13 +16,15 @@ export function ProjectPage({
 	const frontend = mainFrontend(project);
 	const branch = project.currentBranch ?? "нет Git-ветки";
 	const unexpected = Boolean(
-		project.stageBranch && project.currentBranch !== project.stageBranch
+		project.integrationBranch &&
+			project.currentBranch !== project.integrationBranch
 	);
 	return (
 		<section aria-label={project.name} className="project-page">
 			<header className="project-page__head">
 				<div>
 					<h1>{project.name}</h1>
+					<ProjectModeBadge project={project} />
 					{project.description ? (
 						<p className="muted">{project.description}</p>
 					) : null}
@@ -32,15 +35,19 @@ export function ProjectPage({
 				</div>
 			</header>
 			<div className="card project-stage">
-				<h2>Dev / stage</h2>
+				<h2>Dev и выпуск</h2>
+				<ProjectModeControl project={project} />
 				<code>{project.path}</code>
 				<p className="muted small">
 					Ветка: <strong>{branch}</strong>
-					{project.stageBranch ? ` · stage: ${project.stageBranch}` : ""}
+					{project.integrationBranch
+						? ` · dev: ${project.integrationBranch}`
+						: ""}
 				</p>
 				{unexpected ? (
 					<p className="warn">
-						Для dev основная папка должна быть на ветке {project.stageBranch}.
+						Для dev основная папка должна быть на ветке{" "}
+						{project.integrationBranch}.
 					</p>
 				) : null}
 				<ProjectControls project={project} />

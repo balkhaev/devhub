@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 import type { HubView } from "../hub";
 import type { Framing } from "../probes";
 import type { DeletionPlan } from "../projects";
+import type { ProjectMode } from "../workflow-policy";
 
 /** The page's line to the hub: its state as server-sent events, a service's log as it grows, and the actions. */
 
@@ -85,7 +86,7 @@ export async function act(path: string): Promise<string | null> {
 async function projectAction<T>(
 	id: string,
 	action: string,
-	data?: { token: string }
+	data?: { token: string } | { mode: ProjectMode }
 ): Promise<T> {
 	const response = await fetch(
 		`/api/projects/${encodeURIComponent(id)}/${action}`,
@@ -111,6 +112,17 @@ export const projectDeletionPlan = (id: string): Promise<DeletionPlan> =>
 
 export async function deleteProject(id: string, token: string): Promise<void> {
 	await projectAction(id, "delete", { token });
+}
+
+export function setProjectMode(
+	id: string,
+	mode: ProjectMode
+): Promise<{
+	integrationBranch: string;
+	mode: ProjectMode;
+	releaseBranch: string;
+}> {
+	return projectAction(id, "mode", { mode });
 }
 
 const FRAMING_MS = 30_000;

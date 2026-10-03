@@ -90,8 +90,13 @@ function project(id: string, status?: ServiceView["status"]): ProjectView {
 		devServices: [`${id}/web`],
 		docker: null,
 		id,
+		integrationBranch: "stage",
+		localOnly: false,
+		mode: "prod",
+		modeEditable: true,
 		name: id,
 		path: `D:/code/${id}`,
+		releaseBranch: "main",
 		services: [service(id, status)],
 		stageBranch: "stage",
 	};
@@ -354,4 +359,29 @@ test("collapsed projects without services retain their name and controls without
 	expect(card).toContain('aria-label="В избранное: empty"');
 	expect(card).toContain('aria-label="Развернуть проект: empty"');
 	expect(card).not.toContain("Открыть приложение");
+});
+
+test("MVP badges remain visible on collapsed cards and sidebar groups", () => {
+	const store = createProjectPreferenceStore({ storage: () => undefined });
+	const data = view([
+		{
+			...project("alpha"),
+			currentBranch: "main",
+			integrationBranch: "main",
+			mode: "mvp",
+		},
+	]);
+	store.toggleCollapse("overview", "alpha");
+	store.toggleCollapse("sidebar", "alpha");
+	for (const markup of [
+		render(store, <Overview onDeleted={noop} view={data} />),
+		render(store, <Sidebar onOpen={noop} selected={null} view={data} />),
+	]) {
+		expect(markup).toContain(
+			'class="project-mode project-mode--mvp">MVP</span>'
+		);
+		expect(
+			markup.indexOf('class="project-mode project-mode--mvp"')
+		).toBeLessThan(markup.indexOf('hidden=""'));
+	}
 });

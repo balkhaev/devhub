@@ -1,6 +1,7 @@
 import { useCallback } from "react";
 
 import type { ProjectView } from "../hub";
+import { ProjectModeBadge } from "./project-mode";
 import { useProjectPreferences } from "./project-preferences";
 import { mainFrontend } from "./project-ui";
 import { isUp } from "./words";
@@ -64,9 +65,12 @@ export function ProjectStatus({ project }: { project: ProjectView }) {
 	).length;
 	return (
 		<span className="project-status muted small">
-			{project.services.length
-				? `Работают ${up} из ${project.services.length}${attention ? ` · требуют внимания: ${attention}` : ""}`
-				: "Нет dev-сервисов"}
+			<ProjectModeBadge project={project} />
+			<span>
+				{project.services.length
+					? `Работают ${up} из ${project.services.length}${attention ? ` · требуют внимания: ${attention}` : ""}`
+					: "Нет dev-сервисов"}
+			</span>
 		</span>
 	);
 }

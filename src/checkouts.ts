@@ -100,6 +100,8 @@ export function developmentSourceIssue(
 	const policyFile = join(primary, ".devhub", "worktree.json");
 	if (existsSync(policyFile)) {
 		const policy = JSON.parse(readFileSync(policyFile, "utf8")) as {
+			mode?: string;
+			releaseBranch?: string;
 			stageBranch?: string;
 		};
 		const branchKey = `branch:${primary}`;
@@ -112,8 +114,12 @@ export function developmentSourceIssue(
 				}).stdout?.trim() ?? "";
 			cache?.set(branchKey, branch);
 		}
-		if (policy.stageBranch && branch !== policy.stageBranch) {
-			return `dev проекта ${primary} должен запускаться на ветке ${policy.stageBranch}; сначала интегрируйте изменения в stage`;
+		const expected =
+			policy.mode === "mvp"
+				? (policy.releaseBranch ?? "main")
+				: policy.stageBranch;
+		if (expected && branch !== expected) {
+			return `dev проекта ${primary} должен запускаться на ветке ${expected}; сначала интегрируйте изменения в ${expected}`;
 		}
 	}
 	if (workdir && !isInsideProject(projectRoot, workdir)) {
