@@ -1,5 +1,6 @@
 import { useCallback, useEffect } from "react";
 
+import { AiPage } from "./ai";
 import { useHub, useRoute } from "./api";
 import { ComposeCard, Overview } from "./overview";
 import { ProjectPage } from "./project";
@@ -23,6 +24,9 @@ function Main({
 	route: string | null;
 	view: NonNullable<ReturnType<typeof useHub>["view"]>;
 }) {
+	if (route === "ai") {
+		return <AiPage />;
+	}
 	if (route?.startsWith("docker/")) {
 		const name = route.slice("docker/".length);
 		const project = view.docker.projects.find((entry) => entry.name === name);
@@ -71,7 +75,7 @@ export function App() {
 	const [route, go] = useRoute();
 	const deleted = useCallback(() => go(null), [go]);
 	useEffect(() => {
-		if (!(view && route) || route.startsWith("docker/")) {
+		if (!(view && route) || route === "ai" || route.startsWith("docker/")) {
 			return;
 		}
 		const exists = view.projects.some(

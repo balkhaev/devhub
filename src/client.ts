@@ -1,6 +1,17 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import {
+	link,
+	lstat,
+	mkdir,
+	mkdtemp,
+	readFile,
+	rm,
+	rmdir,
+	writeFile,
+} from "node:fs/promises";
 import { dirname, join } from "node:path";
+
+import { protectPrivateDirectory, protectPrivateFile } from "./private-files";
 
 const TOKEN = /^[a-f0-9]{64}$/;
 
@@ -9,15 +20,36 @@ export async function clientToken(root: string): Promise<string> {
 	const file = join(root, ".state", "client-token");
 	await mkdir(dirname(file), { recursive: true });
 	try {
-		await writeFile(file, randomBytes(32).toString("hex"), {
-			flag: "wx",
-			mode: 0o600,
-		});
+		await lstat(file);
 	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code !== "EEXIST") {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
 			throw error;
 		}
+		// Publish a protected, complete token atomically. Concurrent startup
+		// can never observe an empty or partially written target file.
+		const temporaryDirectory = await mkdtemp(`${file}-`);
+		const temporary = join(temporaryDirectory, "token");
+		try {
+			// New secret files inherit private access from birth. Tightening a
+			// file cannot revoke handles opened while it was publicly readable.
+			await protectPrivateDirectory(temporaryDirectory);
+			await writeFile(temporary, randomBytes(32).toString("hex"), {
+				flag: "wx",
+				mode: 0o600,
+			});
+			try {
+				await link(temporary, file);
+			} catch (creationError) {
+				if ((creationError as NodeJS.ErrnoException).code !== "EEXIST") {
+					throw creationError;
+				}
+			}
+		} finally {
+			await rm(temporary, { force: true });
+			await rmdir(temporaryDirectory);
+		}
 	}
+	await protectPrivateFile(file);
 	const token = (await readFile(file, "utf8")).trim();
 	if (!TOKEN.test(token)) {
 		throw new Error(`Повреждён ${file}; удалите его и перезапустите пульт`);
