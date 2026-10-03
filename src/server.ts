@@ -203,7 +203,7 @@ export async function startHub(
 				if (!LOCAL_URL.test(url)) {
 					return json({ ok: true, reason: null, sure: true });
 				}
-				return json(await frameable(url));
+				return json(await frameable(url, new URL(request.url).origin));
 			},
 			/**
 			 * Whether the hub runs, for the tray: its process (to stop it) and how many servers it started. Cheap:
@@ -313,6 +313,7 @@ export async function startHub(
 	});
 	// Port zero is useful for isolated endpoint checks; validate the actual bound address.
 	origin = `http://127.0.0.1:${server.port}`;
+	hub.processes.setFrameOrigin(origin);
 	hosts.add(`127.0.0.1:${server.port}`);
 	hosts.add(`localhost:${server.port}`);
 	// Claim the port before adopting processes: concurrent auto-open attempts have one owner.

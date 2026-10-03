@@ -1,5 +1,9 @@
 import { spawn } from "node:child_process";
 
+import { type Framing, framePolicy } from "./frame-policy";
+
+export type { Framing } from "./frame-policy";
+
 /**
  * What runs on this computer, whoever started it: the ports that listen and the processes behind them (with their
  * command lines and parents, which tell which checkout a server runs from), whether a port answers and whether a
@@ -10,7 +14,6 @@ const LINE_BREAK = /\r?\n/;
 const SPACES = /\s+/;
 const HEALTH_MS = 2000;
 const FRAME_MS = 4000;
-const FRAME_ANCESTORS = /frame-ancestors([^;]*)/;
 
 export interface Ran {
 	/** The exit code; null when the program could not start or ran out of time. */
@@ -144,16 +147,11 @@ export async function healthy(url: string): Promise<boolean> {
 	}
 }
 
-export interface Framing {
-	ok: boolean;
-	/** The header that forbids it, when one does. */
-	reason: string | null;
-	/** The page answered; when it did not, the frame is left to try (it may only be slow), and it is asked again. */
-	sure: boolean;
-}
-
 /** Whether a page lets itself be shown inside another page (X-Frame-Options, CSP frame-ancestors). */
-export async function frameable(url: string): Promise<Framing> {
+export async function frameable(
+	url: string,
+	parentOrigin: string
+): Promise<Framing> {
 	let response: Response;
 	try {
 		response = await fetch(url, { signal: AbortSignal.timeout(FRAME_MS) });
@@ -161,15 +159,5 @@ export async function frameable(url: string): Promise<Framing> {
 	} catch {
 		return { ok: true, reason: null, sure: false };
 	}
-	const options = response.headers.get("x-frame-options")?.toLowerCase();
-	if (options === "deny" || options === "sameorigin") {
-		return { ok: false, reason: `X-Frame-Options: ${options}`, sure: true };
-	}
-	const policy =
-		response.headers.get("content-security-policy")?.toLowerCase() ?? "";
-	const ancestors = FRAME_ANCESTORS.exec(policy)?.[1]?.trim();
-	if (ancestors && !ancestors.includes("*")) {
-		return { ok: false, reason: `frame-ancestors ${ancestors}`, sure: true };
-	}
-	return { ok: true, reason: null, sure: true };
+	return framePolicy(response.headers, response.url || url, parentOrigin);
 }

@@ -50,6 +50,7 @@ const LAUNCH_MS = 20_000;
 /** What a batch `set "NAME=value"` cannot carry. */
 const UNSAFE_VALUE = /["\r\n]/;
 const SERVICE_KEY = /^[a-z0-9][a-z0-9-]*\/[a-z0-9][a-z0-9-]*$/;
+const FRAME_ORIGIN = /^http:\/\/127\.0\.0\.1(?::[1-9]\d{0,4})?$/;
 const COMMAND_ARGUMENT = /"([^"]+)"|([^\s"]+)/g;
 const LEADING_EXECUTABLE = /^(?:"([^"]+)"|([^\s]+))/;
 const NEWLINE = 0x0a;
@@ -96,7 +97,11 @@ export async function killTree(pid: number): Promise<void> {
 }
 
 /** The environment every server gets: plain output, UTF-8, no buffering. */
-function environment(service: Service, root: string): Record<string, string> {
+function environment(
+	service: Service,
+	root: string,
+	frameOrigin: string
+): Record<string, string> {
 	const binaries = new Set<string>();
 	let folder = resolve(service.workdir);
 	const projectRoot = resolve(service.project.path);
@@ -118,6 +123,7 @@ function environment(service: Service, root: string): Record<string, string> {
 		PYTHONIOENCODING: "utf-8",
 		PYTHONUNBUFFERED: "1",
 		...service.env,
+		DEVHUB_FRAME_ORIGIN: frameOrigin,
 		DEVHUB_PROJECT: projectRoot,
 		DEVHUB_ROOT: root,
 		DEVHUB_SERVICE: service.key,
@@ -184,9 +190,10 @@ export function batchOf(
 	service: Service,
 	log: string,
 	exitFile: string,
-	root = resolve(dirname(dirname(log)))
+	root = resolve(dirname(dirname(log))),
+	frameOrigin = ""
 ): string {
-	const env = Object.entries(environment(service, root)).map(
+	const env = Object.entries(environment(service, root, frameOrigin)).map(
 		([name, value]) => {
 			if (UNSAFE_VALUE.test(value)) {
 				throw new Error(
@@ -230,12 +237,17 @@ export async function launchHidden(batch: string): Promise<number> {
 }
 
 /** Starts a command detached, its output into the log (everywhere but Windows). */
-function launchDetached(service: Service, log: string, root: string): number {
+function launchDetached(
+	service: Service,
+	log: string,
+	root: string,
+	frameOrigin: string
+): number {
 	const fd = openSync(log, "a");
 	const child = spawn(detachedCommand(service), {
 		cwd: service.workdir,
 		detached: true,
-		env: { ...process.env, ...environment(service, root) },
+		env: { ...process.env, ...environment(service, root, frameOrigin) },
 		shell: true,
 		stdio: ["ignore", fd, fd],
 	});
@@ -245,14 +257,33 @@ function launchDetached(service: Service, log: string, root: string): number {
 }
 
 export class Processes {
+	private frameOrigin = "";
 	private readonly root: string;
 	private readonly stateFile: string;
 	private readonly running = new Map<string, Managed>();
 	private saving: Promise<void> = Promise.resolve();
 
-	constructor(root: string) {
+	constructor(root: string, frameOrigin = "") {
 		this.root = resolve(root);
 		this.stateFile = join(this.root, ".state", "processes.json");
+		if (frameOrigin) {
+			this.setFrameOrigin(frameOrigin);
+		}
+	}
+
+	/** Use the bound DevHub port, including an ephemeral or command-line override. */
+	setFrameOrigin(origin: string): void {
+		const url = new URL(origin);
+		if (
+			!FRAME_ORIGIN.test(origin) ||
+			url.protocol !== "http:" ||
+			url.hostname !== "127.0.0.1"
+		) {
+			throw new Error(
+				"DevHub frame origin must be its exact local HTTP origin"
+			);
+		}
+		this.frameOrigin = origin;
 	}
 
 	private exitFileOf(key: string): string {
@@ -398,10 +429,13 @@ export class Processes {
 			await mkdir(dirname(exitFile), { recursive: true });
 			await mkdir(dirname(batch), { recursive: true });
 			rmSync(exitFile, { force: true });
-			await writeFile(batch, batchOf(service, log, exitFile, this.root));
+			await writeFile(
+				batch,
+				batchOf(service, log, exitFile, this.root, this.frameOrigin)
+			);
 			pid = await launchHidden(batch);
 		} else {
-			pid = launchDetached(service, log, this.root);
+			pid = launchDetached(service, log, this.root, this.frameOrigin);
 		}
 		if (!(pid > 0)) {
 			throw new Error(`${service.command} не запустился`);

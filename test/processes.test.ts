@@ -75,6 +75,7 @@ test("development processes receive the hub identity and cannot override its dev
 		serviceWith({
 			command: "npm run dev",
 			env: {
+				DEVHUB_FRAME_ORIGIN: "http://unrelated.example:4700",
 				DEVHUB_ROOT: "wrong",
 				DEVHUB_SERVICE: "wrong",
 				NODE_ENV: "production",
@@ -82,8 +83,10 @@ test("development processes receive the hub identity and cannot override its dev
 		}),
 		"log",
 		"exit",
-		"D:/code/devhub"
+		"D:/code/devhub",
+		"http://127.0.0.1:4712"
 	);
+	expect(batch).toContain('set "DEVHUB_FRAME_ORIGIN=http://127.0.0.1:4712"');
 	expect(batch).toContain('set "DEVHUB_ROOT=D:/code/devhub"');
 	expect(batch).toContain('set "DEVHUB_SERVICE=altay/site"');
 	expect(batch).toContain('set "NODE_ENV=development"');
