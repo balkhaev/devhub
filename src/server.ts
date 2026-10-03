@@ -4,10 +4,12 @@ import { dirname, join, resolve } from "node:path";
 import { serve } from "bun";
 
 import page from "./app/index.html";
+import { primaryCheckout, sameSourcePath } from "./checkouts";
 import { authenticatedClient, clientToken } from "./client";
 import { type Catalogue, loadCatalogue } from "./config";
-import { Hub, type HubView } from "./hub";
+import { Hub, type HubRuntime, type HubView } from "./hub";
 import { frameable } from "./probes";
+import { Projects } from "./projects";
 
 /**
  * The hub's server, on 127.0.0.1 only: the page, the state of every service (and its changes as server-sent
@@ -25,6 +27,8 @@ const encoder = new TextEncoder();
 const json = (value: unknown, status = 200) => Response.json(value, { status });
 
 const ACTION_WORDS: Record<string, string> = {
+	delete: "удалить с диска",
+	"delete-plan": "проверить удаление",
 	restart: "перезапустить",
 	start: "запустить",
 	stop: "остановить",
@@ -100,16 +104,18 @@ export async function startHub(
 		dev?: boolean;
 		port?: number;
 		root?: string;
+		runtime?: HubRuntime;
 	} = {}
 ) {
 	const root = options.root ?? ROOT;
 	const catalogue =
 		options.catalogue ?? (await loadCatalogue(join(root, "services.json")));
 	const token = await clientToken(root);
-	const hub = new Hub(catalogue, root);
+	const hub = new Hub(catalogue, root, options.runtime);
+	const projects = new Projects(hub, root);
 	let ready = false;
 	const port = options.port ?? catalogue.port;
-	const origin = `http://127.0.0.1:${port}`;
+	let origin = `http://127.0.0.1:${port}`;
 
 	const hosts = new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
 	/** Addressed to the hub itself, not to another name that happens to lead to 127.0.0.1. */
@@ -217,8 +223,26 @@ export async function startHub(
 					: refused(),
 			"/api/projects/:id/:action": {
 				POST: (request) =>
-					act(request, () => {
+					act(request, async () => {
 						const { action, id } = request.params;
+						if (action === "delete-plan") {
+							return projects.plan(id);
+						}
+						if (action === "delete") {
+							const body: unknown = await request.json();
+							if (
+								!body ||
+								typeof body !== "object" ||
+								!("token" in body) ||
+								typeof body.token !== "string" ||
+								body.token.length > 100
+							) {
+								throw new Error(
+									"Нужен подтверждённый список папок для удаления"
+								);
+							}
+							return projects.delete(id, body.token);
+						}
 						if (action === "start") {
 							return hub.startProject(id);
 						}
@@ -287,6 +311,10 @@ export async function startHub(
 				local(request) ? json(hub.current) : refused(),
 		},
 	});
+	// Port zero is useful for isolated endpoint checks; validate the actual bound address.
+	origin = `http://127.0.0.1:${server.port}`;
+	hosts.add(`127.0.0.1:${server.port}`);
+	hosts.add(`localhost:${server.port}`);
 	// Claim the port before adopting processes: concurrent auto-open attempts have one owner.
 	try {
 		await hub.start();
@@ -307,18 +335,26 @@ export async function startHub(
 }
 
 if (import.meta.main) {
-	const argv = process.argv.slice(2);
-	const at = argv.indexOf("--port");
-	const hub = await startHub({
-		dev: argv.includes("--dev"),
-		port: at >= 0 ? Number(argv[at + 1]) : undefined,
-	});
-	const { projects } = hub.hub.current;
-	const services = projects.flatMap((project) => project.services);
-	const up = services.filter((service) =>
-		["running", "starting", "external"].includes(service.status)
-	);
-	process.stdout.write(
-		`Пульт: ${hub.url} · ${projects.length} проектов, ${services.length} сервисов, работают ${up.length}\n`
-	);
+	const primary = primaryCheckout(ROOT);
+	if (sameSourcePath(ROOT, primary)) {
+		const argv = process.argv.slice(2);
+		const at = argv.indexOf("--port");
+		const hub = await startHub({
+			dev: argv.includes("--dev"),
+			port: at >= 0 ? Number(argv[at + 1]) : undefined,
+		});
+		const { projects } = hub.hub.current;
+		const services = projects.flatMap((project) => project.services);
+		const up = services.filter((service) =>
+			["running", "starting", "external"].includes(service.status)
+		);
+		process.stdout.write(
+			`Пульт: ${hub.url} · ${projects.length} проектов, ${services.length} сервисов, работают ${up.length}\n`
+		);
+	} else {
+		const { ensureHub } = await import("./open");
+		process.stdout.write(
+			`DevHub: worktree делегирует dev в ${primary} · ${await ensureHub()}\n`
+		);
+	}
 }

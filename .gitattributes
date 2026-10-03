@@ -1,0 +1,4 @@
+* text=auto eol=lf
+*.cmd text eol=crlf
+scripts/install-windows.ps1 -text
+scripts/uninstall-windows.ps1 -text

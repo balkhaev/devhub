@@ -16,7 +16,7 @@ import { z } from "zod";
 import { isInsideProject, primaryCheckout, sameSourcePath } from "./checkouts";
 import { canonicalProjectFolder, loadCatalogue } from "./config";
 
-const ROOT = resolve(import.meta.dir, "..");
+const ROOT = primaryCheckout(resolve(import.meta.dir, ".."));
 const POLICY = join(".devhub", "worktree.json");
 const TOPIC_SEGMENT = /^[a-z0-9][a-z0-9-]*$/;
 const CODEX_PREFIX = /^codex\//;
@@ -99,7 +99,10 @@ export class StageProject {
 			)
 			.digest("hex");
 		this.stateFile = join(stateRoot, `${key}.json`);
-		this.lockFile = join(stateRoot, `${key}.lock`);
+		// Check records may live in a caller's temporary state folder; ownership locks are machine-wide.
+		const lockRoot = join(ROOT, ".state", "stage");
+		mkdirSync(lockRoot, { recursive: true });
+		this.lockFile = join(lockRoot, `${key}.lock`);
 	}
 
 	branch(): string {
@@ -417,7 +420,8 @@ export class StageProject {
 		gitOutput(this.root, ["worktree", "remove", path]);
 	}
 
-	withLock<T>(action: () => T): T {
+	/** Shared by synchronous Git operations and the asynchronous filesystem deletion lifecycle. */
+	acquireLock(): () => void {
 		let fd: number;
 		try {
 			fd = openSync(this.lockFile, "wx");
@@ -426,12 +430,25 @@ export class StageProject {
 				cause,
 			});
 		}
-		try {
-			writeFileSync(fd, `${process.pid}\n`);
-			return action();
-		} finally {
+		const release = () => {
 			closeSync(fd);
 			rmSync(this.lockFile, { force: true });
+		};
+		try {
+			writeFileSync(fd, `${process.pid}\n`);
+		} catch (error) {
+			release();
+			throw error;
+		}
+		return release;
+	}
+
+	withLock<T>(action: () => T): T {
+		const release = this.acquireLock();
+		try {
+			return action();
+		} finally {
+			release();
 		}
 	}
 }

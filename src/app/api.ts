@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import type { HubView } from "../hub";
 import type { Framing } from "../probes";
+import type { DeletionPlan } from "../projects";
 
 /** The page's line to the hub: its state as server-sent events, a service's log as it grows, and the actions. */
 
@@ -79,6 +80,37 @@ export async function act(path: string): Promise<string | null> {
 	} catch (error) {
 		return (error as Error).message;
 	}
+}
+
+async function projectAction<T>(
+	id: string,
+	action: string,
+	data?: { token: string }
+): Promise<T> {
+	const response = await fetch(
+		`/api/projects/${encodeURIComponent(id)}/${action}`,
+		{
+			body: data ? JSON.stringify(data) : undefined,
+			headers: { "Content-Type": "application/json", "x-devhub": "1" },
+			method: "POST",
+		}
+	);
+	const body = (await response.json()) as {
+		error?: string;
+		ok?: boolean;
+		result: T;
+	};
+	if (!(response.ok && body.ok)) {
+		throw new Error(body.error ?? `ошибка ${response.status}`);
+	}
+	return body.result;
+}
+
+export const projectDeletionPlan = (id: string): Promise<DeletionPlan> =>
+	projectAction(id, "delete-plan");
+
+export async function deleteProject(id: string, token: string): Promise<void> {
+	await projectAction(id, "delete", { token });
 }
 
 const FRAMING_MS = 30_000;

@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
-
+import { primaryCheckout } from "./checkouts";
 import { loadCatalogue } from "./config";
 import { launchHidden } from "./processes";
 
@@ -11,7 +11,7 @@ import { launchHidden } from "./processes";
  * With `--no-browser` it only makes sure the hub runs.
  */
 
-const ROOT = resolve(dirname(import.meta.dir));
+const ROOT = primaryCheckout(resolve(dirname(import.meta.dir)));
 const WAIT_MS = 30_000;
 const POLL_MS = 500;
 

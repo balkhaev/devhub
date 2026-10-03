@@ -1,5 +1,5 @@
 import { dirname, join, resolve } from "node:path";
-
+import { primaryCheckout } from "./checkouts";
 import { clientToken, requestHub } from "./client";
 import {
 	type Catalogue,
@@ -11,7 +11,7 @@ import {
 import { type HubView, samePath } from "./hub";
 import { ensureHub } from "./open";
 
-const ROOT = resolve(dirname(import.meta.dir));
+const ROOT = primaryCheckout(resolve(dirname(import.meta.dir)));
 const HELP = `devhub — управление локальной разработкой
   bun run hub list                      список проектов и сервисов
   bun run hub check                     проверить все devhub.json

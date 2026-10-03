@@ -1,6 +1,7 @@
-import { existsSync } from "node:fs";
+// biome-ignore-all lint/suspicious/noUnnecessaryConditions: runtime Map lookups, Array.find and optional health URLs can be absent despite the analyzer
+import { existsSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
-
+import { isInsideProject } from "./checkouts";
 import {
 	type Catalogue,
 	DOCKER_NEED,
@@ -89,13 +90,17 @@ export interface ServiceView {
 }
 
 export interface ProjectView {
+	currentBranch: string | null;
+	deletable: boolean;
 	description: string | null;
+	devServices: string[];
 	/** The Docker Compose project its dev servers use. */
 	docker: ComposeView | null;
 	id: string;
 	name: string;
 	path: string;
 	services: ServiceView[];
+	stageBranch: string | null;
 }
 
 export interface PortView {
@@ -164,6 +169,33 @@ const DEV_RUNTIMES = new Set([
 const EPHEMERAL_PORTS = 49_152;
 
 const sleep = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
+
+function stageInfo(path: string): {
+	currentBranch: string | null;
+	stageBranch: string | null;
+} {
+	let currentBranch: string | null = null;
+	let stageBranch: string | null = null;
+	try {
+		const head = readFileSync(resolve(path, ".git/HEAD"), "utf8").trim();
+		currentBranch = head.startsWith("ref: refs/heads/")
+			? head.slice("ref: refs/heads/".length)
+			: null;
+	} catch {
+		/* Non-Git projects remain manageable. */
+	}
+	try {
+		stageBranch =
+			(
+				JSON.parse(
+					readFileSync(resolve(path, ".devhub/worktree.json"), "utf8")
+				) as { stageBranch?: string }
+			).stageBranch ?? null;
+	} catch {
+		/* A project without a stage policy does not claim a stage branch. */
+	}
+	return { currentBranch, stageBranch };
+}
 
 const windowsPath = (path: string): string =>
 	path.replaceAll("/", "\\").replace(TRAILING_SLASH, "");
@@ -264,14 +296,17 @@ export interface HubRuntime {
 }
 
 export class Hub {
-	private readonly catalogue: Catalogue;
-	private readonly services: Service[];
-	private readonly composeConfigs: ComposeConfig[];
+	private catalogue: Catalogue;
+	private services: Service[];
+	private composeConfigs: ComposeConfig[];
+	private readonly deleting = new Set<string>();
+	private readonly root: string;
 	readonly processes: Processes;
 	private readonly runtime: Required<HubRuntime>;
 	private readonly starting = new Map<string, Promise<void>>();
 	private readonly cancelledStarts = new Set<string>();
 	private readonly composing = new Map<string, Promise<void>>();
+	private readonly composeOperations = new Map<string, Promise<void>>();
 	private readonly operations = new Map<string, Promise<void>>();
 	private launching: Promise<void> = Promise.resolve();
 	private view: HubView;
@@ -291,6 +326,7 @@ export class Hub {
 	private wantFull = false;
 
 	constructor(catalogue: Catalogue, root: string, runtime: HubRuntime = {}) {
+		this.root = root;
 		this.catalogue = catalogue;
 		this.services = servicesOf(catalogue);
 		this.composeConfigs = catalogue.projects.flatMap((project) => {
@@ -365,6 +401,56 @@ export class Hub {
 
 	get current(): HubView {
 		return this.view;
+	}
+
+	get configuration(): Catalogue {
+		return this.catalogue;
+	}
+
+	/** Update catalogue without disturbing the other projects' detached process owners. */
+	async replaceCatalogue(catalogue: Catalogue): Promise<void> {
+		this.catalogue = catalogue;
+		this.services = servicesOf(catalogue);
+		this.composeConfigs = catalogue.projects.flatMap((project) =>
+			project.compose
+				? [
+						{
+							file: resolve(project.path, project.compose.file),
+							name: project.compose.project,
+							overrides: project.compose.overrides.map((file) =>
+								resolve(project.path, file)
+							),
+							project: project.id,
+							wanted: project.compose.services,
+						},
+					]
+				: []
+		);
+		await this.refresh(true);
+	}
+
+	/** Block new launches before awaiting in-flight starts and stopping managed owners. */
+	async quiesceProject(id: string): Promise<() => void> {
+		if (this.deleting.has(id)) {
+			throw new Error(`проект ${id} уже удаляется`);
+		}
+		this.deleting.add(id);
+		try {
+			const name = this.catalogue.projects.find((project) => project.id === id)
+				?.compose?.project;
+			if (name) {
+				await this.composeOperations.get(name)?.catch(() => undefined);
+			}
+			await Promise.all(
+				this.services
+					.filter((service) => service.project.id === id)
+					.map((service) => this.stopService(service.key))
+			);
+		} catch (error) {
+			this.deleting.delete(id);
+			throw error;
+		}
+		return () => this.deleting.delete(id);
 	}
 
 	/** Tells a page every change; the first page after a quiet spell gets a full reading straight away. */
@@ -740,7 +826,15 @@ export class Hub {
 				(service) => service.project.id === project.id
 			);
 			return {
+				...stageInfo(services[0]?.project.path ?? project.path),
+				deletable: !isInsideProject(project.path, this.root),
 				description: project.description ?? null,
+				devServices: (
+					project.launch.dev ??
+					services
+						.filter((service) => service.command)
+						.map((service) => service.id)
+				).map((key) => (key.includes("/") ? key : `${project.id}/${key}`)),
 				docker: project.compose
 					? (this.compose(project.compose.project) ?? null)
 					: null,
@@ -834,6 +928,11 @@ export class Hub {
 		if (!service) {
 			return Promise.reject(new Error(`нет сервиса ${key}`));
 		}
+		if (this.deleting.has(service.project.id)) {
+			return Promise.reject(
+				new Error(`проект ${service.project.id} удаляется`)
+			);
+		}
 		if (chain.includes(key)) {
 			return Promise.reject(
 				new Error(
@@ -918,6 +1017,9 @@ export class Hub {
 	}
 
 	private assertStartWanted(key: string): void {
+		if (this.deleting.has(this.service(key)?.project.id ?? "")) {
+			throw new Error(`${key}: проект удаляется`);
+		}
 		if (this.cancelledStarts.has(key)) {
 			throw new Error(`${key}: запуск отменён запросом на остановку`);
 		}
@@ -1048,7 +1150,45 @@ export class Hub {
 	}
 
 	/** Brings a Docker project up or stops it; when a port it needs is taken, says who holds it. */
-	async composeAction(name: string, action: "up" | "stop"): Promise<void> {
+	composeAction(name: string, action: "up" | "stop"): Promise<void> {
+		if (
+			action === "up" &&
+			this.catalogue.projects.some(
+				(configured) =>
+					configured.compose?.project === name &&
+					this.deleting.has(configured.id)
+			)
+		) {
+			return Promise.reject(new Error(`Docker ${name}: проект удаляется`));
+		}
+		const operation = this.serialize(`docker:${name}`, () =>
+			this.composeReadyAction(name, action)
+		);
+		this.composeOperations.set(name, operation);
+		operation
+			.finally(() => {
+				if (this.composeOperations.get(name) === operation) {
+					this.composeOperations.delete(name);
+				}
+			})
+			.catch(() => undefined);
+		return operation;
+	}
+
+	private async composeReadyAction(
+		name: string,
+		action: "up" | "stop"
+	): Promise<void> {
+		if (
+			action === "up" &&
+			this.catalogue.projects.some(
+				(configured) =>
+					configured.compose?.project === name &&
+					this.deleting.has(configured.id)
+			)
+		) {
+			throw new Error(`Docker ${name}: проект удаляется`);
+		}
 		if (!this.docker.available) {
 			// It may have come up since the last look.
 			await this.readDocker();

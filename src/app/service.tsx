@@ -11,6 +11,7 @@ import type { ServiceView } from "../hub";
 import type { Framing } from "../probes";
 import { act, checkFrame, useLog } from "./api";
 import { useConfirm } from "./confirm";
+import { projectRoute } from "./project-ui";
 import { cx, isUp, STATUS_WORDS, since } from "./words";
 
 /**
@@ -229,7 +230,21 @@ function Notes({ service }: { service: ServiceView }) {
 	);
 }
 
-export function ServicePage({ service }: { service: ServiceView }) {
+function ProjectLink({ id, name }: { id: string; name?: string }) {
+	return (
+		<a className="service__project muted small" href={`#/${projectRoute(id)}`}>
+			← {name ?? id}
+		</a>
+	);
+}
+
+export function ServicePage({
+	projectName,
+	service,
+}: {
+	projectName?: string;
+	service: ServiceView;
+}) {
 	const tabs: Tab[] = [
 		...service.ui.map((entry, position) => ({
 			kind: "ui" as const,
@@ -288,6 +303,7 @@ export function ServicePage({ service }: { service: ServiceView }) {
 		<section aria-label={service.name} className="service">
 			<header className="service__head">
 				<div className="service__title">
+					<ProjectLink id={service.project} name={projectName} />
 					<span className={cx("dot", "dot--big", `dot--${service.status}`)} />
 					<h1>{service.name}</h1>
 					<span className="muted">{statusLine(service)}</span>
