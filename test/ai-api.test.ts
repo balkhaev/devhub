@@ -232,7 +232,7 @@ test("native model and inference APIs enforce machine authentication as well as 
 			)
 		);
 		expect(malformed.every((response) => response.status === 400)).toBe(true);
-		expect(hub.calls).toEqual([]);
+		expect(hub.calls).toHaveLength(1);
 	} finally {
 		await hub.stop();
 	}
@@ -397,7 +397,13 @@ async function createProxyKey(
 }
 
 test("SDK proxy keys authorize Bearer and x-api-key while preserving administrative and origin isolation", async () => {
-	const hub = await fixture(async () => proxyReply());
+	const hub = await fixture(async (_url, init) =>
+		init?.method === "GET"
+			? Response.json({
+					models: [{ display_name: "Fixture", slug: "gpt-fixture" }],
+				})
+			: proxyReply()
+	);
 	try {
 		const created = await createProxyKey(hub);
 		for (const headers of [
@@ -564,7 +570,13 @@ test("pool never retries unknown transport, server failure or a provider failure
 });
 
 test("key scopes, aliases and rate limits are enforced at the proxy boundary", async () => {
-	const hub = await fixture(async () => proxyReply());
+	const hub = await fixture(async (_url, init) =>
+		init?.method === "GET"
+			? Response.json({
+					models: [{ display_name: "Fixture", slug: "gpt-fixture" }],
+				})
+			: proxyReply()
+	);
 	try {
 		const config = await hub.request("/api/ai/proxy/config", {
 			body: JSON.stringify({
@@ -594,7 +606,7 @@ test("key scopes, aliases and rate limits are enforced at the proxy boundary", a
 			method: "POST",
 		});
 		expect(denied.status).toBe(403);
-		expect(hub.calls).toHaveLength(0);
+		expect(hub.calls).toHaveLength(1);
 		const accepted = await hub.request("/v1/responses", {
 			body: JSON.stringify({ input: "hello", model: "coding", stream: false }),
 			headers,
@@ -649,6 +661,97 @@ test("nonstream SIWC usage-unavailable terminal applies cooldown without replay"
 		});
 		expect(cooled.status).toBe(429);
 		expect(calls).toBe(1);
+	} finally {
+		await hub.stop();
+	}
+});
+
+test("central model discovery and inference share account entitlements and SDK scopes", async () => {
+	const hub = await fixture((_url, init) => {
+		if (init?.method === "GET") {
+			const token = new Headers(init.headers).get("authorization");
+			return Response.json({
+				models: [
+					{
+						slug:
+							token === `Bearer ${PRIVATE_ACCESS}` ? "gpt-first" : "gpt-second",
+					},
+				],
+			});
+		}
+		return proxyReply();
+	});
+	try {
+		const second = `${CREDENTIAL.id}-b`;
+		await hub.ai.store.put({
+			...CREDENTIAL,
+			accessToken: "fake-second-token",
+			id: second,
+			label: "Second",
+		});
+		await hub.ai.store.configureAccount(CREDENTIAL.id, { priority: 10 });
+		const denied = await hub.request("/api/ai/models");
+		expect(denied.status).toBe(403);
+		expect(hub.calls).toEqual([]);
+		const models = await hub.request("/api/ai/models", {
+			headers: hub.machine,
+		});
+		const inventory = await models.json();
+		expect(inventory.models.map((model: { id: string }) => model.id)).toContain(
+			"codex/gpt-second"
+		);
+		expect(containsCredentials(JSON.stringify(inventory))).toBe(false);
+		expect(hub.calls).toHaveLength(2);
+		const request = await hub.request("/v1/responses", {
+			body: JSON.stringify({
+				input: "hello",
+				model: "codex/gpt-second",
+				stream: false,
+			}),
+			headers: hub.machine,
+			method: "POST",
+		});
+		expect(request.status).toBe(200);
+		expect(request.headers.get("x-devhub-account")).toBe(second);
+		await request.text();
+		const created = await createProxyKey(hub, {
+			allowedAccounts: [second],
+			allowedModels: ["codex/gpt-second"],
+			allowedProviders: ["codex"],
+		});
+		const sdk = await hub.request("/v1/models", {
+			headers: { authorization: `Bearer ${created.key}` },
+		});
+		const listed = await sdk.json();
+		expect(listed.object).toBe("list");
+		expect(listed.source).toBe("discovery");
+		expect(listed.data.map((model: { id: string }) => model.id)).toEqual([
+			"codex/gpt-second",
+			`${second}/gpt-second`,
+		]);
+		expect(
+			listed.data.every(
+				(model: { account_ids: string[] }) =>
+					model.account_ids.join() === second
+			)
+		).toBe(true);
+		expect(hub.calls).toHaveLength(3);
+		const invalid = await hub.request("/api/ai/models?refresh=bad", {
+			headers: hub.machine,
+		});
+		expect(invalid.status).toBe(400);
+		expect(hub.calls).toHaveLength(3);
+		const unavailable = await hub.request("/v1/responses", {
+			body: JSON.stringify({
+				input: "hello",
+				model: `${CREDENTIAL.id}/gpt-second`,
+				stream: false,
+			}),
+			headers: hub.machine,
+			method: "POST",
+		});
+		expect(unavailable.status).toBe(404);
+		expect(hub.calls).toHaveLength(3);
 	} finally {
 		await hub.stop();
 	}

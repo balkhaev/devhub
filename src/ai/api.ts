@@ -1,8 +1,14 @@
 import { z } from "zod";
 
 import type { AiAccounts } from "./accounts";
-import { AI_PROVIDERS, type AiInference, AiUpstreamError } from "./inference";
+import {
+	AI_PROVIDERS,
+	type AiInference,
+	type AiLifecycleEvent,
+	AiUpstreamError,
+} from "./inference";
 import { AiProxyKeys, createKeySchema } from "./keys";
+import { AiModels } from "./models";
 import { type AiLease, AiPool, AiPoolError, type AiRoute } from "./pool";
 import { accountConfigSchema, proxyConfigSchema } from "./store";
 import {
@@ -148,11 +154,15 @@ export class AiApi {
 	private readonly inference: AiInference;
 	private readonly keys: AiProxyKeys;
 	private readonly pool: AiPool;
+	private readonly models: AiModels;
 	constructor(accounts: AiAccounts, inference: AiInference) {
 		this.accounts = accounts;
 		this.inference = inference;
 		this.keys = new AiProxyKeys(accounts.store);
-		this.pool = new AiPool(accounts.store);
+		this.models = new AiModels(accounts.store, inference);
+		this.pool = new AiPool(accounts.store, Date.now, (account, model) =>
+			this.models.supports(account, model)
+		);
 	}
 
 	async handle(
@@ -227,73 +237,34 @@ export class AiApi {
 				)
 			);
 		}
-		if (path === "/v1/models") {
-			// A static catalogue is deliberate: listing the gateway does not spend account quota or refresh a session.
-			const accounts = (await this.accounts.list()).filter(
-				(account) =>
-					account.enabled &&
-					account.status === "connected" &&
-					(!key?.allowedAccounts || key.allowedAccounts.includes(account.id)) &&
-					(!key?.allowedProviders ||
-						key.allowedProviders.includes(account.provider))
+		if (path === "/api/ai/models" || path === "/v1/models") {
+			const refresh = new URL(request.url).searchParams.get("refresh");
+			if (refresh !== null && refresh !== "0" && refresh !== "1") {
+				throw new AiError("refresh должен быть 0 или 1.", 400);
+			}
+			const inventory = await this.models.inventory(
+				key,
+				refresh === "1",
+				request.signal
 			);
-			const providers = new Set(accounts.map((account) => account.provider));
-			const { aliases } = await this.accounts.store.proxyConfig();
+			if (path === "/api/ai/models") {
+				return json(inventory);
+			}
 			return json({
-				data: [
-					...AI_PROVIDERS.filter((provider) =>
-						providers.has(provider.id)
-					).flatMap((provider) =>
-						provider.models.map((model) => ({
-							created: 0,
-							id: `${provider.id}/${model.id}`,
-							name: model.name,
-							object: "model",
-							owned_by: provider.id,
-						}))
-					),
-					...accounts.flatMap((account) =>
-						(
-							AI_PROVIDERS.find((provider) => provider.id === account.provider)
-								?.models ?? []
-						).map((model) => ({
-							account_id: account.id,
-							created: 0,
-							id: `${account.id}/${model.id}`,
-							name: model.name,
-							object: "model",
-							owned_by: account.provider,
-						}))
-					),
-					...aliases
-						.filter(
-							(alias) =>
-								providers.has(alias.provider) &&
-								(!alias.accountId ||
-									accounts.some((account) => account.id === alias.accountId))
-						)
-						.map((alias) => ({
-							created: 0,
-							id: alias.id,
-							name: alias.id,
-							object: "model",
-							owned_by: alias.provider,
-						})),
-				].filter(
-					(model) =>
-						!key?.allowedModels ||
-						key.allowedModels.includes(model.id) ||
-						key.allowedModels.includes(
-							`${model.owned_by}/${model.id.split("/").at(-1)}`
-						) ||
-						aliases.some(
-							(alias) =>
-								alias.id === model.id &&
-								key.allowedModels?.includes(`${alias.provider}/${alias.model}`)
-						)
-				),
+				data: inventory.models
+					.filter((model) => model.available)
+					.map((model) => ({
+						account_ids: model.accountIds,
+						created: 0,
+						id: model.id,
+						name: model.name,
+						object: "model",
+						owned_by: model.provider,
+						source: model.source,
+					})),
 				object: "list",
-				source: "catalog",
+				source: "discovery",
+				updated_at: inventory.updatedAt,
 			});
 		}
 		return json({ error: "AI endpoint не найден." }, 404);
@@ -443,14 +414,14 @@ export class AiApi {
 							AiInference["chat"]
 						>[0],
 						request.signal,
-						lease.finish
+						(event) => this.finish(lease, event)
 					)
 				: await this.inference.gateway(
 						path as "/v1/chat/completions" | "/v1/responses" | "/v1/messages",
 						input,
 						lease.accountId,
 						request.signal,
-						lease.finish
+						(event) => this.finish(lease, event)
 					);
 		response.headers.set("x-devhub-account", lease.accountId);
 		response.headers.set("x-devhub-provider", route.provider);
@@ -458,6 +429,13 @@ export class AiApi {
 		return path === "/api/ai/chat"
 			? routeResponse(response, lease.accountId, route)
 			: response;
+	}
+
+	private finish(lease: AiLease, event: AiLifecycleEvent): void {
+		lease.finish(event);
+		if (event.status === 401 || event.status === 403) {
+			this.models.invalidate(lease.accountId, event.credentialFingerprint);
+		}
 	}
 
 	private async dispatch(
@@ -487,7 +465,7 @@ export class AiApi {
 				return await this.infer(request, data, path, route, lease);
 			} catch (error) {
 				const upstream = error instanceof AiUpstreamError ? error : undefined;
-				lease.finish({
+				this.finish(lease, {
 					code: upstream?.code,
 					credentialFingerprint: upstream?.credentialFingerprint,
 					kind: request.signal.aborted ? "cancel" : "error",

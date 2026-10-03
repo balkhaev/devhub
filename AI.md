@@ -39,23 +39,43 @@ OAuth использует одноразовый state, PKCE и срок 10 м�
 
 Сервер слушает loopback. Проверки Host и Origin действуют и для ключей прокси. Ключи сохраняются между перезапусками; счётчики RPM, статистика, cooldown и привязки сессий относятся к текущему процессу и сбрасываются при перезапуске.
 
+## Доступные модели
+
+DevHub получает каталоги подключённых аккаунтов и собирает их в общий список. Приложение получает модели и отправляет inference через один адрес DevHub; токены подписок остаются на сервере. Для официального Sign in with ChatGPT список запрашивается с токеном выбранного аккаунта через `https://api.openai.com/v1/models`, как описано в [Models and inference](https://developers.openai.com/siwc/token-sharing-open-source/models-and-inference). Импорт Codex CLI использует каталог своего legacy transport; Claude — `https://api.anthropic.com/v1/models` с полной пагинацией. Публичный справочник моделей не подставляется вместо успешного ответа аккаунта.
+
+`GET /api/ai/models` возвращает `{ models, accounts, updatedAt }`. У каждой модели есть маршрут `id`, название `name`, исходный идентификатор `model`, `provider`, `accountIds`, `kind`, `source` и `available`. `kind` различает пул (`pool`), закреплённый аккаунт (`account`) и псевдоним (`alias`). В `accounts` перечислены `accountId`, `provider`, `source`, `modelCount`, время проверки `checkedAt` и безопасная ошибка `error`, если проверка не удалась. Поле `updatedAt` относится к сборке ответа, а `checkedAt` — к проверке отдельного подключения.
+
+| Source | Значение |
+| --- | --- |
+| `remote` | Каталог получен у провайдера при этом обновлении |
+| `cache` | Используется ещё свежий результат предыдущей проверки |
+| `stale` | Показаны устаревшие сведения; модели имеют `available: false` |
+| `unavailable` | Нет пригодного каталога аккаунта; этот статус бывает только в `accounts` |
+
+Свежий кэш действует пять минут. Устаревшие сведения показываются только до пятнадцати минут с последнего успешного `checkedAt`; после ошибки повторная автоматическая попытка откладывается на тридцать секунд. `GET /api/ai/models?refresh=1` запрашивает обновление; параллельные проверки одного подключения объединяются, одновременно выполняются не более четырёх проверок. Сбой отдельного провайдера сохраняет результаты остальных аккаунтов. Незавершённая пагинация или повреждённый ответ не заменяют успешный каталог. После смены авторизации старый каталог не подтверждает доступ нового аккаунта. Ответ inference 401/403 отзывает каталог использованного токена; запоздавшая ошибка прежнего входа не затрагивает новый. Кэш находится в памяти процесса и сбрасывается при перезапуске DevHub.
+
+`GET /v1/models` использует тот же сборщик и возвращает OpenAI-совместимый `{ object: "list", data }` с маршрутами пулов, аккаунтов и aliases. Устаревшие модели не выдаются SDK. Ограничения ключа по провайдерам, аккаунтам и моделям проверяются до запросов к провайдерам и перед выдачей результата; разрешённый alias не открывает остальные модели пула.
+
+При маршрутизации свежий каталог исключает аккаунты, которые не объявили запрошенную модель. Без свежего подтверждения DevHub не объявляет модель доступной в каталоге; явно переданный неизвестный идентификатор может быть проверен провайдером при inference. Сам inference не запускает скрытое обновление списка. `available` означает актуальность сведений каталога, а не гарантию квоты, свободной concurrency, поддерживаемых параметров или стоимости. [Claude Models API](https://platform.claude.com/docs/en/api/models) отдельно описывает capabilities и лимиты; наличие модели не означает поддержку каждого инструмента или формата выбранным транспортом.
+
 ## API и SDK
 
 | Endpoint | Назначение |
 | --- | --- |
-| `GET /v1/models` | Модели пулов и aliases, разрешённые ключом; каталог без inference |
+| `GET /v1/models` | Актуальные модели пулов, аккаунтов и aliases, разрешённые ключом |
 | `POST /v1/chat/completions` | Единый Chat Completions формат для обоих провайдеров; JSON или SSE |
 | `POST /v1/responses` | Native OpenAI input, tools и reasoning; пул Codex |
 | `POST /v1/messages` | Native Anthropic content blocks, tools и thinking; пул Claude |
 | `GET /api/ai/state` | Подключения, настройки прокси, публичные ключи и статистика |
-| `GET /api/ai/accounts/:id/models` | Каталог аккаунта; fallback помечен `source: catalog` |
+| `GET /api/ai/models` | Общий каталог и результаты проверки каждого аккаунта; `?refresh=1` обновляет сведения |
+| `GET /api/ai/accounts/:id/models` | Диагностика каталога подключения; `source: catalog` означает справочный fallback |
 | `POST /api/ai/chat` | UI-чат; NDJSON `route` / `text` / `done` / `error` |
 | `POST /api/ai/accounts/:id/config` | enabled, название, priority, weight, maxConcurrency |
 | `POST /api/ai/proxy/config` | Стратегия и массив aliases |
 | `POST /api/ai/proxy/keys` | Создание ключа; ответ `{ key, record }` |
 | `POST /api/ai/proxy/keys/:id/revoke` | Отзыв ключа |
 
-Management endpoints требуют административной авторизации. OAuth endpoints перечислены в `src/ai/api.ts`. Статический каталог не подтверждает entitlement конкретной подписки; доступность проверяет провайдер при запросе.
+Management endpoints требуют административной авторизации. OAuth endpoints перечислены в `src/ai/api.ts`. У отдельного диагностического метода `source: catalog` не подтверждает доступ подписки; такие справочные модели не попадают в общий каталог или SDK как доступные. Доступ при inference окончательно проверяет провайдер.
 
 Пример OpenAI SDK из Bun/Node проекта; выберите modelId из каталога DevHub:
 
@@ -67,6 +87,10 @@ const client = new OpenAI({
   baseURL: "http://127.0.0.1:4700/v1",
   maxRetries: 0,
 });
+
+// Один API DevHub для каталога и inference; здесь также будут account routes и aliases.
+const catalog = await client.models.list();
+console.table(catalog.data.map(({ id, owned_by }) => ({ id, provider: owned_by })));
 
 const stream = await client.chat.completions.create({
   model: "codex/<modelId>", // либо claude/<modelId> или ваш alias
@@ -121,6 +145,7 @@ Chat Completions поддерживает system/developer/user/assistant/tool, 
 | Sticky и leases | `src/sse/services/sessionAffinityPin.ts`, `src/lib/db/sessionAccountAffinity.ts`, `open-sse/services/combo/nativeCodexTurnPin.ts` | Мягкая привязка сессии и явный account pin; durable exclusive leases не перенесены |
 | Failover и circuit breakers | `open-sse/services/accountFallback`, `src/sse/services/sameAccountTransportRetry.ts`, `src/shared/utils/circuitBreaker.ts` | Ограниченный failover до принятия inference; без hedging и replay частичного ответа |
 | Форматы и SSE | `open-sse/translator`, `open-sse/utils/stream.ts`, `open-sse/utils/sseOutputSignal.ts` | Chat Completions плюс native Responses/Messages; tools/usage/terminal events отдельно от текста |
+| Каталоги моделей | `src/app/api/v1/models/catalog.ts`, `catalogCache.ts`, `src/app/api/providers/[id]/models/discovery`, `src/lib/db/models/activeSyncedCatalog.ts` | Каталог каждого аккаунта, ограниченный кэш, общий список и SDK `/v1/models`; статический справочник не подтверждает доступ |
 | Модели, combos, auto-routing | `open-sse/services/model.ts`, `open-sse/services/combo`, `open-sse/services/autoCombo` | Provider/account prefixes и простые aliases; nested combos, fusion/pipeline и scoring не перенесены |
 | Ключи и ограничения | `src/lib/db/apiKeys.ts`, `src/lib/usage/apiKeyUsageLimits.ts`, `src/lib/apiKeyExposure.ts` | Hashed-only ключи, provider/account/model scopes, expiry/revoke/RPM; без USD budgets/IP schedules |
 | Квоты и аналитика | `src/domain/quotaCache.ts`, `open-sse/services/usage`, `src/lib/db/usageAnalytics.ts` | Metadata-only метрики и реактивный cooldown; без остатка квоты и расчёта billing |

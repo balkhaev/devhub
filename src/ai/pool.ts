@@ -103,7 +103,7 @@ function parseRoute(
 	return { accountId: pinnedAccount ?? accountId, model: raw, provider };
 }
 
-function inferProvider(model: string): AiProvider | undefined {
+export function inferProvider(model: string): AiProvider | undefined {
 	if (model.startsWith("claude-")) {
 		return "claude";
 	}
@@ -206,6 +206,10 @@ function quotaFailure(event: AiLifecycleEvent): boolean {
 export class AiPool {
 	private readonly store: AiStore;
 	private readonly now: () => number;
+	private readonly modelSupport?: (
+		account: AiCredential,
+		model: string
+	) => boolean | undefined;
 	private readonly accounts = new Map<string, RuntimeAccount>();
 	private readonly weights = new Map<string, Map<string, number>>();
 	private readonly sessions = new Map<
@@ -215,9 +219,14 @@ export class AiPool {
 	private readonly totals = emptyUsage();
 	private active = 0;
 
-	constructor(store: AiStore, now = Date.now) {
+	constructor(
+		store: AiStore,
+		now = Date.now,
+		modelSupport?: (account: AiCredential, model: string) => boolean | undefined
+	) {
 		this.store = store;
 		this.now = now;
+		this.modelSupport = modelSupport;
 	}
 
 	stats(): AiUsageStats {
@@ -378,10 +387,19 @@ export class AiPool {
 			);
 		}
 		const now = this.now();
-		const candidates = scope.filter((account) =>
+		const supported = scope.filter(
+			(account) => this.modelSupport?.(account, route.model) !== false
+		);
+		if (!supported.length) {
+			throw new AiError(
+				"Модель отсутствует в доступных моделях выбранных подписок.",
+				404
+			);
+		}
+		const candidates = supported.filter((account) =>
 			this.eligible(account, route.model, excluded, now)
 		);
-		this.checkCapacity(candidates, scope, route.model, now);
+		this.checkCapacity(candidates, supported, route.model, now);
 		const tier = highestPriority(candidates);
 		const sessionId = this.sessionId(route, session, key);
 		const selected = this.select(tier, strategy, route, sessionId, now);
