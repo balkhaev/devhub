@@ -3,6 +3,9 @@ import { dirname, join, resolve } from "node:path";
 
 import { serve } from "bun";
 
+import { AiAccounts } from "./ai/accounts";
+import { AiApi, oauthCallback } from "./ai/api";
+import { AiInference } from "./ai/inference";
 import page from "./app/index.html";
 import { primaryCheckout, sameSourcePath } from "./checkouts";
 import { authenticatedClient, clientToken } from "./client";
@@ -102,6 +105,8 @@ function sse(
 
 export async function startHub(
 	options: {
+		ai?: AiAccounts;
+		aiInference?: AiInference;
 		catalogue?: Catalogue;
 		dev?: boolean;
 		port?: number;
@@ -115,6 +120,11 @@ export async function startHub(
 	const token = await clientToken(root);
 	const hub = new Hub(catalogue, root, options.runtime);
 	const projects = new Projects(hub, root);
+	const ai = options.ai ?? new AiAccounts(root);
+	const aiInference =
+		options.aiInference ??
+		new AiInference({ credential: (id, force) => ai.credential(id, force) });
+	const aiApi = new AiApi(ai, aiInference);
 	const changeProjectMode = async (request: Request, id: string) => {
 		const body: unknown = await request.json();
 		if (
@@ -156,8 +166,20 @@ export async function startHub(
 		if (authenticatedClient(request, token)) {
 			return true;
 		}
-		const from = request.headers.get("origin");
-		const fromHost = from === origin || from === `http://localhost:${port}`;
+		let from = request.headers.get("origin");
+		if (
+			!from &&
+			request.method === "GET" &&
+			request.headers.get("sec-fetch-site") === "same-origin"
+		) {
+			try {
+				from = new URL(request.headers.get("referer") ?? "").origin;
+			} catch {
+				return false;
+			}
+		}
+		const fromHost =
+			from === origin || from === `http://localhost:${new URL(origin).port}`;
 		return (
 			local(request) && fromHost && request.headers.get("x-devhub") === "1"
 		);
@@ -201,6 +223,10 @@ export async function startHub(
 		port,
 		routes: {
 			"/": page,
+			"/api/ai/*": (request, bunServer) => {
+				bunServer.timeout(request, 0);
+				return aiApi.handle(request, allowed(request), origin, ready);
+			},
 			"/api/docker/:name/:action": {
 				POST: (request) =>
 					act(request, () => {
@@ -338,6 +364,11 @@ export async function startHub(
 			},
 			"/api/state": (request) =>
 				local(request) ? json(hub.current) : refused(),
+			"/auth/callback": (request) => oauthCallback(ai, request, local(request)),
+			"/v1/*": (request, bunServer) => {
+				bunServer.timeout(request, 0);
+				return aiApi.handle(request, allowed(request), origin, ready);
+			},
 		},
 	});
 	// Port zero is useful for isolated endpoint checks; validate the actual bound address.
@@ -357,6 +388,7 @@ export async function startHub(
 	return {
 		hub,
 		stop: () => {
+			ai.stop();
 			hub.stop();
 			server.stop(true);
 		},
