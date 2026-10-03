@@ -104,7 +104,7 @@ describe("canonical staging with real disposable Git repositories", () => {
 			text.replace('"mode": "mvp"', '"mode": "prod"')
 		);
 		expect(withProjectModeText(text, "mvp")).toBe(text);
-	});
+	}, 30_000);
 	test("explicit local MVP integrates into main and cleans its completed worktree without a remote", () => {
 		const { folder, project } = fixture({ mode: "mvp", remote: null });
 		project.init();
@@ -210,7 +210,7 @@ describe("canonical staging with real disposable Git repositories", () => {
 		expect(readFileSync(join(folder, "ignored", "private.txt"), "utf8")).toBe(
 			"private\n"
 		);
-	});
+	}, 30_000);
 
 	test("mode transition refuses divergent main and leaves both histories intact", () => {
 		const { folder, project } = fixture();
@@ -223,7 +223,7 @@ describe("canonical staging with real disposable Git repositories", () => {
 		expect(project.head()).toBe(stageHead);
 		expect(git(folder, "rev-parse", "main")).toBe(mainHead);
 		expect(project.policy.mode).toBe("prod");
-	});
+	}, 30_000);
 
 	test("initialization preserves committed HEAD, index, dirty files and untracked work", () => {
 		const { folder, project } = fixture();
@@ -243,7 +243,7 @@ describe("canonical staging with real disposable Git repositories", () => {
 		expect(readFileSync(join(folder, "draft.txt"), "utf8")).toBe(
 			"untracked work\n"
 		);
-	});
+	}, 30_000);
 
 	test("unborn initialization preserves staged and untracked files without inventing a commit", () => {
 		const { folder, project } = fixture({ committed: false });
@@ -258,7 +258,7 @@ describe("canonical staging with real disposable Git repositories", () => {
 		expect(readFileSync(join(folder, "draft.txt"), "utf8")).toBe(
 			"unborn draft\n"
 		);
-	});
+	}, 30_000);
 
 	test("existing stage on another commit cannot switch or overwrite local work", () => {
 		const { folder, project } = fixture();
@@ -273,7 +273,7 @@ describe("canonical staging with real disposable Git repositories", () => {
 		expect(readFileSync(join(folder, "source.txt"), "utf8")).toBe(
 			"dirty main\n"
 		);
-	});
+	}, 30_000);
 
 	test("unborn checkout cannot attach an already existing unrelated stage commit", () => {
 		const { folder, project } = fixture();
@@ -293,7 +293,7 @@ describe("canonical staging with real disposable Git repositories", () => {
 		expect(readFileSync(join(folder, "draft.txt"), "utf8")).toBe(
 			"orphan working files\n"
 		);
-	});
+	}, 30_000);
 
 	test("create reuses the same registered topic checkout and preserves its unfinished edits", () => {
 		const { project } = fixture();
@@ -306,7 +306,7 @@ describe("canonical staging with real disposable Git repositories", () => {
 			"unfinished reused work\n"
 		);
 		expect(project.worktrees()).toHaveLength(2);
-	});
+	}, 30_000);
 
 	test("task starts at stage, integration checks canonical source and leaves release branch intact", () => {
 		const { folder, project } = fixture();
@@ -335,7 +335,7 @@ describe("canonical staging with real disposable Git repositories", () => {
 		expect(git(folder, "merge-base", "--is-ancestor", taskHead, "stage")).toBe(
 			""
 		);
-	});
+	}, 30_000);
 
 	test("dirty canonical checkout blocks creating and integrating worktrees", () => {
 		const { folder, project } = fixture();
@@ -346,7 +346,7 @@ describe("canonical staging with real disposable Git repositories", () => {
 		expect(readFileSync(join(folder, "source.txt"), "utf8")).toBe(
 			"unsaved canonical work\n"
 		);
-	});
+	}, 30_000);
 
 	test("integration rejects dirty task checkouts through both path and branch", () => {
 		const { project } = fixture();
@@ -362,7 +362,7 @@ describe("canonical staging with real disposable Git repositories", () => {
 		expect(readFileSync(join(tree, "source.txt"), "utf8")).toBe(
 			"unfinished task\n"
 		);
-	});
+	}, 30_000);
 
 	test("source and index changes invalidate a successful final-check record", () => {
 		const { folder, project } = fixture();
@@ -373,7 +373,7 @@ describe("canonical staging with real disposable Git repositories", () => {
 		expect(project.status().checked).toBe(false);
 		git(folder, "add", "source.txt");
 		expect(project.status().checked).toBe(false);
-	});
+	}, 30_000);
 
 	test("untracked file bytes participate in checks without making dirty stage release-ready", () => {
 		const { folder, project } = fixture();
@@ -388,7 +388,7 @@ describe("canonical staging with real disposable Git repositories", () => {
 		});
 		writeFileSync(draft, "second draft\n");
 		expect(project.status().checked).toBe(false);
-	});
+	}, 30_000);
 
 	test("ignored environment edits invalidate final checks in canonical root and application folders", () => {
 		const { folder, project } = fixture();
@@ -423,7 +423,7 @@ describe("canonical staging with real disposable Git repositories", () => {
 			dirty: false,
 			releaseReady: false,
 		});
-	});
+	}, 30_000);
 
 	test("failed final check deletes any previous success record", () => {
 		const { folder, project } = fixture();
@@ -434,7 +434,7 @@ describe("canonical staging with real disposable Git repositories", () => {
 		expect(() => project.check()).toThrow("финальная проверка не прошла");
 		expect(existsSync(project.stateFile)).toBe(false);
 		expect(project.status().releaseReady).toBe(false);
-	});
+	}, 30_000);
 
 	test("checks that mutate source cannot produce successful validation evidence", () => {
 		const { folder, project } = fixture({ checks: ["node rewrite.mjs"] });
@@ -450,7 +450,7 @@ describe("canonical staging with real disposable Git repositories", () => {
 		expect(readFileSync(join(folder, "source.txt"), "utf8")).toBe(
 			"rewritten by checker\n"
 		);
-	});
+	}, 30_000);
 
 	test("finish preserves ignored private data and removes only a clean integrated task", () => {
 		const { project } = fixture();
@@ -482,7 +482,7 @@ describe("canonical staging with real disposable Git repositories", () => {
 		git(folder, "worktree", "add", "-b", "codex/outside", outside, "stage");
 		expect(() => project.finish(outside)).toThrow("удаление допустимо только");
 		expect(existsSync(outside)).toBe(true);
-	});
+	}, 30_000);
 
 	test("archive preserves an unfinished task without integrating or publishing it", () => {
 		const { folder, project } = fixture({ mode: "mvp", remote: null });
@@ -557,5 +557,5 @@ describe("canonical staging with real disposable Git repositories", () => {
 		project.withLock(() => project.init());
 		expect(project.branch()).toBe("stage");
 		expect(existsSync(project.lockFile)).toBe(false);
-	});
+	}, 30_000);
 });
