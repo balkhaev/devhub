@@ -31,6 +31,7 @@ function fixture(
 	options: {
 		committed?: boolean;
 		checks?: string[];
+		deploy?: string;
 		mode?: "mvp" | "prod";
 		remote?: string | null;
 	} = {}
@@ -52,6 +53,7 @@ function fixture(
 		join(folder, ".devhub", "worktree.json"),
 		`${JSON.stringify({
 			checks: options.checks ?? ["node check.mjs"],
+			...(options.deploy ? { deploy: options.deploy } : {}),
 			...(options.mode ? { mode: options.mode } : {}),
 			...(options.remote === undefined ? {} : { remote: options.remote }),
 			releaseBranch: "main",
@@ -139,6 +141,51 @@ describe("canonical staging with real disposable Git repositories", () => {
 			mode: "mvp",
 			releaseReady: true,
 		});
+	}, 30_000);
+
+	test("MVP deploy runs standalone without inherited DevHub ownership", () => {
+		const { base, folder, project } = fixture({
+			deploy: "node deploy.mjs",
+			mode: "mvp",
+		});
+		const markers = [
+			"DEVHUB_ROOT",
+			"DEVHUB_PROJECT",
+			"DEVHUB_SERVICE",
+			"DEVHUB_FRAME_ORIGIN",
+			"DEVHUB_STAGE",
+		];
+		writeFileSync(
+			join(folder, "deploy.mjs"),
+			`import { mkdirSync, writeFileSync } from "node:fs";\nmkdirSync("ignored", { recursive: true });\nwriteFileSync("ignored/deploy-env.json", JSON.stringify({ NODE_ENV: process.env.NODE_ENV, markers: ${JSON.stringify(markers)}.map(key => process.env[key] ?? null) }));\n`
+		);
+		git(folder, "add", "deploy.mjs");
+		git(folder, "commit", "-m", "Fixture standalone deploy");
+		const remote = join(base, "origin.git");
+		mkdirSync(remote);
+		git(remote, "init", "--bare", "--initial-branch=main");
+		git(folder, "remote", "add", "origin", remote);
+		const inherited = [...markers, "NODE_ENV"];
+		const previous = inherited.map((key) => process.env[key]);
+		try {
+			for (const key of inherited) {
+				process.env[key] = "development-owner-fixture";
+			}
+			project.publish();
+		} finally {
+			for (const [index, key] of inherited.entries()) {
+				const value = previous[index];
+				if (value === undefined) {
+					delete process.env[key];
+				} else {
+					process.env[key] = value;
+				}
+			}
+		}
+		expect(git(remote, "rev-parse", "main")).toBe(project.head() ?? "");
+		expect(
+			JSON.parse(readFileSync(join(folder, "ignored/deploy-env.json"), "utf8"))
+		).toEqual({ markers: markers.map(() => null), NODE_ENV: "production" });
 	}, 30_000);
 
 	test("failed MVP checks do not publish a changed main", () => {

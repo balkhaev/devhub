@@ -453,6 +453,7 @@ export class StageProject {
 			};
 			for (const key of [
 				"DEVHUB_ROOT",
+				"DEVHUB_PROJECT",
 				"DEVHUB_SERVICE",
 				"DEVHUB_FRAME_ORIGIN",
 				"DEVHUB_STAGE",
