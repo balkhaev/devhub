@@ -9,46 +9,38 @@ import {
 
 import type {
 	AiAccountView,
-	AiModelAlias,
+	AiAvailableModel,
+	AiModelsInventory,
 	AiProvider,
 	AiProviderView,
 } from "../ai/types";
-import {
-	type AiMessage,
-	type AiModelList,
-	type AiUsage,
-	aiChat,
-	aiRequest,
-} from "./ai-api";
+import { type AiMessage, type AiUsage, aiChat } from "./ai-api";
 
 interface ChatMessage extends AiMessage {
 	id: string;
 }
 
-function requestedModel(
-	model: string,
-	customModel: string,
-	aliases: AiModelAlias[]
-): string {
+function requestedModel(model: string, customModel: string): string {
 	if (model === "custom") {
 		return customModel.trim();
 	}
-	return model.startsWith("alias:")
-		? (aliases.find((alias) => alias.id === model.slice(6))?.id ?? "")
-		: model;
+	return model.startsWith("reference:") ? model.slice(10) : model;
 }
 
-function poolModelAccount(
-	account: AiAccountView | undefined,
-	available: AiAccountView[],
-	provider: AiProvider
-): AiAccountView | undefined {
+export function aiPlaygroundModels(
+	inventory: AiModelsInventory | null | undefined,
+	provider: AiProvider,
+	accountId?: string
+): AiAvailableModel[] {
 	return (
-		account ??
-		available.find(
-			(entry) => entry.provider === provider && entry.pool.status === "ready"
-		) ??
-		available.find((entry) => entry.provider === provider)
+		inventory?.models.filter(
+			(model) =>
+				model.provider === provider &&
+				(accountId
+					? (model.kind === "account" || model.kind === "alias") &&
+						model.accountIds.includes(accountId)
+					: model.kind !== "account")
+		) ?? []
 	);
 }
 
@@ -141,79 +133,174 @@ function AiChatStatus({
 	);
 }
 
-function useModels(
-	account: AiAccountView | undefined,
-	providers: AiProviderView[],
-	providerId: AiProvider
-) {
-	const [models, setModels] = useState<AiModelList | null>(null);
-	const [model, setModel] = useState("");
-	const [loading, setLoading] = useState(false);
-	const [error, setError] = useState<string | null>(null);
-	const [revision, setRevision] = useState(0);
-	const accountId = account?.id;
-	const catalog = JSON.stringify(
-		providers.find((entry) => entry.id === providerId)?.models ?? []
-	);
-	// biome-ignore lint/correctness/useExhaustiveDependencies: revision is the explicit user-requested refresh trigger.
-	useEffect(() => {
-		setModels(null);
-		setModel("");
-		setError(null);
-		const fallback = JSON.parse(catalog) as AiModelList["models"];
-		if (!accountId) {
-			setModels({ models: fallback, source: "catalog" });
-			setModel(fallback[0]?.id ?? "");
-			setLoading(false);
-			return;
-		}
-		const controller = new AbortController();
-		setLoading(true);
-		aiRequest<AiModelList>(
-			`accounts/${encodeURIComponent(accountId)}/models`,
-			undefined,
-			controller.signal
-		)
-			.then((result) => {
-				if (!controller.signal.aborted) {
-					setModels(result);
-					setModel(result.models[0]?.id ?? "");
-					setError(result.error ?? null);
-				}
-			})
-			.catch((failure: Error) => {
-				if (!controller.signal.aborted) {
-					setModels({ models: fallback, source: "catalog" });
-					setModel(fallback.at(0)?.id ?? "");
-					setError(failure.message);
-				}
-			})
-			.finally(() => {
-				if (!controller.signal.aborted) {
-					setLoading(false);
-				}
-			});
-		return () => controller.abort();
-	}, [accountId, catalog, revision]);
-	const refresh = useCallback(() => setRevision((value) => value + 1), []);
-	return { error, loading, model, models, refresh, setModel };
+interface ReferenceModel {
+	id: string;
+	name: string;
 }
 
+function referenceModels(
+	providers: AiProviderView[],
+	provider: AiProvider,
+	models: AiAvailableModel[]
+): ReferenceModel[] {
+	if (models.some((model) => model.available)) {
+		return [];
+	}
+	return (
+		providers
+			.find((entry) => entry.id === provider)
+			?.models.map((model) => ({
+				id: `reference:${provider}/${model.id}`,
+				name: model.name,
+			})) ?? []
+	);
+}
+
+function selectedModel(
+	value: string,
+	models: AiAvailableModel[],
+	reference: ReferenceModel[],
+	loading: boolean
+): string {
+	if (
+		value === "custom" ||
+		models.some((model) => model.available && model.id === value) ||
+		reference.some((model) => model.id === value)
+	) {
+		return value;
+	}
+	const confirmed = models.find((model) => model.available);
+	if (confirmed) {
+		return confirmed.id;
+	}
+	if (loading) {
+		return "";
+	}
+	return reference.at(0)?.id ?? "custom";
+}
+
+function AiModelPicker({
+	models,
+	reference,
+	model,
+	pending,
+	loading,
+	onChange,
+	onRefresh,
+}: {
+	models: AiAvailableModel[];
+	reference: ReferenceModel[];
+	model: string;
+	pending: boolean;
+	loading: boolean;
+	onChange: (event: ChangeEvent<HTMLSelectElement>) => void;
+	onRefresh?: () => Promise<void>;
+}) {
+	return (
+		<>
+			<label className="ai-field">
+				<span>Модель</span>
+				<select disabled={pending || loading} onChange={onChange} value={model}>
+					{loading ? <option value="">Загружаю модели…</option> : null}
+					<optgroup label="Доступные модели подписок">
+						{models
+							.filter((entry) => entry.available)
+							.map((entry) => (
+								<option key={entry.id} value={entry.id}>
+									{entry.name} · {entry.id}
+								</option>
+							))}
+					</optgroup>
+					{models.some((entry) => !entry.available) ? (
+						<optgroup label="Устаревший список — доступность не подтверждена">
+							{models
+								.filter((entry) => !entry.available)
+								.map((entry) => (
+									<option disabled key={entry.id} value={entry.id}>
+										{entry.name} · {entry.id}
+									</option>
+								))}
+						</optgroup>
+					) : null}
+					{reference.length ? (
+						<optgroup label="Справочник — доступность не подтверждена">
+							{reference.map((entry) => (
+								<option key={entry.id} value={entry.id}>
+									{entry.name}
+								</option>
+							))}
+						</optgroup>
+					) : null}
+					<option value="custom">Другой идентификатор…</option>
+				</select>
+			</label>
+			<button
+				className="button"
+				disabled={pending || loading || !onRefresh}
+				onClick={onRefresh}
+				type="button"
+			>
+				Обновить модели
+			</button>
+		</>
+	);
+}
+
+function AiSelectedModelNote({
+	model,
+	models,
+}: {
+	model: string;
+	models: AiAvailableModel[];
+}) {
+	const confirmed = models.find(
+		(entry) => entry.id === model && entry.available
+	);
+	if (confirmed) {
+		return (
+			<p className="muted small">
+				Модель подтверждена подписками: {confirmed.accountIds.length}. Источник:{" "}
+				{confirmed.source === "remote" ? "провайдер" : "свежий кэш"}. Лимиты и
+				загрузка проверяются при запросе.
+			</p>
+		);
+	}
+	return (
+		<p className="muted small">
+			{model.startsWith("reference:")
+				? "Выбрано имя из справочника."
+				: "Указано имя модели вручную."}{" "}
+			Доступность для подписки не подтверждена.
+		</p>
+	);
+}
 export function AiPlayground({
 	accounts,
-	aliases = [],
+	initialSelection,
+	inventory,
+	modelError = null,
+	modelLoading = false,
+	onModelsRefresh,
 	providers,
 }: {
 	accounts: AiAccountView[];
-	aliases?: AiModelAlias[];
+	initialSelection?: AiAvailableModel | null;
+	inventory?: AiModelsInventory | null;
+	modelError?: string | null;
+	modelLoading?: boolean;
+	onModelsRefresh?: () => Promise<void>;
 	providers: AiProviderView[];
 }) {
 	const available = accounts.filter(
 		(entry) => entry.status === "connected" && entry.enabled
 	);
-	const [selected, setSelected] = useState("");
+	const [selected, setSelected] = useState(() =>
+		initialSelection?.kind === "account"
+			? (initialSelection.accountIds[0] ?? "")
+			: ""
+	);
 	const [autoProvider, setAutoProvider] = useState<AiProvider>(
-		() => available[0]?.provider ?? "codex"
+		() => initialSelection?.provider ?? available[0]?.provider ?? "codex"
 	);
 	const account = available.find((entry) => entry.id === selected);
 	const poolProvider = account?.provider ?? autoProvider;
@@ -240,10 +327,14 @@ export function AiPlayground({
 	return (
 		<AiSession
 			account={account}
-			aliases={aliases}
 			available={available}
+			initialModel={initialSelection?.id}
+			inventory={inventory}
 			key={account?.id ?? `auto-${poolProvider}`}
+			modelError={modelError}
+			modelLoading={modelLoading}
 			onAccountChange={selectAccount}
+			onModelsRefresh={onModelsRefresh}
 			onProviderChange={selectProvider}
 			poolProvider={poolProvider}
 			providers={providers}
@@ -253,32 +344,35 @@ export function AiPlayground({
 
 function AiSession({
 	account,
-	aliases,
 	available,
+	initialModel,
+	inventory,
+	modelError,
+	modelLoading,
 	onAccountChange,
+	onModelsRefresh,
 	onProviderChange,
 	poolProvider,
 	providers,
 }: {
 	account: AiAccountView | undefined;
-	aliases: AiModelAlias[];
 	available: AiAccountView[];
+	initialModel?: string;
+	inventory?: AiModelsInventory | null;
+	modelError: string | null;
+	modelLoading: boolean;
 	onAccountChange: (event: ChangeEvent<HTMLSelectElement>) => void;
+	onModelsRefresh?: () => Promise<void>;
 	onProviderChange: (event: ChangeEvent<HTMLSelectElement>) => void;
 	poolProvider: AiProvider;
 	providers: AiProviderView[];
 }) {
 	const accountId = account?.id;
 	const supportsTokenLimit = poolProvider === "claude";
-	const modelAccount = poolModelAccount(account, available, poolProvider);
-	const {
-		error: modelError,
-		loading,
-		model,
-		models,
-		refresh,
-		setModel,
-	} = useModels(modelAccount, providers, poolProvider);
+	const models = aiPlaygroundModels(inventory, poolProvider, accountId);
+	const reference = referenceModels(providers, poolProvider, models);
+	const [selection, setModel] = useState(initialModel ?? "");
+	const model = selectedModel(selection, models, reference, modelLoading);
 	const [customModel, setCustomModel] = useState("");
 	const [messages, setMessages] = useState<ChatMessage[]>([]);
 	const [prompt, setPrompt] = useState("");
@@ -303,7 +397,7 @@ function AiSession({
 		async (event: FormEvent<HTMLFormElement>) => {
 			event.preventDefault();
 			const content = prompt.trim();
-			const modelId = requestedModel(model, customModel, aliases);
+			const modelId = requestedModel(model, customModel);
 			if (!(modelId && content) || pending) {
 				return;
 			}
@@ -376,7 +470,6 @@ function AiSession({
 		},
 		[
 			accountId,
-			aliases,
 			available,
 			customModel,
 			requestedTokenLimit,
@@ -392,7 +485,7 @@ function AiSession({
 	const editModel = useCallback(
 		(event: ChangeEvent<HTMLSelectElement>) =>
 			setModel(event.currentTarget.value),
-		[setModel]
+		[]
 	);
 	const editCustomModel = useCallback(
 		(event: ChangeEvent<HTMLInputElement>) =>
@@ -414,7 +507,7 @@ function AiSession({
 			setPrompt(event.currentTarget.value),
 		[]
 	);
-	const effectiveModel = requestedModel(model, customModel, aliases);
+	const effectiveModel = requestedModel(model, customModel);
 	const statusText = pending ? "Получаю ответ…" : notice;
 	return (
 		<section aria-label="Запрос к модели" className="ai-playground">
@@ -465,42 +558,15 @@ function AiSession({
 						</select>
 					</label>
 				)}
-				<label className="ai-field">
-					<span>Модель</span>
-					<select
-						disabled={pending || loading}
-						onChange={editModel}
-						value={model}
-					>
-						{loading ? <option value="">Загружаю модели…</option> : null}
-						{models?.models.map((entry) => (
-							<option key={entry.id} value={entry.id}>
-								{entry.name}
-							</option>
-						))}
-						{accountId
-							? null
-							: aliases
-									.filter((alias) => alias.provider === poolProvider)
-									.map((alias) => (
-										<option
-											key={`alias:${alias.id}`}
-											value={`alias:${alias.id}`}
-										>
-											{alias.id} · {alias.model}
-										</option>
-									))}
-						<option value="custom">Другой идентификатор…</option>
-					</select>
-				</label>
-				<button
-					className="button"
-					disabled={pending || loading}
-					onClick={refresh}
-					type="button"
-				>
-					Обновить модели
-				</button>
+				<AiModelPicker
+					loading={modelLoading}
+					model={model}
+					models={models}
+					onChange={editModel}
+					onRefresh={onModelsRefresh}
+					pending={pending}
+					reference={reference}
+				/>
 			</div>
 			{model === "custom" ? (
 				<label className="ai-field ai-custom-model">
@@ -513,13 +579,7 @@ function AiSession({
 					/>
 				</label>
 			) : null}
-			{models ? (
-				<p className="muted small">
-					{models.source === "remote"
-						? "Модели получены из подключённой подписки."
-						: "Показан встроенный каталог; доступность зависит от подписки."}
-				</p>
-			) : null}
+			<AiSelectedModelNote model={model} models={models} />
 			{modelError ? (
 				<p className="ai-error" role="alert">
 					{modelError}
@@ -570,7 +630,7 @@ function AiSession({
 						className="button button--primary"
 						disabled={
 							pending ||
-							loading ||
+							modelLoading ||
 							!effectiveModel ||
 							!prompt.trim() ||
 							(supportsTokenLimit && (maxTokens < 1 || maxTokens > 32_768))

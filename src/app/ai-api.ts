@@ -1,4 +1,4 @@
-import type { AiProvider } from "../ai/types";
+import type { AiModelsInventory, AiProvider } from "../ai/types";
 
 export type { AiState } from "../ai/types";
 
@@ -74,6 +74,17 @@ export async function aiRequest<T>(
 		})
 	);
 	return response.json() as Promise<T>;
+}
+
+export function aiModels(
+	refresh = false,
+	signal?: AbortSignal
+): Promise<AiModelsInventory> {
+	return aiRequest<AiModelsInventory>(
+		refresh ? "models?refresh=1" : "models",
+		undefined,
+		signal
+	);
 }
 
 function streamEvent(line: string): AiStreamEvent {

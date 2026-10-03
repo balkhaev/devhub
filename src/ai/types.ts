@@ -5,6 +5,39 @@ export interface AiModel {
 	name: string;
 }
 
+export interface AiAccountModels {
+	error?: string;
+	models: AiModel[];
+	source: "remote" | "catalog";
+	status?: number;
+}
+
+export type AiModelSource = "remote" | "cache" | "stale" | "unavailable";
+
+export interface AiAvailableModel extends AiModel {
+	accountIds: string[];
+	available: boolean;
+	kind: "pool" | "account" | "alias";
+	model: string;
+	provider: AiProvider;
+	source: Exclude<AiModelSource, "unavailable">;
+}
+
+export interface AiAccountModelView {
+	accountId: string;
+	checkedAt?: number;
+	error?: string;
+	modelCount: number;
+	provider: AiProvider;
+	source: AiModelSource;
+}
+
+export interface AiModelsInventory {
+	accounts: AiAccountModelView[];
+	models: AiAvailableModel[];
+	updatedAt: number;
+}
+
 export interface AiProviderView {
 	description: string;
 	id: AiProvider;

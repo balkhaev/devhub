@@ -13,6 +13,7 @@ import {
 } from "./completions";
 import { parseSseJson, readSse, type SseFrame } from "./stream";
 import {
+	type AiAccountModels,
 	type AiChatEvent,
 	type AiChatRequest,
 	type AiCredential,
@@ -55,6 +56,25 @@ const modelSchema = z
 	.min(1)
 	.max(200)
 	.regex(/^[a-zA-Z0-9][a-zA-Z0-9._:-]*$/);
+const remoteModelSchema = z.object({
+	display_name: z.string().max(2000).optional(),
+	id: modelSchema.optional(),
+	slug: modelSchema.optional(),
+	supported_in_api: z.boolean().optional(),
+	type: z.literal("model").optional(),
+	visibility: z.string().max(100).optional(),
+});
+const claudeModelPageSchema = z.object({
+	data: z.array(remoteModelSchema.extend({ id: modelSchema })).max(1000),
+	has_more: z.boolean(),
+	last_id: z.string().max(200).nullish(),
+});
+const chatGptModelPageSchema = z.object({
+	has_more: z.literal(false).optional(),
+	models: z.array(remoteModelSchema).max(1000),
+});
+const MAX_MODEL_PAGES = 10;
+const MAX_MODEL_BYTES = 8_388_608;
 const messageSchema = z
 	.object({
 		content: z.string().max(MAX_TEXT),
@@ -459,6 +479,125 @@ function endpoint(credential: AiCredential, models = false): string {
 		return `https://chatgpt.com/backend-api/codex/${models ? "models?client_version=0.156.1" : "responses"}`;
 	}
 	return `https://api.openai.com/v1/${models ? "models" : "responses"}`;
+}
+
+function modelsEndpoint(credential: AiCredential, cursor?: string): string {
+	const url = new URL(endpoint(credential, true));
+	if (credential.authMode === "claude") {
+		url.searchParams.set("limit", "1000");
+		if (cursor) {
+			url.searchParams.set("after_id", cursor);
+		}
+	}
+	return url.toString();
+}
+
+function invalidModelCatalog(): never {
+	throw new AiError(
+		"Провайдер вернул некорректный или неполный список моделей.",
+		502
+	);
+}
+
+async function readModelPayload(prepared: PreparedRequest): Promise<unknown> {
+	const { body } = prepared.response;
+	if (!body) {
+		return invalidModelCatalog();
+	}
+	const reader = body.getReader();
+	const decoder = new TextDecoder("utf-8", { fatal: true });
+	const cancel = () => {
+		reader.cancel().catch(() => undefined);
+	};
+	prepared.context.signal.addEventListener("abort", cancel, { once: true });
+	try {
+		let size = 0;
+		let text = "";
+		let ended = false;
+		while (!ended) {
+			prepared.context.signal.throwIfAborted();
+			// biome-ignore lint/performance/noAwaitInLoops: catalog packets must be read in order.
+			const packet = await reader.read();
+			prepared.context.signal.throwIfAborted();
+			size += packet.value?.byteLength ?? 0;
+			if (size > MAX_MODEL_BYTES) {
+				return invalidModelCatalog();
+			}
+			ended = packet.done;
+			text += decoder.decode(packet.value, { stream: !ended });
+		}
+		return JSON.parse(text);
+	} catch (error) {
+		if (prepared.context.signal.aborted) {
+			throw transportError(error, prepared.context);
+		}
+		return invalidModelCatalog();
+	} finally {
+		prepared.context.signal.removeEventListener("abort", cancel);
+		await reader.cancel().catch(() => undefined);
+		reader.releaseLock();
+	}
+}
+
+function normalizeRemoteModels(
+	items: z.infer<typeof remoteModelSchema>[],
+	credential: AiCredential
+): AiModel[] {
+	return items.flatMap((item): AiModel[] => {
+		const id =
+			credential.authMode === "claude" ? item.id : (item.slug ?? item.id);
+		if (
+			!id ||
+			(credential.authMode === "siwc" && !item.slug) ||
+			(credential.authMode === "claude" && !id.startsWith("claude-"))
+		) {
+			return invalidModelCatalog();
+		}
+		if (
+			item.supported_in_api === false ||
+			item.visibility === "hide" ||
+			item.visibility === "hidden" ||
+			(credential.authMode === "siwc" && item.visibility !== "list")
+		) {
+			return [];
+		}
+		return [{ id, name: item.display_name?.trim().slice(0, 200) || id }];
+	});
+}
+
+function modelPage(
+	payload: unknown,
+	credential: AiCredential
+): { models: AiModel[]; cursor?: string } {
+	if (credential.authMode !== "claude") {
+		const parsed = chatGptModelPageSchema.safeParse(payload);
+		const record = object(payload);
+		if (
+			!parsed.success ||
+			record.error ||
+			record.next_page ||
+			record.next_cursor
+		) {
+			return invalidModelCatalog();
+		}
+		return { models: normalizeRemoteModels(parsed.data.models, credential) };
+	}
+	const parsed = claudeModelPageSchema.safeParse(payload);
+	if (!parsed.success || object(payload).error) {
+		return invalidModelCatalog();
+	}
+	const page = parsed.data;
+	const models = normalizeRemoteModels(page.data, credential);
+	if (!page.has_more) {
+		return { models };
+	}
+	if (
+		!(page.last_id && modelSchema.safeParse(page.last_id).success) ||
+		page.last_id !== page.data.at(-1)?.id
+	) {
+		return invalidModelCatalog();
+	}
+	return { cursor: page.last_id, models };
 }
 
 function adaptResponses(
@@ -1051,21 +1190,28 @@ export class AiInference {
 	private async request(
 		accountId: string,
 		signal: AbortSignal | undefined,
-		body?: BodyFactory
+		body?: BodyFactory,
+		options?: { credential?: AiCredential; modelsCursor?: string }
 	): Promise<PreparedRequest> {
 		const context = createContext(signal, body ? 180_000 : 30_000);
 		try {
-			let credential = await this.requestCredential(accountId);
+			let credential =
+				options?.credential ?? (await this.requestCredential(accountId));
 			for (let attempt = 0; attempt < 2; attempt += 1) {
 				context.signal.throwIfAborted();
 				// biome-ignore lint/performance/noAwaitInLoops: retry only after the first authorization failure.
-				const response = await this.fetcher(endpoint(credential, !body), {
-					headers: headers(credential),
-					method: body ? "POST" : "GET",
-					...(body ? { body: JSON.stringify(body(credential)) } : {}),
-					redirect: "error",
-					signal: context.signal,
-				});
+				const response = await this.fetcher(
+					body
+						? endpoint(credential)
+						: modelsEndpoint(credential, options?.modelsCursor),
+					{
+						headers: headers(credential),
+						method: body ? "POST" : "GET",
+						...(body ? { body: JSON.stringify(body(credential)) } : {}),
+						redirect: "error",
+						signal: context.signal,
+					}
+				);
 				if (response.ok) {
 					return { context, credential, response };
 				}
@@ -1090,70 +1236,64 @@ export class AiInference {
 	async models(
 		accountId: string,
 		signal?: AbortSignal
-	): Promise<{
-		models: AiModel[];
-		source: "remote" | "catalog";
-		error?: string;
-	}> {
-		let prepared: PreparedRequest | undefined;
+	): Promise<AiAccountModels> {
+		const context = createContext(signal, 30_000);
+		let credential: AiCredential | undefined;
 		try {
-			prepared = await this.request(accountId, signal);
-			const payload = object(await prepared.response.json());
-			const candidates = payload.models ?? payload.data;
-			const requireListed =
-				prepared.credential.authMode === "siwc" &&
-				Array.isArray(payload.models);
-			const models = Array.isArray(candidates)
-				? candidates.slice(0, 1000).flatMap((candidate: unknown): AiModel[] => {
-						const item = object(candidate);
-						const id = item.slug ?? item.id;
-						if (
-							typeof id !== "string" ||
-							!modelSchema.safeParse(id).success ||
-							item.visibility === "hidden" ||
-							item.visibility === "hide" ||
-							(requireListed && item.visibility !== "list")
-						) {
-							return [];
-						}
-						return [
-							{
-								id,
-								name:
-									typeof item.display_name === "string"
-										? item.display_name.slice(0, 200)
-										: id,
-							},
-						];
-					})
-				: [];
-			if (models.length === 0) {
-				throw new AiError("Провайдер не вернул доступные модели.", 502);
+			credential = await this.requestCredential(accountId);
+			const models = new Map<string, AiModel>();
+			const cursors = new Set<string>();
+			let cursor: string | undefined;
+			for (let page = 0; page < MAX_MODEL_PAGES; page += 1) {
+				context.signal.throwIfAborted();
+				// biome-ignore lint/performance/noAwaitInLoops: provider cursors depend on the preceding complete page.
+				const prepared = await this.request(
+					accountId,
+					context.signal,
+					undefined,
+					{ credential, modelsCursor: cursor }
+				);
+				let next: ReturnType<typeof modelPage>;
+				try {
+					({ credential } = prepared);
+					next = modelPage(await readModelPayload(prepared), credential);
+				} finally {
+					prepared.context.close();
+				}
+				for (const model of next.models) {
+					if (!models.has(model.id)) {
+						models.set(model.id, model);
+					}
+				}
+				if (!next.cursor) {
+					return { models: [...models.values()], source: "remote" };
+				}
+				if (cursors.has(next.cursor)) {
+					return invalidModelCatalog();
+				}
+				cursors.add(next.cursor);
+				({ cursor } = next);
 			}
-			return {
-				models: [...new Map(models.map((model) => [model.id, model])).values()],
-				source: "remote",
-			};
+			return invalidModelCatalog();
 		} catch (error) {
 			if (signal?.aborted) {
 				// biome-ignore lint/style/useErrorCause: cancellation is sanitized without provider data in its cause.
 				throw new AiError("AI-запрос отменён.", 499);
 			}
-			const credential =
-				prepared?.credential ?? (await this.credential(accountId));
+			const failure = safeAiError(transportError(error, context));
 			const catalog =
-				AI_PROVIDERS.find((provider) => provider.id === credential.provider)
+				AI_PROVIDERS.find((provider) => provider.id === credential?.provider)
 					?.models ?? [];
 			return {
-				error: safeAiError(error).error,
+				error: failure.error,
 				models: catalog.map((model) => ({ ...model })),
 				source: "catalog",
+				status: failure.status,
 			};
 		} finally {
-			prepared?.context.close();
+			context.close();
 		}
 	}
-
 	async chat(
 		input: AiChatRequest,
 		signal: AbortSignal,

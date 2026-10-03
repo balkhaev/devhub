@@ -35,7 +35,8 @@ export function AiProxyAccess({ baseUrl }: { baseUrl: string }) {
 			</dl>
 			<p className="muted small">
 				Модель: <code>codex/имя-модели</code>, <code>claude/имя-модели</code>{" "}
-				или ваш псевдоним. Каталог: <code>GET /v1/models</code>.
+				или ваш псевдоним. Доступные модели: <code>GET /v1/models</code>; для
+				принудительного обновления — <code>GET /v1/models?refresh=1</code>.
 			</p>
 			<details className="ai-settings">
 				<summary>Примеры для SDK и HTTP</summary>

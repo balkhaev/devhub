@@ -361,6 +361,7 @@ describe("subscription inference", () => {
 					},
 					{ display_name: "CLI default", slug: "cli-default" },
 					{ slug: "hidden", visibility: "hide" },
+					{ slug: "unsupported", supported_in_api: false },
 				],
 			});
 		});
@@ -377,6 +378,7 @@ describe("subscription inference", () => {
 			{ ...base, authMode: "claude", provider: "claude" }
 		).models(base.id);
 		expect(fallback.source).toBe("catalog");
+		expect(fallback.status).toBe(403);
 		expect(fallback.models.length).toBeGreaterThan(0);
 		expect(fallback.error).toContain("стороннего приложения");
 		expect(fallback.error).not.toContain("secret");
@@ -408,15 +410,14 @@ describe("subscription inference", () => {
 		});
 	});
 
-	test("SIWC standard data-array model catalogs retain their ordinary identifiers", async () => {
+	test("SIWC does not treat a general API data-array catalog as the ChatGPT account catalog", async () => {
 		const ai = adapter(() => Response.json({ data: [{ id: "gpt-data" }] }), {
 			...base,
 			authMode: "siwc",
 		});
-		expect(await ai.models(base.id)).toEqual({
-			models: [{ id: "gpt-data", name: "gpt-data" }],
-			source: "remote",
-		});
+		const result = await ai.models(base.id);
+		expect(result).toMatchObject({ source: "catalog", status: 502 });
+		expect(result.models.some((model) => model.id === "gpt-data")).toBe(false);
 	});
 
 	test("multi-line SSE data is parsed", async () => {
@@ -854,4 +855,323 @@ test("nested terminal provider errors are redacted", async () => {
 	expect(text).toContain("event: error");
 	expect(text).not.toContain("private-token");
 	expect(text).not.toContain("response.completed");
+});
+
+describe("account-authenticated model discovery", () => {
+	test.each(["siwc", "codex", "claude"] as const)(
+		"valid empty %s model lists remain authoritative and empty",
+		async (mode) => {
+			const ai = adapter(
+				() =>
+					Response.json(
+						mode === "claude"
+							? { data: [], has_more: false, last_id: null }
+							: { models: [] }
+					),
+				{
+					...base,
+					authMode: mode,
+					provider: mode === "claude" ? "claude" : "codex",
+				}
+			);
+			expect(await ai.models(base.id)).toEqual({
+				models: [],
+				source: "remote",
+			});
+		}
+	);
+	test("SIWC accounts with only nonselectable models remain empty without invented fallbacks", async () => {
+		const ai = adapter(
+			() =>
+				Response.json({
+					models: [
+						{ slug: "hidden", visibility: "hide" },
+						{ slug: "internal", visibility: "internal" },
+						{ slug: "disabled", supported_in_api: false, visibility: "list" },
+					],
+				}),
+			{ ...base, authMode: "siwc" }
+		);
+		expect(await ai.models(base.id)).toEqual({ models: [], source: "remote" });
+	});
+	test("Claude follows authenticated after_id pages, preserves server order and deduplicates", async () => {
+		let calls = 0;
+		const ai = adapter(
+			(url, init) => {
+				const address = new URL(url);
+				expect(address.origin + address.pathname).toBe(
+					"https://api.anthropic.com/v1/models"
+				);
+				expect(address.searchParams.get("limit")).toBe("1000");
+				expect(init.method).toBe("GET");
+				expect(init.redirect).toBe("error");
+				const auth = new Headers(init.headers);
+				expect(auth.get("authorization")).toBe("Bearer private-token");
+				expect(auth.get("anthropic-version")).toBe("2023-06-01");
+				expect(auth.get("anthropic-beta")).toBe("oauth-2025-04-20");
+				calls += 1;
+				if (calls === 1) {
+					expect(address.searchParams.has("after_id")).toBe(false);
+					return Response.json({
+						data: [
+							{ display_name: "Newest", id: "claude-newest", type: "model" },
+							{ display_name: "First name", id: "claude-middle" },
+						],
+						has_more: true,
+						last_id: "claude-middle",
+					});
+				}
+				expect(address.searchParams.get("after_id")).toBe("claude-middle");
+				return Response.json({
+					data: [
+						{ display_name: "Duplicate name", id: "claude-middle" },
+						{ id: "claude-oldest" },
+					],
+					has_more: false,
+					last_id: "claude-oldest",
+				});
+			},
+			{ ...base, authMode: "claude", provider: "claude" }
+		);
+		expect(await ai.models(base.id)).toEqual({
+			models: [
+				{ id: "claude-newest", name: "Newest" },
+				{ id: "claude-middle", name: "First name" },
+				{ id: "claude-oldest", name: "claude-oldest" },
+			],
+			source: "remote",
+		});
+		expect(calls).toBe(2);
+	});
+	test("a revoked later Claude page cannot expose a partial discovery as available", async () => {
+		let calls = 0;
+		const ai = adapter(
+			() => {
+				calls += 1;
+				return calls === 1
+					? Response.json({
+							data: [{ id: "claude-partial" }],
+							has_more: true,
+							last_id: "claude-partial",
+						})
+					: new Response("private-token secret response", { status: 403 });
+			},
+			{ ...base, authMode: "claude", provider: "claude" }
+		);
+		const result = await ai.models(base.id);
+		expect(result).toMatchObject({ source: "catalog", status: 403 });
+		expect(result.models.some((model) => model.id === "claude-partial")).toBe(
+			false
+		);
+		expect(result.error).not.toContain("private-token");
+		expect(calls).toBe(2);
+	});
+	test.each([
+		{},
+		{ data: [] },
+		{ data: [], has_more: true, last_id: "claude-empty" },
+		{ data: [{ id: "claude-first" }], has_more: true },
+		{ data: [{ id: "claude-first" }], has_more: true, last_id: "claude-other" },
+		{ data: [{ id: "gpt-wrong-provider" }], has_more: false },
+		{ data: [{ id: "claude-invalid", type: "error" }], has_more: false },
+	])(
+		"malformed Claude model envelope %j is safe and nonauthoritative",
+		async (payload) => {
+			const ai = adapter(() => Response.json(payload), {
+				...base,
+				authMode: "claude",
+				provider: "claude",
+			});
+			expect(await ai.models(base.id)).toMatchObject({
+				source: "catalog",
+				status: 502,
+			});
+		}
+	);
+	test("repeating model cursors terminate without publishing incomplete results", async () => {
+		let calls = 0;
+		const ai = adapter(
+			() => {
+				calls += 1;
+				return Response.json({
+					data: [{ id: "claude-repeat" }],
+					has_more: true,
+					last_id: "claude-repeat",
+				});
+			},
+			{ ...base, authMode: "claude", provider: "claude" }
+		);
+		expect(await ai.models(base.id)).toMatchObject({
+			source: "catalog",
+			status: 502,
+		});
+		expect(calls).toBe(2);
+	});
+	test("model pagination has a fixed page budget and never truncates into a successful result", async () => {
+		let calls = 0;
+		const ai = adapter(
+			() => {
+				calls += 1;
+				return Response.json({
+					data: [{ id: `claude-page-${calls}` }],
+					has_more: true,
+					last_id: `claude-page-${calls}`,
+				});
+			},
+			{ ...base, authMode: "claude", provider: "claude" }
+		);
+		expect(await ai.models(base.id)).toMatchObject({
+			source: "catalog",
+			status: 502,
+		});
+		expect(calls).toBe(10);
+	});
+	test.each([
+		{ models: "private-token" },
+		{ models: [{}] },
+		{ models: [{ slug: "bad/path", visibility: "list" }] },
+		{ error: { message: "private-token" }, models: [] },
+		{ has_more: true, models: [] },
+		{ has_more: "true", models: [] },
+		{ models: [], next_page: "https://untrusted.invalid/secret" },
+		{
+			models: Array.from({ length: 1001 }, (_, index) => ({
+				slug: `gpt-${index}`,
+				visibility: "list",
+			})),
+		},
+	])(
+		"invalid SIWC model payload cannot masquerade as an empty successful list: %#",
+		async (payload) => {
+			let calls = 0;
+			const ai = adapter(
+				() => {
+					calls += 1;
+					return Response.json(payload);
+				},
+				{ ...base, authMode: "siwc" }
+			);
+			const result = await ai.models(base.id);
+			expect(result).toMatchObject({ source: "catalog", status: 502 });
+			expect(result.error).not.toContain("private-token");
+			expect(calls).toBe(1);
+		}
+	);
+	test("model authentication refresh happens once and uses the resulting grant", async () => {
+		let calls = 0;
+		const lookups: boolean[] = [];
+		const ai = new AiInference({
+			credential: (_id, refresh = false) => {
+				lookups.push(refresh);
+				return Promise.resolve({
+					...base,
+					accessToken: refresh ? "refreshed-token" : base.accessToken,
+					authMode: "siwc",
+				});
+			},
+			fetch: ((_url: string | URL | Request, init?: RequestInit) => {
+				calls += 1;
+				if (calls === 1) {
+					return Promise.resolve(new Response("", { status: 401 }));
+				}
+				expect(new Headers(init?.headers).get("authorization")).toBe(
+					"Bearer refreshed-token"
+				);
+				return Promise.resolve(
+					Response.json({
+						models: [{ slug: "gpt-refreshed", visibility: "list" }],
+					})
+				);
+			}) as unknown as typeof fetch,
+		});
+		expect(await ai.models(base.id)).toEqual({
+			models: [{ id: "gpt-refreshed", name: "gpt-refreshed" }],
+			source: "remote",
+		});
+		expect(calls).toBe(2);
+		expect(lookups).toEqual([false, true]);
+	});
+	test.each([401, 403, 429])(
+		"model discovery preserves safe HTTP %s revocation or quota status",
+		async (status) => {
+			let calls = 0;
+			const ai = adapter(() => {
+				calls += 1;
+				return new Response("private-token", { status });
+			});
+			const result = await ai.models(base.id);
+			expect(result).toMatchObject({ source: "catalog", status });
+			expect(result.error).not.toContain("private-token");
+			expect(calls).toBe(status === 401 ? 2 : 1);
+		}
+	);
+	test("failed credential lookup is safe and is not repeated to invent a catalog", async () => {
+		let calls = 0;
+		let lookups = 0;
+		const ai = new AiInference({
+			credential: () => {
+				lookups += 1;
+				return Promise.reject(new AiError("private-token", 401));
+			},
+			fetch: (() => {
+				calls += 1;
+				return Promise.resolve(Response.json({ models: [] }));
+			}) as unknown as typeof fetch,
+		});
+		const result = await ai.models(base.id);
+		expect(result).toMatchObject({
+			models: [],
+			source: "catalog",
+			status: 401,
+		});
+		expect(result.error).not.toContain("private-token");
+		expect(lookups).toBe(1);
+		expect(calls).toBe(0);
+	});
+	test("cancelling a stalled model body cancels its reader and never returns a fallback", async () => {
+		const abort = new AbortController();
+		let cancelled = false;
+		let upstreamSignal: AbortSignal | null | undefined;
+		const ai = adapter((_url, init) => {
+			upstreamSignal = init.signal;
+			return new Response(
+				new ReadableStream<Uint8Array>({
+					cancel() {
+						cancelled = true;
+					},
+				})
+			);
+		});
+		const pending = ai.models(base.id, abort.signal);
+		await new Promise<void>((resolve) => setTimeout(resolve, 0));
+		abort.abort();
+		await expect(pending).rejects.toMatchObject({ status: 499 });
+		expect(cancelled).toBe(true);
+		expect(upstreamSignal?.aborted).toBe(true);
+	});
+	test("oversized or invalid UTF-8 model bodies are cancelled and safely rejected", async () => {
+		await Promise.all(
+			[new Uint8Array(8_388_609), new Uint8Array([255])].map(async (bytes) => {
+				let cancelled = false;
+				const ai = adapter(
+					() =>
+						new Response(
+							new ReadableStream<Uint8Array>({
+								cancel() {
+									cancelled = true;
+								},
+								start(controller) {
+									controller.enqueue(bytes);
+								},
+							})
+						)
+				);
+				expect(await ai.models(base.id)).toMatchObject({
+					source: "catalog",
+					status: 502,
+				});
+				expect(cancelled).toBe(true);
+			})
+		);
+	});
 });

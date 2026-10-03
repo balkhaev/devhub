@@ -1,17 +1,21 @@
 import { useCallback, useEffect, useState } from "react";
 
+import type { AiAvailableModel } from "../ai/types";
+
 import { AiProviderCard } from "./ai-accounts";
 import { type AiState, aiRequest } from "./ai-api";
+import { AiModelsPanel, useAiModels } from "./ai-models";
 import { AiPlayground } from "./ai-playground";
 import { AiProxy } from "./ai-proxy";
 
-type AiTab = "subscriptions" | "proxy" | "playground";
+type AiTab = "subscriptions" | "models" | "proxy" | "playground";
 const TABS: Record<AiTab, string> = {
+	models: "Модели",
 	playground: "Тест моделей",
 	proxy: "Прокси",
 	subscriptions: "Подписки",
 };
-const TAB_ORDER: AiTab[] = ["subscriptions", "proxy", "playground"];
+const TAB_ORDER: AiTab[] = ["subscriptions", "models", "proxy", "playground"];
 
 function AiTabButton({
 	id,
@@ -43,6 +47,25 @@ export function AiPage() {
 	const [error, setError] = useState<string | null>(null);
 	const [loading, setLoading] = useState(false);
 	const [tab, setTab] = useState<AiTab>("subscriptions");
+	const [modelSelection, setModelSelection] = useState<AiAvailableModel | null>(
+		null
+	);
+	const inventoryScope = state
+		? JSON.stringify({
+				accounts: state.accounts.map(({ id, enabled, status, expiresAt }) => ({
+					enabled,
+					expiresAt,
+					id,
+					status,
+				})),
+				aliases: state.proxy.aliases,
+			})
+		: null;
+	const inventory = useAiModels(inventoryScope);
+	const selectModel = useCallback((model: AiAvailableModel) => {
+		setModelSelection(model);
+		setTab("playground");
+	}, []);
 	const refresh = useCallback(async () => {
 		setLoading(true);
 		setError(null);
@@ -126,6 +149,19 @@ export function AiPage() {
 						</div>
 					</div>
 					<div
+						aria-labelledby="ai-tab-models"
+						hidden={tab !== "models"}
+						id="ai-panel-models"
+						role="tabpanel"
+					>
+						<AiModelsPanel
+							accounts={state.accounts}
+							inventory={inventory}
+							onSelect={selectModel}
+							providers={state.providers}
+						/>
+					</div>
+					<div
 						aria-labelledby="ai-tab-proxy"
 						hidden={tab !== "proxy"}
 						id="ai-panel-proxy"
@@ -141,7 +177,12 @@ export function AiPage() {
 					>
 						<AiPlayground
 							accounts={state.accounts}
-							aliases={state.proxy.aliases}
+							initialSelection={modelSelection}
+							inventory={inventory.data}
+							key={modelSelection?.id ?? "default"}
+							modelError={inventory.error}
+							modelLoading={inventory.loading}
+							onModelsRefresh={inventory.refresh}
 							providers={state.providers}
 						/>
 					</div>
