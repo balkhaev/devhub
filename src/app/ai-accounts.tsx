@@ -8,6 +8,7 @@ import {
 
 import type { AiAccountView, AiProviderView } from "../ai/types";
 import { type AiOAuthFlow, type AiOAuthStatus, aiRequest } from "./ai-api";
+import { AiPoolControls, AiPoolStatus } from "./ai-pool";
 
 const SOURCE_NAMES: Record<AiAccountView["source"], string> = {
 	"claude-cli": "Claude Code",
@@ -71,6 +72,8 @@ export function AiAccount({
 					? ` · токен до ${expiryText(account.expiresAt)}`
 					: ""}
 			</span>
+			<AiPoolStatus account={account} />
+			<AiPoolControls account={account} onRefresh={onRefresh} />
 			<div className="ai-actions">
 				{account.provider === "codex" &&
 				account.source === "oauth" &&
@@ -286,7 +289,12 @@ export function AiProviderCard({
 		},
 		[flow, onRefresh]
 	);
-	let connectLabel = flow ? "Начать вход заново" : "Подключить подписку";
+	let connectLabel = accounts.length
+		? "Добавить подписку"
+		: "Подключить подписку";
+	if (flow) {
+		connectLabel = "Начать вход заново";
+	}
 	if (pending === "connect") {
 		connectLabel = "Готовлю вход…";
 	}
@@ -339,6 +347,10 @@ export function AiProviderCard({
 						: `Импорт из ${provider.id === "codex" ? "Codex CLI" : "Claude Code"}`}
 				</button>
 			</div>
+			<p className="muted small ai-import-hint">
+				Для нескольких подписок входите в разные аккаунты. Повторный импорт
+				обновляет уже добавленный аккаунт.
+			</p>
 			{flow ? (
 				<OAuthInstructions
 					flow={flow}

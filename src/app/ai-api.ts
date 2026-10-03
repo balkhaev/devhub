@@ -1,9 +1,6 @@
-import type { AiAccountView, AiProviderView } from "../ai/types";
+import type { AiProvider } from "../ai/types";
 
-export interface AiState {
-	accounts: AiAccountView[];
-	providers: AiProviderView[];
-}
+export type { AiState } from "../ai/types";
 
 export interface AiOAuthFlow {
 	expiresAt: number;
@@ -35,6 +32,7 @@ export interface AiUsage {
 
 export type AiStreamEvent =
 	| { text: string; type: "text" }
+	| { type: "route"; accountId: string; model: string; provider: AiProvider }
 	| { type: "done"; usage?: AiUsage }
 	| { error: string; type: "error" };
 
@@ -82,6 +80,22 @@ function streamEvent(line: string): AiStreamEvent {
 	const value: unknown = JSON.parse(line);
 	if (value && typeof value === "object" && "type" in value) {
 		if (
+			value.type === "route" &&
+			"accountId" in value &&
+			typeof value.accountId === "string" &&
+			"model" in value &&
+			typeof value.model === "string" &&
+			"provider" in value &&
+			(value.provider === "codex" || value.provider === "claude")
+		) {
+			return {
+				accountId: value.accountId,
+				model: value.model,
+				provider: value.provider,
+				type: "route",
+			};
+		}
+		if (
 			value.type === "text" &&
 			"text" in value &&
 			typeof value.text === "string"
@@ -105,7 +119,8 @@ function streamEvent(line: string): AiStreamEvent {
 /** NDJSON can split both JSON lines and UTF-8 characters across network chunks. */
 export async function aiChat(
 	data: {
-		accountId: string;
+		accountId?: string;
+		provider?: AiProvider;
 		maxTokens?: number;
 		messages: AiMessage[];
 		model: string;

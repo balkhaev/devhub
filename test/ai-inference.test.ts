@@ -127,13 +127,12 @@ describe("subscription inference", () => {
 		]);
 	});
 
-	test("SIWC uses OpenAI API and retains output token limits", async () => {
+	test("SIWC uses OpenAI API with supported plan parameters", async () => {
 		const ai = adapter(
 			(url, init) => {
 				expect(url).toBe("https://api.openai.com/v1/responses");
 				expect(new Headers(init.headers).has("chatgpt-account-id")).toBe(false);
 				expect(JSON.parse(String(init.body))).toMatchObject({
-					max_output_tokens: 100,
 					store: false,
 					stream: true,
 				});
@@ -141,9 +140,7 @@ describe("subscription inference", () => {
 			},
 			{ ...base, authMode: "siwc" }
 		);
-		expect(
-			await events(await ai.chat({ ...input, maxTokens: 100 }, signal()))
-		).toHaveLength(2);
+		expect(await events(await ai.chat(input, signal()))).toHaveLength(2);
 	});
 
 	test("Claude sends honest OAuth headers, separates system, and tracks terminal usage", async () => {
@@ -429,7 +426,10 @@ describe("subscription inference", () => {
 			await adapter(() =>
 				packets(
 					multiline +
-						frame({ response: { usage: {} }, type: "response.completed" })
+						frame({
+							response: { id: "resp-empty", output: [], usage: {} },
+							type: "response.completed",
+						})
 				)
 			).chat(input, signal())
 		);
@@ -476,7 +476,7 @@ describe("local compatibility gateway", () => {
 		expect(text.endsWith("data: [DONE]\n\n")).toBe(true);
 	});
 
-	test("chat completions rejects tools rather than silently dropping them", async () => {
+	test("chat completions rejects malformed tool definitions", async () => {
 		let calls = 0;
 		const ai = adapter(() => {
 			calls += 1;
@@ -617,10 +617,9 @@ describe("local compatibility gateway", () => {
 			(url, init) => {
 				expect(url).toBe("https://api.openai.com/v1/responses");
 				expect(JSON.parse(String(init.body))).toMatchObject({
-					max_output_tokens: 100,
 					store: false,
 					stream: true,
-					tools,
+					tools: [{ name: "devhub", tools, type: "namespace" }],
 				});
 				return packets(completed("SIWC output"), 17);
 			},
@@ -632,7 +631,6 @@ describe("local compatibility gateway", () => {
 					"/v1/responses",
 					{
 						input: "question",
-						max_output_tokens: 100,
 						model: input.model,
 						store: true,
 						stream: false,
@@ -690,7 +688,11 @@ describe("local compatibility gateway", () => {
 					base.id,
 					signal()
 				)
-			).rejects.toMatchObject({ status: 502 });
+			).rejects.toMatchObject({
+				status: fixture.includes("subscription_sharing_usage_limit_exceeded")
+					? 429
+					: 502,
+			});
 		}
 	);
 
@@ -698,6 +700,7 @@ describe("local compatibility gateway", () => {
 		const payload = {
 			content: [{ text: "Claude output", type: "text" }],
 			id: "msg-native",
+			stop_reason: "end_turn",
 			type: "message",
 		};
 		const ai = adapter(

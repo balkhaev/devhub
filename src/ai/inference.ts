@@ -1,4 +1,16 @@
+import { createHash } from "node:crypto";
 import { z } from "zod";
+import {
+	CompletionCollector,
+	CompletionDecoder,
+	type CompletionEvent,
+	validateResponseEnvelope,
+} from "./completion-stream";
+import {
+	boundedRequest,
+	completionBody,
+	completionSchema,
+} from "./completions";
 import { parseSseJson, readSse, type SseFrame } from "./stream";
 import {
 	type AiChatEvent,
@@ -67,21 +79,6 @@ const chatSchema = z
 		maxTokens: z.number().int().min(1).max(131_072).optional(),
 		messages: messagesSchema,
 		model: modelSchema,
-	})
-	.strict();
-const completionSchema = z
-	.object({
-		max_completion_tokens: z.number().int().min(1).max(131_072).optional(),
-		max_tokens: z.number().int().min(1).max(131_072).optional(),
-		messages: messagesSchema,
-		model: modelSchema,
-		stream: z.boolean().optional(),
-		stream_options: z
-			.object({ include_usage: z.boolean().optional() })
-			.strict()
-			.optional(),
-		temperature: z.number().min(0).max(2).optional(),
-		top_p: z.number().min(0).max(1).optional(),
 	})
 	.strict();
 const responsesSchema = z
@@ -193,6 +190,80 @@ const anthropicFields = [
 ];
 const encoder = new TextEncoder();
 
+export interface AiLifecycleEvent {
+	code?: string;
+	credentialFingerprint?: string;
+	kind: "complete" | "error" | "cancel";
+	retryAfterMs?: number;
+	status?: number;
+	usage?: { inputTokens: number; outputTokens: number };
+}
+export type AiLifecycle = (event: AiLifecycleEvent) => void;
+
+export class AiUpstreamError extends AiError {
+	readonly upstreamStatus: number;
+	readonly retryAfterMs?: number;
+	readonly retryable: boolean;
+	readonly code?: string;
+	readonly credentialFingerprint?: string;
+
+	constructor(
+		message: string,
+		upstreamStatus: number,
+		retryAfterMs?: number,
+		code?: string,
+		retryable?: boolean,
+		credentialFingerprint?: string
+	) {
+		super(message, upstreamErrorStatus(upstreamStatus));
+		this.name = "AiUpstreamError";
+		this.upstreamStatus = upstreamStatus;
+		this.retryAfterMs = retryAfterMs;
+		this.retryable =
+			retryable ?? (upstreamStatus === 401 || upstreamStatus === 429);
+		this.code = code;
+		this.credentialFingerprint = credentialFingerprint;
+	}
+}
+
+function upstreamErrorStatus(status: number): number {
+	if ([401, 403, 429, 503].includes(status)) {
+		return status;
+	}
+	return status >= 500 ? 502 : 400;
+}
+
+function retryAfter(responseHeaders: Headers): number | undefined {
+	const value = responseHeaders.get("retry-after");
+	if (!value) {
+		return;
+	}
+	const seconds = Number(value);
+	const ms = Number.isFinite(seconds)
+		? seconds * 1000
+		: Date.parse(value) - Date.now();
+	return Number.isFinite(ms) && ms >= 0
+		? Math.min(Math.ceil(ms), 86_400_000)
+		: undefined;
+}
+
+function lifecycleOnce(
+	callback?: AiLifecycle
+): (event: AiLifecycleEvent) => void {
+	let ended = false;
+	return (event) => {
+		if (ended) {
+			return;
+		}
+		ended = true;
+		try {
+			callback?.(event);
+		} catch {
+			/* Observers cannot change the upstream result. */
+		}
+	};
+}
+
 interface RequestContext {
 	close: () => void;
 	controller: AbortController;
@@ -201,9 +272,42 @@ interface RequestContext {
 interface PreparedRequest {
 	context: RequestContext;
 	credential: AiCredential;
+	finish?: (event: AiLifecycleEvent) => void;
 	response: Response;
 }
+const preparedUsage = new WeakMap<
+	PreparedRequest,
+	{ inputTokens: number; outputTokens: number }
+>();
 type BodyFactory = (credential: AiCredential) => Record<string, unknown>;
+
+function bindLifecycle(
+	prepared: PreparedRequest,
+	callback?: AiLifecycle
+): void {
+	const notify = lifecycleOnce(callback);
+	const credentialFingerprint = tokenFingerprint(prepared.credential);
+	const onAbort = () => {
+		const error = transportError(undefined, prepared.context);
+		prepared.finish?.({
+			kind: error.status === 499 ? "cancel" : "error",
+			status: error.status,
+		});
+	};
+	prepared.finish = (event) => {
+		prepared.context.signal.removeEventListener("abort", onAbort);
+		prepared.context.close();
+		notify({ ...event, credentialFingerprint });
+	};
+	prepared.context.signal.addEventListener("abort", onAbort, { once: true });
+	if (prepared.context.signal.aborted) {
+		onAbort();
+	}
+}
+
+function tokenFingerprint(credential: AiCredential): string {
+	return createHash("sha256").update(credential.accessToken).digest("hex");
+}
 
 function validate<T>(schema: z.ZodType<T>, input: unknown): T {
 	const parsed = schema.safeParse(input);
@@ -223,9 +327,7 @@ function object(value: unknown): Record<string, unknown> {
 }
 
 function boundedNativeBody(value: Record<string, unknown>): void {
-	if (JSON.stringify(value).length > MAX_TEXT) {
-		throw new AiError("AI-запрос превышает допустимый размер 256 КБ.", 413);
-	}
+	boundedRequest(value);
 }
 
 function selectFields(
@@ -258,35 +360,76 @@ function createContext(
 	};
 }
 
-function requestError(status: number, credential: AiCredential): AiError {
+function requestError(
+	status: number,
+	credential: AiCredential,
+	delay?: number
+): AiUpstreamError {
 	if (status === 401) {
-		return new AiError("Авторизация истекла. Подключите аккаунт заново.", 401);
+		return new AiUpstreamError(
+			"Авторизация истекла. Подключите аккаунт заново.",
+			401,
+			delay,
+			undefined,
+			undefined,
+			tokenFingerprint(credential)
+		);
 	}
 	if (status === 403) {
-		return new AiError(
+		return new AiUpstreamError(
 			credential.provider === "claude"
 				? "Anthropic не разрешил запрос. Личная подписка Claude может запрещать OAuth-доступ из стороннего приложения; успешное подключение не гарантирует доступ к моделям."
 				: "OpenAI не разрешил запрос. Проверьте подписку и доступ аккаунта к выбранной модели.",
-			403
+			403,
+			delay,
+			undefined,
+			undefined,
+			tokenFingerprint(credential)
 		);
 	}
 	if (status === 429) {
-		return new AiError(
+		return new AiUpstreamError(
 			"Лимит провайдера исчерпан. Повторите запрос позже.",
-			429
+			429,
+			delay,
+			undefined,
+			undefined,
+			tokenFingerprint(credential)
 		);
 	}
-	return new AiError(
+	return new AiUpstreamError(
 		"Провайдер отклонил AI-запрос. Проверьте модель и параметры.",
-		status >= 500 ? 502 : 400
+		status,
+		delay,
+		undefined,
+		undefined,
+		tokenFingerprint(credential)
 	);
 }
 
-function transportError(error: unknown, context: RequestContext): AiError {
+function transportError(
+	error: unknown,
+	context: RequestContext,
+	credential?: AiCredential
+): AiError {
 	if (context.signal.aborted) {
 		return context.signal.reason instanceof AiError
 			? context.signal.reason
 			: new AiError("AI-запрос отменён.", 499);
+	}
+	if (
+		error instanceof AiUpstreamError &&
+		credential &&
+		!error.credentialFingerprint
+	) {
+		return new AiUpstreamError(
+			error.message,
+			error.upstreamStatus,
+			error.retryAfterMs,
+			error.code,
+			error.retryable,
+			tokenFingerprint(credential)
+		);
 	}
 	return error instanceof AiError
 		? error
@@ -328,6 +471,47 @@ function adaptResponses(
 		store: false,
 		stream: true,
 	};
+	if (credential.authMode === "siwc") {
+		for (const field of [
+			"background",
+			"conversation",
+			"max_output_tokens",
+			"max_tool_calls",
+			"metadata",
+			"moderation",
+			"multi_agent",
+			"prompt",
+			"prompt_cache_retention",
+			"safety_identifier",
+			"temperature",
+			"top_logprobs",
+			"top_p",
+			"truncation",
+			"user",
+			"previous_response_id",
+		]) {
+			if (result[field] !== undefined) {
+				throw new AiError(
+					`Подписка ChatGPT не поддерживает ${field} в HTTP Responses. Удалите этот параметр.`,
+					400
+				);
+			}
+		}
+		if (typeof result.input === "string") {
+			result.input = [{ content: result.input, role: "user" }];
+		}
+		if (Array.isArray(result.tools)) {
+			const grouped = siwcTools(result.tools);
+			result.tools = grouped.tools;
+			if (grouped.namespace && Array.isArray(result.input)) {
+				result.input = namespacedHistory(
+					result.input,
+					grouped.namespace,
+					grouped.flatNames
+				);
+			}
+		}
+	}
 	if (credential.authMode === "codex") {
 		result.instructions =
 			typeof result.instructions === "string" ? result.instructions : "";
@@ -340,16 +524,85 @@ function adaptResponses(
 		]) {
 			delete result[field];
 		}
-		if (Array.isArray(result.input)) {
-			result.input = result.input.map((item: unknown) => {
-				const message = object(item);
-				return message.role === "system"
-					? { ...message, role: "developer" }
-					: item;
-			});
-		}
+	}
+	if (Array.isArray(result.input)) {
+		result.input = result.input.map((item: unknown) => {
+			const message = object(item);
+			return message.role === "system"
+				? { ...message, role: "developer" }
+				: item;
+		});
 	}
 	return result;
+}
+
+function namespacedHistory(
+	input: unknown[],
+	namespace: string,
+	names: Set<string>
+): unknown[] {
+	return input.map((raw) => {
+		const item = object(raw);
+		return ["function_call", "custom_tool_call"].includes(String(item.type)) &&
+			item.namespace === undefined &&
+			typeof item.name === "string" &&
+			names.has(item.name)
+			? { ...item, namespace }
+			: raw;
+	});
+}
+
+function siwcTools(tools: unknown[]): {
+	tools: unknown[];
+	namespace?: string;
+	flatNames: Set<string>;
+} {
+	const flat: unknown[] = [];
+	const flatNames = new Set<string>();
+	const grouped: unknown[] = [];
+	for (const raw of tools) {
+		const tool = object(raw);
+		if (tool.type === "function" || tool.type === "custom") {
+			flat.push(raw);
+			if (typeof tool.name === "string") {
+				flatNames.add(tool.name);
+			}
+			continue;
+		}
+		if (tool.type === "namespace") {
+			if (
+				!Array.isArray(tool.tools) ||
+				tool.tools.some(
+					(child) =>
+						!["function", "custom"].includes(String(object(child).type))
+				)
+			) {
+				throw new AiError(
+					"Подписка ChatGPT поддерживает в namespace только function/custom tools.",
+					400
+				);
+			}
+			grouped.push(raw);
+			continue;
+		}
+		if (tool.type === "web_search" || tool.type === "web_search_preview") {
+			grouped.push(raw);
+			continue;
+		}
+		throw new AiError(
+			"Этот инструмент не поддерживается доступом через подписку ChatGPT.",
+			400
+		);
+	}
+	if (flat.length) {
+		let name = "devhub";
+		while (grouped.some((tool) => object(tool).name === name)) {
+			name += "_functions";
+		}
+		grouped.push({ name, tools: flat, type: "namespace" });
+		return { flatNames, namespace: name, tools: grouped };
+	}
+	return { flatNames, tools: grouped };
 }
 
 function chatBody(
@@ -431,9 +684,33 @@ function providerStreamError(
 		event.error ||
 		object(event.response).error
 	) {
-		throw new AiError(
+		const providerError = object(object(event.response).error ?? event.error);
+		const rawCode = providerError.code ?? providerError.type;
+		const codes: Record<string, number> = {
+			authentication_error: 401,
+			chatpass_v2_invalid_authorization_context: 403,
+			chatpass_v2_scope_not_authorized: 403,
+			overloaded_error: 529,
+			permission_error: 403,
+			rate_limit_error: 429,
+			subscription_sharing_invalid_user: 401,
+			subscription_sharing_route_not_supported: 403,
+			subscription_sharing_unsupported_capability: 400,
+			subscription_sharing_usage_limit_exceeded: 429,
+			subscription_sharing_usage_unavailable: 503,
+			subscription_sharing_user_not_eligible: 403,
+			subscription_sharing_user_unavailable: 503,
+		};
+		const code =
+			typeof rawCode === "string" && Object.hasOwn(codes, rawCode)
+				? rawCode
+				: "provider_error";
+		throw new AiUpstreamError(
 			"Провайдер не завершил AI-ответ. Повторите запрос или измените параметры.",
-			502
+			codes[code] ?? 502,
+			undefined,
+			code,
+			false
 		);
 	}
 }
@@ -468,6 +745,7 @@ function decodeOpenAI(
 		return { text: event.delta, type: "text" };
 	}
 	if (type === "response.completed") {
+		validateResponseEnvelope(event.response);
 		return { type: "done", usage: usage(object(event.response).usage) };
 	}
 }
@@ -509,7 +787,7 @@ function streamResponse(
 	prepared: PreparedRequest,
 	produce: () => AsyncGenerator<string>,
 	contentType: string,
-	errorFormat: (error: string) => string
+	errorFormat: (error: AiError) => string
 ): Response {
 	const iterator = produce();
 	let cancelled = false;
@@ -518,6 +796,7 @@ function streamResponse(
 			cancelled = true;
 			prepared.context.controller.abort();
 			prepared.context.close();
+			prepared.finish?.({ kind: "cancel", status: 499 });
 			if (prepared.response.body && !prepared.response.body.locked) {
 				await prepared.response.body.cancel().catch(() => undefined);
 			}
@@ -538,13 +817,18 @@ function streamResponse(
 			} catch (error) {
 				prepared.context.close();
 				if (!cancelled) {
-					controller.enqueue(
-						encoder.encode(
-							errorFormat(
-								safeAiError(transportError(error, prepared.context)).error
-							)
-						)
-					);
+					const safe = transportError(error, prepared.context);
+					prepared.finish?.({
+						kind: safe.status === 499 ? "cancel" : "error",
+						status:
+							safe instanceof AiUpstreamError
+								? safe.upstreamStatus
+								: safe.status,
+						...(safe instanceof AiUpstreamError
+							? { code: safe.code, retryAfterMs: safe.retryAfterMs }
+							: {}),
+					});
+					controller.enqueue(encoder.encode(errorFormat(safe)));
 					controller.close();
 				}
 			}
@@ -559,8 +843,171 @@ function streamResponse(
 	});
 }
 
+async function* completionEvents(
+	prepared: PreparedRequest
+): AsyncGenerator<CompletionEvent> {
+	if (!prepared.response.body) {
+		throw new AiError("Провайдер вернул пустой ответ.", 502);
+	}
+	const decoder = new CompletionDecoder(
+		prepared.credential.provider === "claude"
+	);
+	for await (const frame of readSse(
+		prepared.response.body,
+		prepared.context.signal
+	)) {
+		const event = parseSseJson(frame);
+		if (!event) {
+			continue;
+		}
+		const type = eventType(frame, event);
+		const limited =
+			type === "response.incomplete" &&
+			object(object(event.response).incomplete_details).reason ===
+				"max_output_tokens" &&
+			!object(event.response).error &&
+			!event.error;
+		if (!limited) {
+			providerStreamError(type, event);
+		}
+		for (const decoded of decoder.feed(type, event)) {
+			yield decoded;
+			if (decoded.done) {
+				return;
+			}
+		}
+	}
+	throw new AiError(
+		"Соединение с провайдером оборвалось до завершения AI-ответа.",
+		502
+	);
+}
+
 function sse(data: unknown, event?: string): string {
 	return `${event ? `event: ${event}\n` : ""}data: ${JSON.stringify(data)}\n\n`;
+}
+
+function validateClaudeMessage(value: unknown): void {
+	const payload = object(value);
+	if (
+		payload.error ||
+		payload.type !== "message" ||
+		typeof payload.id !== "string" ||
+		!Array.isArray(payload.content) ||
+		![
+			"end_turn",
+			"max_tokens",
+			"stop_sequence",
+			"tool_use",
+			"pause_turn",
+			"refusal",
+			"model_context_window_exceeded",
+		].includes(String(payload.stop_reason))
+	) {
+		throw new AiError("Провайдер вернул некорректный AI-ответ.", 502);
+	}
+}
+
+function updateNativeUsage(
+	prepared: PreparedRequest,
+	type: string,
+	event: Record<string, unknown>
+): void {
+	if (type === "message_start") {
+		preparedUsage.set(prepared, usage(object(event.message).usage));
+	}
+	if (type === "response.completed") {
+		preparedUsage.set(prepared, usage(object(event.response).usage));
+	}
+	if (type === "message_delta") {
+		const previous = preparedUsage.get(prepared) ?? usage({});
+		const next = object(event.usage);
+		preparedUsage.set(prepared, {
+			inputTokens:
+				typeof next.input_tokens === "number"
+					? next.input_tokens
+					: previous.inputTokens,
+			outputTokens:
+				typeof next.output_tokens === "number"
+					? next.output_tokens
+					: previous.outputTokens,
+		});
+	}
+}
+
+async function* nativeStream(
+	prepared: PreparedRequest
+): AsyncGenerator<string> {
+	if (!prepared.response.body) {
+		throw new AiError("Провайдер вернул пустой ответ.", 502);
+	}
+	const terminal =
+		prepared.credential.provider === "claude"
+			? "message_stop"
+			: "response.completed";
+	for await (const frame of readSse(
+		prepared.response.body,
+		prepared.context.signal
+	)) {
+		const event = parseSseJson(frame);
+		if (!event) {
+			continue;
+		}
+		const type = eventType(frame, event);
+		providerStreamError(type, event);
+		updateNativeUsage(prepared, type, event);
+		if (type === "response.completed") {
+			validateResponseEnvelope(event.response);
+		}
+		if (type === terminal) {
+			prepared.finish?.({
+				kind: "complete",
+				status: 200,
+				usage: preparedUsage.get(prepared),
+			});
+		}
+		yield sse(event, frame.event);
+		if (type === terminal) {
+			return;
+		}
+	}
+	throw new AiError(
+		"Соединение с провайдером оборвалось до завершения AI-ответа.",
+		502
+	);
+}
+
+async function* completionStream(
+	prepared: PreparedRequest,
+	chunk: (
+		delta: Record<string, unknown>,
+		finishReason?: string | null
+	) => Record<string, unknown>,
+	includeUsage: boolean
+): AsyncGenerator<string> {
+	yield sse(chunk({ role: "assistant" }));
+	for await (const event of completionEvents(prepared)) {
+		if (event.delta) {
+			yield sse(chunk(event.delta));
+		}
+		if (event.done) {
+			prepared.finish?.({
+				kind: "complete",
+				status: 200,
+				usage: event.usage
+					? {
+							inputTokens: event.usage.prompt_tokens,
+							outputTokens: event.usage.completion_tokens,
+						}
+					: undefined,
+			});
+			yield sse(chunk({}, event.finishReason ?? "stop"));
+			if (includeUsage && event.usage) {
+				yield sse({ ...chunk({}), choices: [], usage: event.usage });
+			}
+			yield "data: [DONE]\n\n";
+		}
+	}
 }
 
 export class AiInference {
@@ -578,6 +1025,29 @@ export class AiInference {
 		this.fetcher = options.fetch ?? globalThis.fetch;
 	}
 
+	private async requestCredential(
+		accountId: string,
+		forceRefresh = false
+	): Promise<AiCredential> {
+		try {
+			return await this.credential(accountId, forceRefresh);
+		} catch (error) {
+			if (
+				error instanceof AiError &&
+				(error.status === 401 || error.status === 429)
+			) {
+				// biome-ignore lint/style/useErrorCause: credential errors may contain secrets; preserve only a safe routing status.
+				throw new AiUpstreamError(
+					error.status === 401
+						? "Авторизация истекла. Подключите аккаунт заново."
+						: "Лимит обновления авторизации исчерпан. Повторите позже.",
+					error.status
+				);
+			}
+			throw error;
+		}
+	}
+
 	private async request(
 		accountId: string,
 		signal: AbortSignal | undefined,
@@ -585,7 +1055,7 @@ export class AiInference {
 	): Promise<PreparedRequest> {
 		const context = createContext(signal, body ? 180_000 : 30_000);
 		try {
-			let credential = await this.credential(accountId);
+			let credential = await this.requestCredential(accountId);
 			for (let attempt = 0; attempt < 2; attempt += 1) {
 				context.signal.throwIfAborted();
 				// biome-ignore lint/performance/noAwaitInLoops: retry only after the first authorization failure.
@@ -601,10 +1071,14 @@ export class AiInference {
 				}
 				await response.body?.cancel().catch(() => undefined);
 				if (response.status === 401 && attempt === 0) {
-					credential = await this.credential(accountId, true);
+					credential = await this.requestCredential(accountId, true);
 					continue;
 				}
-				throw requestError(response.status, credential);
+				throw requestError(
+					response.status,
+					credential,
+					retryAfter(response.headers)
+				);
 			}
 			throw new AiError("Не удалось авторизовать AI-запрос.", 401);
 		} catch (error) {
@@ -680,22 +1154,35 @@ export class AiInference {
 		}
 	}
 
-	async chat(input: AiChatRequest, signal: AbortSignal): Promise<Response> {
+	async chat(
+		input: AiChatRequest,
+		signal: AbortSignal,
+		lifecycle?: AiLifecycle
+	): Promise<Response> {
 		const parsed = validate(chatSchema, input);
 		const prepared = await this.request(
 			parsed.accountId,
 			signal,
 			(credential) => chatBody(parsed, credential)
 		);
+		bindLifecycle(prepared, lifecycle);
 		return streamResponse(
 			prepared,
 			async function* () {
 				for await (const event of normalizedEvents(prepared)) {
+					if (event.type === "done") {
+						prepared.finish?.({
+							kind: "complete",
+							status: 200,
+							usage: event.usage,
+						});
+					}
 					yield `${JSON.stringify(event)}\n`;
 				}
 			},
 			"application/x-ndjson; charset=utf-8",
-			(error) => `${JSON.stringify({ error, type: "error" })}\n`
+			(error) =>
+				`${JSON.stringify({ error: error.message, type: "error", ...(error instanceof AiUpstreamError ? { code: error.code } : {}) })}\n`
 		);
 	}
 
@@ -703,10 +1190,11 @@ export class AiInference {
 		path: "/v1/chat/completions" | "/v1/responses" | "/v1/messages",
 		body: unknown,
 		accountId: string,
-		signal: AbortSignal
+		signal: AbortSignal,
+		lifecycle?: AiLifecycle
 	): Promise<Response> {
 		if (path === "/v1/chat/completions") {
-			return await this.completions(body, accountId, signal);
+			return await this.completions(body, accountId, signal, lifecycle);
 		}
 		if (path !== "/v1/responses" && path !== "/v1/messages") {
 			throw new AiError("Неподдерживаемый AI-метод.", 404);
@@ -716,7 +1204,7 @@ export class AiInference {
 				? validate(responsesSchema, body)
 				: validate(anthropicSchema, body);
 		boundedNativeBody(parsed);
-		const credential = await this.credential(accountId);
+		const credential = await this.requestCredential(accountId);
 		if ((path === "/v1/messages") !== (credential.provider === "claude")) {
 			throw new AiError(
 				"Этот AI-метод не поддерживается выбранным провайдером.",
@@ -751,61 +1239,48 @@ export class AiInference {
 		if (!wantsStream && prepared.credential.authMode === "claude") {
 			try {
 				const payload: unknown = await prepared.response.json();
-				if (
-					!payload ||
-					typeof payload !== "object" ||
-					Array.isArray(payload) ||
-					object(payload).error
-				) {
-					throw new AiError("Провайдер вернул некорректный AI-ответ.", 502);
-				}
-				return Response.json(payload, {
+				validateClaudeMessage(payload);
+				const result = Response.json(payload, {
 					headers: { "Cache-Control": "no-store" },
 				});
+				lifecycleOnce(lifecycle)({
+					credentialFingerprint: tokenFingerprint(prepared.credential),
+					kind: "complete",
+					status: 200,
+					usage: usage(object(payload).usage),
+				});
+				return result;
 			} catch (error) {
-				throw transportError(error, prepared.context);
+				throw transportError(error, prepared.context, prepared.credential);
 			} finally {
 				prepared.context.close();
 			}
 		}
 		if (!wantsStream) {
-			return await this.collectNativeResponses(prepared);
+			const result = await this.collectNativeResponses(prepared);
+			lifecycleOnce(lifecycle)({
+				credentialFingerprint: tokenFingerprint(prepared.credential),
+				kind: "complete",
+				status: 200,
+				usage: preparedUsage.get(prepared),
+			});
+			return result;
 		}
+		bindLifecycle(prepared, lifecycle);
 		return streamResponse(
 			prepared,
-			async function* () {
-				if (!prepared.response.body) {
-					throw new AiError("Провайдер вернул пустой ответ.", 502);
-				}
-				for await (const frame of readSse(
-					prepared.response.body,
-					prepared.context.signal
-				)) {
-					const event = parseSseJson(frame);
-					if (!event) {
-						continue;
-					}
-					const type = eventType(frame, event);
-					providerStreamError(type, event);
-					yield sse(event, frame.event);
-					if (
-						type ===
-						(prepared.credential.provider === "claude"
-							? "message_stop"
-							: "response.completed")
-					) {
-						return;
-					}
-				}
-				throw new AiError(
-					"Соединение с провайдером оборвалось до завершения AI-ответа.",
-					502
-				);
-			},
+			() => nativeStream(prepared),
 			"text/event-stream; charset=utf-8",
 			(error) =>
 				sse(
-					{ error: { message: error, type: "api_error" }, type: "error" },
+					{
+						error: {
+							message: error.message,
+							type: "api_error",
+							...(error instanceof AiUpstreamError ? { code: error.code } : {}),
+						},
+						type: "error",
+					},
 					"error"
 				)
 		);
@@ -829,6 +1304,8 @@ export class AiInference {
 				const type = eventType(frame, event);
 				providerStreamError(type, event);
 				if (type === "response.completed" && event.response) {
+					validateResponseEnvelope(event.response);
+					preparedUsage.set(prepared, usage(object(event.response).usage));
 					return Response.json(event.response, {
 						headers: { "Cache-Control": "no-store" },
 					});
@@ -839,7 +1316,7 @@ export class AiInference {
 				502
 			);
 		} catch (error) {
-			throw transportError(error, prepared.context);
+			throw transportError(error, prepared.context, prepared.credential);
 		} finally {
 			prepared.context.close();
 		}
@@ -848,23 +1325,12 @@ export class AiInference {
 	private async completions(
 		body: unknown,
 		accountId: string,
-		signal: AbortSignal
+		signal: AbortSignal,
+		lifecycle?: AiLifecycle
 	): Promise<Response> {
 		const parsed = validate(completionSchema, body);
-		const input: AiChatRequest = {
-			accountId,
-			maxTokens: parsed.max_completion_tokens ?? parsed.max_tokens,
-			messages: parsed.messages,
-			model: parsed.model,
-		};
-		const options = {
-			...(parsed.temperature === undefined
-				? {}
-				: { temperature: parsed.temperature }),
-			...(parsed.top_p === undefined ? {} : { top_p: parsed.top_p }),
-		};
 		const prepared = await this.request(accountId, signal, (credential) =>
-			chatBody(input, credential, options)
+			completionBody(parsed, credential)
 		);
 		const id = `chatcmpl-${crypto.randomUUID()}`;
 		const created = Math.floor(Date.now() / 1000);
@@ -879,78 +1345,63 @@ export class AiInference {
 			object: "chat.completion.chunk",
 		});
 		if (parsed.stream) {
+			bindLifecycle(prepared, lifecycle);
 			return streamResponse(
 				prepared,
-				async function* () {
-					yield sse(chunk({ role: "assistant" }));
-					for await (const event of normalizedEvents(prepared)) {
-						if (event.type === "text") {
-							yield sse(chunk({ content: event.text }));
-						} else if (event.type === "done") {
-							yield sse(chunk({}, "stop"));
-							if (parsed.stream_options?.include_usage && event.usage) {
-								yield sse({
-									...chunk({}),
-									choices: [],
-									usage: {
-										completion_tokens: event.usage.outputTokens,
-										prompt_tokens: event.usage.inputTokens,
-										total_tokens:
-											event.usage.inputTokens + event.usage.outputTokens,
-									},
-								});
-							}
-							yield "data: [DONE]\n\n";
-						}
-					}
-				},
+				() =>
+					completionStream(
+						prepared,
+						chunk,
+						parsed.stream_options?.include_usage === true
+					),
 				"text/event-stream; charset=utf-8",
 				(error) =>
 					sse({
 						error: {
-							code: "provider_error",
-							message: error,
+							code:
+								error instanceof AiUpstreamError
+									? (error.code ?? "provider_error")
+									: "provider_error",
+							message: error.message,
 							type: "api_error",
 						},
 					})
 			);
 		}
 		try {
-			let text = "";
-			let tokenUsage = { inputTokens: 0, outputTokens: 0 };
-			for await (const event of normalizedEvents(prepared)) {
-				if (event.type === "text") {
-					text += event.text;
-					if (text.length > 4_194_304) {
-						throw new AiError("AI-ответ превышает допустимый размер.", 502);
-					}
-				} else if (event.type === "done" && event.usage) {
-					tokenUsage = event.usage;
-				}
+			const collector = new CompletionCollector();
+			for await (const event of completionEvents(prepared)) {
+				collector.accept(event);
 			}
-			return Response.json(
+			const result = Response.json(
 				{
 					choices: [
 						{
-							finish_reason: "stop",
+							finish_reason: collector.finishReason,
 							index: 0,
-							message: { content: text, role: "assistant" },
+							message: collector.message(),
 						},
 					],
 					created,
 					id,
 					model: parsed.model,
 					object: "chat.completion",
-					usage: {
-						completion_tokens: tokenUsage.outputTokens,
-						prompt_tokens: tokenUsage.inputTokens,
-						total_tokens: tokenUsage.inputTokens + tokenUsage.outputTokens,
-					},
+					usage: collector.usage,
 				},
 				{ headers: { "Cache-Control": "no-store" } }
 			);
+			lifecycleOnce(lifecycle)({
+				credentialFingerprint: tokenFingerprint(prepared.credential),
+				kind: "complete",
+				status: 200,
+				usage: {
+					inputTokens: collector.usage.prompt_tokens,
+					outputTokens: collector.usage.completion_tokens,
+				},
+			});
+			return result;
 		} catch (error) {
-			throw transportError(error, prepared.context);
+			throw transportError(error, prepared.context, prepared.credential);
 		} finally {
 			prepared.context.close();
 		}

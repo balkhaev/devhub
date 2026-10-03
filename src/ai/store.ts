@@ -9,7 +9,12 @@ import { join } from "node:path";
 import { z } from "zod";
 
 import { protectPrivateDirectory } from "../private-files";
-import { type AiCredential, AiError } from "./types";
+import {
+	type AiCredential,
+	AiError,
+	type AiProxyConfig,
+	type AiProxyKey,
+} from "./types";
 
 const credentialSchema = z.object({
 	accessToken: z.string().min(1),
@@ -17,25 +22,88 @@ const credentialSchema = z.object({
 	authMode: z.enum(["siwc", "codex", "claude"]),
 	clientId: z.string().min(1),
 	email: z.string().optional(),
+	enabled: z.boolean().optional(),
 	expiresAt: z.number().finite().optional(),
 	id: z.string().min(1),
 	idToken: z.string().optional(),
 	label: z.string(),
+	maxConcurrency: z.number().int().min(1).max(32).optional(),
+	priority: z.number().int().min(-100).max(100).optional(),
 	provider: z.enum(["codex", "claude"]),
 	refreshToken: z.string().optional(),
 	scopes: z.array(z.string()).optional(),
 	source: z.enum(["oauth", "codex-cli", "claude-cli", "token"]),
 	subject: z.string().optional(),
+	weight: z.number().int().min(1).max(100).optional(),
+});
+export const proxyConfigSchema = z.strictObject({
+	aliases: z
+		.array(
+			z.strictObject({
+				accountId: z.string().min(1).max(200).optional(),
+				id: z
+					.string()
+					.min(1)
+					.max(120)
+					.regex(/^[a-zA-Z0-9][a-zA-Z0-9._-]*$/),
+				model: z
+					.string()
+					.min(1)
+					.max(200)
+					.refine((value) => !value.includes("/")),
+				provider: z.enum(["codex", "claude"]),
+			})
+		)
+		.max(100),
+	strategy: z.enum(["round-robin", "fill-first", "least-busy"]),
+});
+export const accountConfigSchema = z.strictObject({
+	enabled: z.boolean().optional(),
+	label: z.string().trim().min(1).max(120).optional(),
+	maxConcurrency: z.number().int().min(1).max(32).optional(),
+	priority: z.number().int().min(-100).max(100).optional(),
+	weight: z.number().int().min(1).max(100).optional(),
+});
+const proxyKeySchema = z.object({
+	allowedAccounts: z.array(z.string().min(1).max(200)).max(100).optional(),
+	allowedModels: z.array(z.string().min(1).max(320)).max(100).optional(),
+	allowedProviders: z
+		.array(z.enum(["codex", "claude"]))
+		.max(2)
+		.optional(),
+	createdAt: z.number().finite(),
+	digest: z.string().regex(/^[a-f0-9]{64}$/),
+	enabled: z.boolean(),
+	expiresAt: z.number().finite().optional(),
+	id: z.string().min(1),
+	label: z.string().min(1).max(120),
+	prefix: z.string().min(1),
+	requestsPerMinute: z.number().int().min(1).max(10_000).optional(),
 });
 const vaultSchema = z.object({
 	accounts: z.array(credentialSchema),
 	hostId: z.string().min(1),
+	keys: z.array(proxyKeySchema).default([]),
+	proxy: proxyConfigSchema.default({ aliases: [], strategy: "round-robin" }),
 	version: z.literal(1),
 });
 type Vault = z.infer<typeof vaultSchema>;
 
 function missing(error: unknown): boolean {
 	return (error as NodeJS.ErrnoException).code === "ENOENT";
+}
+
+function sameCredential(
+	current: AiCredential,
+	expected: AiCredential
+): boolean {
+	return (
+		current.accessToken === expected.accessToken &&
+		current.refreshToken === expected.refreshToken &&
+		current.clientId === expected.clientId &&
+		current.authMode === expected.authMode &&
+		current.expiresAt === expected.expiresAt
+	);
 }
 
 /** Encrypted local secrets, atomic writes, and one mutation queue per hub process. */
@@ -85,7 +153,13 @@ export class AiStore {
 			bytes = await readFile(join(this.directory, "accounts.enc"));
 		} catch (error) {
 			if (missing(error)) {
-				return { accounts: [], hostId: `urn:uuid:${randomUUID()}`, version: 1 };
+				return {
+					accounts: [],
+					hostId: `urn:uuid:${randomUUID()}`,
+					keys: [],
+					proxy: { aliases: [], strategy: "round-robin" },
+					version: 1,
+				};
 			}
 			throw new AiError("Не удалось прочитать AI-хранилище.", {
 				cause: error,
@@ -174,19 +248,139 @@ export class AiStore {
 
 	put(account: AiCredential): Promise<void> {
 		const parsed = credentialSchema.parse(account);
+		return this.mutate((vault) => {
+			const existing = vault.accounts.find((entry) => entry.id === parsed.id);
+			const settings = existing
+				? {
+						enabled: existing.enabled,
+						label: existing.label,
+						maxConcurrency: existing.maxConcurrency,
+						priority: existing.priority,
+						weight: existing.weight,
+					}
+				: {};
+			return {
+				...vault,
+				accounts: [
+					...vault.accounts.filter((entry) => entry.id !== parsed.id),
+					{ ...parsed, ...settings },
+				],
+			};
+		});
+	}
+
+	/** Refresh outcomes may only replace the grant they actually used, never a later sign-in. */
+	async replaceCredential(
+		expected: AiCredential,
+		replacement: AiCredential
+	): Promise<{ credential: AiCredential; updated: boolean }> {
+		const parsed = credentialSchema.parse(replacement);
+		let result: { credential: AiCredential; updated: boolean } | undefined;
+		await this.mutate((vault) => {
+			const current = vault.accounts.find((entry) => entry.id === expected.id);
+			if (!current) {
+				throw new AiError("Подключение отключено.", 401);
+			}
+			if (!sameCredential(current, expected)) {
+				result = { credential: structuredClone(current), updated: false };
+				return vault;
+			}
+			const credential = {
+				...parsed,
+				enabled: current.enabled,
+				label: current.label,
+				maxConcurrency: current.maxConcurrency,
+				priority: current.priority,
+				weight: current.weight,
+			};
+			result = { credential: structuredClone(credential), updated: true };
+			return {
+				...vault,
+				accounts: vault.accounts.map((entry) =>
+					entry.id === expected.id ? credential : entry
+				),
+			};
+		});
+		if (!result) {
+			throw new AiError("Не удалось обновить подключение.", 500);
+		}
+		return result;
+	}
+
+	configureAccount(
+		id: string,
+		config: z.infer<typeof accountConfigSchema>
+	): Promise<void> {
+		const parsed = accountConfigSchema.parse(config);
+		return this.mutate((vault) => {
+			if (!vault.accounts.some((entry) => entry.id === id)) {
+				throw new AiError("Подключение не найдено.", 404);
+			}
+			return {
+				...vault,
+				accounts: vault.accounts.map((entry) =>
+					entry.id === id ? { ...entry, ...parsed } : entry
+				),
+			};
+		});
+	}
+
+	async proxyConfig(): Promise<AiProxyConfig> {
+		await this.queue;
+		return structuredClone((await this.load()).proxy);
+	}
+
+	configureProxy(config: AiProxyConfig): Promise<void> {
+		const parsed = proxyConfigSchema.parse(config);
+		if (
+			new Set(parsed.aliases.map((entry) => entry.id)).size !==
+			parsed.aliases.length
+		) {
+			throw new AiError("Имена маршрутов должны быть уникальны.", 400);
+		}
+		return this.mutate((vault) => ({ ...vault, proxy: parsed }));
+	}
+
+	async keys(): Promise<AiProxyKey[]> {
+		await this.queue;
+		return structuredClone((await this.load()).keys);
+	}
+
+	putKey(key: AiProxyKey): Promise<void> {
+		const parsed = proxyKeySchema.parse(key);
 		return this.mutate((vault) => ({
 			...vault,
-			accounts: [
-				...vault.accounts.filter((entry) => entry.id !== parsed.id),
-				parsed,
-			],
+			keys: [...vault.keys.filter((entry) => entry.id !== key.id), parsed],
 		}));
+	}
+
+	revokeKey(id: string): Promise<void> {
+		return this.mutate((vault) => {
+			if (!vault.keys.some((entry) => entry.id === id)) {
+				throw new AiError("Ключ не найден.", 404);
+			}
+			return {
+				...vault,
+				keys: vault.keys.map((entry) =>
+					entry.id === id ? { ...entry, enabled: false } : entry
+				),
+			};
+		});
 	}
 
 	remove(id: string): Promise<void> {
 		return this.mutate((vault) => ({
 			...vault,
 			accounts: vault.accounts.filter((entry) => entry.id !== id),
+		}));
+	}
+
+	removeCredential(expected: AiCredential): Promise<void> {
+		return this.mutate((vault) => ({
+			...vault,
+			accounts: vault.accounts.filter(
+				(entry) => entry.id !== expected.id || !sameCredential(entry, expected)
+			),
 		}));
 	}
 }

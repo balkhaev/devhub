@@ -32,7 +32,7 @@ const CREDENTIAL: AiCredential = {
 type Upstream = (
 	input: RequestInfo | URL,
 	init?: RequestInit
-) => Promise<Response>;
+) => Promise<Response> | Response;
 
 async function fixture(upstream?: Upstream) {
 	const root = await mkdtemp(join(tmpdir(), "devhub-ai-api-test-"));
@@ -172,7 +172,9 @@ test("every AI mutation and native inference route rejects hostile requests befo
 				}),
 			])
 		);
-		expect(denied.every((response) => response.status === 403)).toBe(true);
+		expect(denied.map((response) => response.status)).toEqual(
+			paths.flatMap((path) => [path.startsWith("/v1/") ? 401 : 403, 403, 403])
+		);
 		expect(await hub.ai.list()).toHaveLength(1);
 		expect(hub.calls).toEqual([]);
 	} finally {
@@ -220,7 +222,7 @@ test("native model and inference APIs enforce machine authentication as well as 
 				headers: { ...hub.machine, host: "hostile.example" },
 			}),
 		]);
-		expect(denied.map((response) => response.status)).toEqual([403, 403, 403]);
+		expect(denied.map((response) => response.status)).toEqual([401, 403, 403]);
 		const models = await hub.request("/v1/models", { headers: hub.machine });
 		expect(models.status).toBe(200);
 		expect(containsCredentials(await models.text())).toBe(false);
@@ -369,6 +371,284 @@ test("browser GET without Origin accepts a same-origin Referer and rejects a hos
 		});
 		expect(denied.status).toBe(403);
 		expect(hub.calls).toEqual([]);
+	} finally {
+		await hub.stop();
+	}
+});
+
+function proxyReply(text = "ok"): Response {
+	return new Response(
+		`data: ${JSON.stringify({ delta: text, type: "response.output_text.delta" })}\n\ndata: ${JSON.stringify({ response: { id: "resp-test", object: "response", output: [{ content: [{ text, type: "output_text" }], type: "message" }], usage: { input_tokens: 5, output_tokens: 2 } }, type: "response.completed" })}\n\n`,
+		{ headers: { "content-type": "text/event-stream" } }
+	);
+}
+
+async function createProxyKey(
+	hub: Awaited<ReturnType<typeof fixture>>,
+	config: Record<string, unknown> = {}
+): Promise<{ key: string; record: { id: string } }> {
+	const response = await hub.request("/api/ai/proxy/keys", {
+		body: JSON.stringify({ label: "Test client", ...config }),
+		headers: hub.machine,
+		method: "POST",
+	});
+	expect(response.status).toBe(200);
+	return response.json() as Promise<{ key: string; record: { id: string } }>;
+}
+
+test("SDK proxy keys authorize Bearer and x-api-key while preserving administrative and origin isolation", async () => {
+	const hub = await fixture(async () => proxyReply());
+	try {
+		const created = await createProxyKey(hub);
+		for (const headers of [
+			new Headers({ authorization: `Bearer ${created.key}` }),
+			new Headers({ "x-api-key": created.key }),
+		]) {
+			// biome-ignore lint/performance/noAwaitInLoops: Exercise independent SDK header conventions.
+			const models = await hub.request("/v1/models", { headers });
+			expect(models.status).toBe(200);
+			const text = await models.text();
+			expect(text).toContain("codex/");
+			expect(containsCredentials(text)).toBe(false);
+		}
+		const headers = {
+			authorization: `Bearer ${created.key}`,
+			"content-type": "application/json",
+		};
+		const denied = await Promise.all([
+			hub.request("/api/ai/state", { headers }),
+			hub.request("/api/ai/accounts/fixture-codex/disconnect", {
+				body: "{}",
+				headers,
+				method: "POST",
+			}),
+			hub.request("/v1/models", {
+				headers: { ...headers, origin: "https://hostile.example" },
+			}),
+			hub.request("/v1/models", {
+				headers: { ...headers, host: "hostile.example" },
+			}),
+		]);
+		expect(denied.map((response) => response.status)).toEqual([
+			403, 403, 403, 403,
+		]);
+		const reply = await hub.request("/v1/responses", {
+			body: JSON.stringify({
+				input: "hello",
+				model: "codex/gpt-fixture",
+				stream: false,
+			}),
+			headers,
+			method: "POST",
+		});
+		expect(reply.status).toBe(200);
+		expect(reply.headers.get("x-devhub-account")).toBe(CREDENTIAL.id);
+		expect(await reply.json()).toMatchObject({ id: "resp-test" });
+		const state = await hub.request("/api/ai/state", { headers: hub.machine });
+		const text = await state.text();
+		expect(text).not.toContain(created.key);
+		expect(text).not.toContain("digest");
+		expect(JSON.parse(text).proxy.stats).toMatchObject({
+			completed: 1,
+			inputTokens: 5,
+			outputTokens: 2,
+		});
+		await hub.request(`/api/ai/proxy/keys/${created.record.id}/revoke`, {
+			body: "{}",
+			headers: hub.machine,
+			method: "POST",
+		});
+		const revoked = await hub.request("/v1/models", { headers });
+		expect(revoked.status).toBe(401);
+		expect(revoked.headers.get("WWW-Authenticate")).toBe("Bearer");
+	} finally {
+		await hub.stop();
+	}
+});
+
+test("automatic pool safely fails over after 429 and keeps account cooldown across models", async () => {
+	const tokens: string[] = [];
+	const hub = await fixture((_url, init) => {
+		const token = new Headers(init?.headers).get("authorization") ?? "";
+		tokens.push(token);
+		return token === `Bearer ${PRIVATE_ACCESS}`
+			? new Response("untrusted private error", {
+					headers: { "retry-after": "7" },
+					status: 429,
+				})
+			: proxyReply();
+	});
+	try {
+		await hub.ai.store.put({
+			...CREDENTIAL,
+			accessToken: "second-test-token",
+			id: `${CREDENTIAL.id}-b`,
+			label: "Second",
+		});
+		const created = await createProxyKey(hub);
+		const headers = {
+			authorization: `Bearer ${created.key}`,
+			"content-type": "application/json",
+		};
+		const call = (model: string) =>
+			hub.request("/v1/responses", {
+				body: JSON.stringify({ input: "hello", model, stream: false }),
+				headers,
+				method: "POST",
+			});
+		const reply = await call("codex/gpt-fixture");
+		expect(reply.status).toBe(200);
+		expect(reply.headers.get("x-devhub-account")).toBe(`${CREDENTIAL.id}-b`);
+		await reply.text();
+		expect(tokens).toEqual([
+			`Bearer ${PRIVATE_ACCESS}`,
+			"Bearer second-test-token",
+		]);
+		const another = await call("codex/gpt-other");
+		await another.text();
+		expect(tokens).toHaveLength(3);
+		expect(tokens[2]).toBe("Bearer second-test-token");
+		const pinned = await call(`${CREDENTIAL.id}/gpt-fixture`);
+		expect(pinned.status).toBe(429);
+		expect(Number(pinned.headers.get("Retry-After"))).toBeGreaterThan(0);
+		expect(tokens).toHaveLength(3);
+	} finally {
+		await hub.stop();
+	}
+});
+
+test("pool never retries unknown transport, server failure or a provider failure after HTTP200", async () => {
+	const modes = ["transport", "server", "late"] as const;
+	let mode: (typeof modes)[number] = "transport";
+	let calls = 0;
+	const hub = await fixture(() => {
+		calls += 1;
+		if (mode === "transport") {
+			throw new Error("private prompt may have been accepted");
+		}
+		if (mode === "server") {
+			return new Response("private error", { status: 503 });
+		}
+		return new Response(
+			`data: ${JSON.stringify({ response: { error: { code: "subscription_sharing_usage_limit_exceeded", message: "private prompt" } }, type: "response.failed" })}\n\n`,
+			{ headers: { "content-type": "text/event-stream" } }
+		);
+	});
+	try {
+		await hub.ai.store.put({
+			...CREDENTIAL,
+			accessToken: "second-test-token",
+			id: `${CREDENTIAL.id}-b`,
+			label: "Second",
+		});
+		for (const next of modes) {
+			mode = next;
+			const before = calls;
+			// biome-ignore lint/performance/noAwaitInLoops: Observe precisely one upstream request for each failure class.
+			const reply = await hub.request("/v1/responses", {
+				body: JSON.stringify({
+					input: "private prompt",
+					model: "codex/gpt-fixture",
+					stream: next === "late",
+				}),
+				headers: hub.machine,
+				method: "POST",
+			});
+			const text = await reply.text();
+			expect(text).not.toContain("private prompt");
+			expect(calls - before).toBe(1);
+		}
+	} finally {
+		await hub.stop();
+	}
+});
+
+test("key scopes, aliases and rate limits are enforced at the proxy boundary", async () => {
+	const hub = await fixture(async () => proxyReply());
+	try {
+		const config = await hub.request("/api/ai/proxy/config", {
+			body: JSON.stringify({
+				aliases: [{ id: "coding", model: "gpt-fixture", provider: "codex" }],
+				strategy: "least-busy",
+			}),
+			headers: hub.machine,
+			method: "POST",
+		});
+		expect(config.status).toBe(200);
+		const key = await createProxyKey(hub, {
+			allowedAccounts: [CREDENTIAL.id],
+			allowedModels: ["coding"],
+			allowedProviders: ["codex"],
+		});
+		const headers = {
+			authorization: `Bearer ${key.key}`,
+			"content-type": "application/json",
+		};
+		const models = await hub.request("/v1/models", { headers });
+		expect(
+			(await models.json()).data.map((model: { id: string }) => model.id)
+		).toEqual(["coding"]);
+		const denied = await hub.request("/v1/responses", {
+			body: JSON.stringify({ input: "hello", model: "codex/gpt-other" }),
+			headers,
+			method: "POST",
+		});
+		expect(denied.status).toBe(403);
+		expect(hub.calls).toHaveLength(0);
+		const accepted = await hub.request("/v1/responses", {
+			body: JSON.stringify({ input: "hello", model: "coding", stream: false }),
+			headers,
+			method: "POST",
+		});
+		expect(accepted.status).toBe(200);
+		await accepted.text();
+		const limited = await createProxyKey(hub, { requestsPerMinute: 1 });
+		const rateHeaders = { "x-api-key": limited.key };
+		expect(
+			(await hub.request("/v1/models", { headers: rateHeaders })).status
+		).toBe(200);
+		const throttled = await hub.request("/v1/models", { headers: rateHeaders });
+		expect(throttled.status).toBe(429);
+		expect(throttled.headers.has("Retry-After")).toBe(true);
+	} finally {
+		await hub.stop();
+	}
+});
+
+test("nonstream SIWC usage-unavailable terminal applies cooldown without replay", async () => {
+	let calls = 0;
+	const hub = await fixture(() => {
+		calls += 1;
+		return new Response(
+			`data: ${JSON.stringify({ response: { error: { code: "subscription_sharing_usage_unavailable" } }, type: "response.failed" })}\n\n`,
+			{ headers: { "content-type": "text/event-stream" } }
+		);
+	});
+	try {
+		const failed = await hub.request("/v1/responses", {
+			body: JSON.stringify({
+				input: "hello",
+				model: "codex/gpt-fixture",
+				stream: false,
+			}),
+			headers: hub.machine,
+			method: "POST",
+		});
+		expect(failed.status).toBe(503);
+		expect(calls).toBe(1);
+		const state = await hub.request("/api/ai/state", { headers: hub.machine });
+		expect((await state.json()).accounts[0].pool.status).toBe("cooldown");
+		const cooled = await hub.request("/v1/responses", {
+			body: JSON.stringify({
+				input: "hello",
+				model: "codex/gpt-other",
+				stream: false,
+			}),
+			headers: hub.machine,
+			method: "POST",
+		});
+		expect(cooled.status).toBe(429);
+		expect(calls).toBe(1);
 	} finally {
 		await hub.stop();
 	}

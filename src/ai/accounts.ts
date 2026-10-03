@@ -94,9 +94,21 @@ function equal(left: string, right: string): boolean {
 function publicAccount(account: AiCredential, now: number): AiAccountView {
 	return {
 		email: account.email,
+		enabled: account.enabled !== false,
 		expiresAt: account.expiresAt,
 		id: account.id,
 		label: account.label,
+		maxConcurrency: account.maxConcurrency ?? 2,
+		pool: {
+			active: 0,
+			completed: 0,
+			failed: 0,
+			inputTokens: 0,
+			outputTokens: 0,
+			requests: 0,
+			status: account.enabled === false ? "disabled" : "ready",
+		},
+		priority: account.priority ?? 0,
 		provider: account.provider,
 		source: account.source,
 		status:
@@ -105,6 +117,7 @@ function publicAccount(account: AiCredential, now: number): AiAccountView {
 			!(account.source === "oauth" && account.refreshToken)
 				? "expired"
 				: "connected",
+		weight: account.weight ?? 1,
 	};
 }
 
@@ -180,6 +193,21 @@ export class AiAccounts {
 				this.pending.delete(id);
 			}
 		}
+	}
+
+	private async existingOAuth(
+		provider: AiProvider,
+		subject?: string
+	): Promise<AiCredential | undefined> {
+		if (!subject) {
+			return undefined;
+		}
+		return (await this.store.list()).find(
+			(saved) =>
+				saved.provider === provider &&
+				saved.source === "oauth" &&
+				saved.subject === subject
+		);
 	}
 
 	async startOAuth(
@@ -454,6 +482,8 @@ export class AiAccounts {
 			const subject = stringValue(identity.sub) ?? tokens.account?.uuid;
 			const email =
 				stringValue(identity.email) ?? tokens.account?.email_address;
+			// A fresh SIWC registration is not another person's subscription.
+			const existing = await this.existingOAuth(entry.provider, subject);
 			const account: AiCredential = {
 				accessToken: tokens.access_token,
 				authMode: entry.provider === "codex" ? "siwc" : "claude",
@@ -464,9 +494,9 @@ export class AiAccounts {
 					: undefined,
 				id:
 					entry.account?.id ??
+					existing?.id ??
 					identityId(
 						entry.provider,
-						entry.clientId,
 						subject ?? randomBytes(16).toString("hex")
 					),
 				idToken: tokens.id_token,
@@ -587,7 +617,9 @@ export class AiAccounts {
 			authMode: "claude",
 			clientId: CLAUDE_CLIENT,
 			expiresAt: data.claudeAiOauth.expiresAt,
-			id: identityId("claude-cli"),
+			// Opaque Claude tokens contain no verified identity; retain distinct access snapshots.
+			// Local CLI profile metadata can be stale after switching users and must not merge them.
+			id: identityId("claude-cli", data.claudeAiOauth.accessToken),
 			label: "Claude Code · импорт",
 			provider: "claude",
 			scopes: data.claudeAiOauth.scopes,
@@ -674,8 +706,7 @@ export class AiAccounts {
 				scopes,
 			};
 			this.ensureConnected(account.id);
-			await this.store.put(current);
-			return current;
+			return (await this.store.replaceCredential(account, current)).credential;
 		} catch (error) {
 			// Revoked tokens stop future refresh attempts; network/rate-limit failures remain retryable.
 			if (
@@ -683,11 +714,14 @@ export class AiAccounts {
 				(error.status === 401 || error.status === 403) &&
 				!this.disconnected.has(account.id)
 			) {
-				await this.store.put({
+				const saved = await this.store.replaceCredential(account, {
 					...account,
 					expiresAt: this.now() - 1,
 					refreshToken: undefined,
 				});
+				if (!saved.updated) {
+					return saved.credential;
+				}
 			}
 			const safe = safeAiError(error);
 			throw new AiError(safe.error, { cause: error, status: safe.status });
@@ -702,9 +736,11 @@ export class AiAccounts {
 
 	async disconnect(id: string): Promise<void> {
 		this.disconnected.add(id);
+		const previous = await this.store.get(id);
 		await this.refreshes.get(id)?.catch(() => undefined);
-		await this.store.get(id);
-		await this.store.remove(id);
+		if (this.disconnected.has(id)) {
+			await this.store.removeCredential(previous);
+		}
 	}
 
 	stop(): void {

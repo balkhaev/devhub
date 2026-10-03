@@ -1,8 +1,16 @@
 import { z } from "zod";
 
 import type { AiAccounts } from "./accounts";
-import { AI_PROVIDERS, type AiInference } from "./inference";
-import { AiError, safeAiError } from "./types";
+import { AI_PROVIDERS, type AiInference, AiUpstreamError } from "./inference";
+import { AiProxyKeys, createKeySchema } from "./keys";
+import { type AiLease, AiPool, AiPoolError, type AiRoute } from "./pool";
+import { accountConfigSchema, proxyConfigSchema } from "./store";
+import {
+	AiError,
+	type AiProvider,
+	type AiProxyKey,
+	safeAiError,
+} from "./types";
 
 const MAX_BODY = 1_048_576;
 const providerSchema = z.strictObject({
@@ -14,8 +22,50 @@ const FLOW_PATH = /^\/api\/ai\/oauth\/([a-f0-9]{32})$/;
 const MODELS_PATH = /^\/api\/ai\/accounts\/([^/]+)\/models$/;
 const COMPLETE_PATH = /^\/api\/ai\/oauth\/([^/]+)\/complete$/;
 const DISCONNECT_PATH = /^\/api\/ai\/accounts\/([^/]+)\/disconnect$/;
+const CONFIG_PATH = /^\/api\/ai\/accounts\/([^/]+)\/config$/;
+const REVOKE_PATH = /^\/api\/ai\/proxy\/keys\/([^/]+)\/revoke$/;
 const HTML_SPECIAL = /[&<>"]/g;
 const encoder = new TextEncoder();
+const PATH_PROVIDER: Record<string, AiProvider | undefined> = {
+	"/v1/messages": "claude",
+	"/v1/responses": "codex",
+};
+
+function errorResponse(error: unknown, path: string): Response {
+	const safe = safeAiError(error);
+	const gateway = path.startsWith("/v1/");
+	const errorTypes: Record<number, string> = {
+		401: "authentication_error",
+		429: "rate_limit_error",
+	};
+	const response = json(
+		gateway
+			? {
+					...(path === "/v1/messages" ? { type: "error" } : {}),
+					error: {
+						code: `devhub_${safe.status}`,
+						message: safe.error,
+						type: errorTypes[safe.status] ?? "invalid_request_error",
+					},
+				}
+			: { error: safe.error },
+		safe.status
+	);
+	if (safe.status === 401) {
+		response.headers.set("WWW-Authenticate", "Bearer");
+	}
+	const retryAfter =
+		error instanceof AiPoolError || error instanceof AiUpstreamError
+			? error.retryAfterMs
+			: undefined;
+	if (safe.status === 429) {
+		response.headers.set(
+			"Retry-After",
+			String(Math.max(1, Math.ceil((retryAfter ?? 60_000) / 1000)))
+		);
+	}
+	return response;
+}
 
 function json(value: unknown, status = 200): Response {
 	return Response.json(value, {
@@ -96,18 +146,25 @@ function record(value: unknown): Record<string, unknown> {
 export class AiApi {
 	private readonly accounts: AiAccounts;
 	private readonly inference: AiInference;
+	private readonly keys: AiProxyKeys;
+	private readonly pool: AiPool;
 	constructor(accounts: AiAccounts, inference: AiInference) {
 		this.accounts = accounts;
 		this.inference = inference;
+		this.keys = new AiProxyKeys(accounts.store);
+		this.pool = new AiPool(accounts.store);
 	}
 
 	async handle(
 		request: Request,
 		authorized: boolean,
 		origin: string,
-		ready: boolean
+		ready: boolean,
+		local = authorized
 	): Promise<Response> {
-		if (!authorized) {
+		const path = new URL(request.url).pathname;
+		const gateway = path.startsWith("/v1/");
+		if (!authorized && (!(gateway && local) || request.headers.has("origin"))) {
 			return json(
 				{
 					error:
@@ -120,25 +177,41 @@ export class AiApi {
 			return json({ error: "Пульт ещё запускается." }, 503);
 		}
 		try {
-			const path = new URL(request.url).pathname;
+			let key: AiProxyKey | undefined;
+			if (
+				gateway &&
+				(!authorized ||
+					request.headers.has("authorization") ||
+					request.headers.has("x-api-key"))
+			) {
+				key = await this.keys.authenticate(request);
+			}
 			if (request.method === "GET") {
-				return await this.get(request, path);
+				return await this.get(request, path, key);
 			}
 			if (request.method === "POST") {
-				return await this.post(request, path, origin);
+				return await this.post(request, path, origin, key);
 			}
 			return json({ error: "Метод не поддерживается." }, 405);
 		} catch (error) {
-			const safe = safeAiError(error);
-			return json({ error: safe.error }, safe.status);
+			return errorResponse(error, path);
 		}
 	}
 
-	private async get(request: Request, path: string): Promise<Response> {
+	private async get(
+		request: Request,
+		path: string,
+		key?: AiProxyKey
+	): Promise<Response> {
 		if (path === "/api/ai/state") {
 			return json({
-				accounts: await this.accounts.list(),
+				accounts: await this.pool.views(await this.accounts.list()),
 				providers: AI_PROVIDERS,
+				proxy: {
+					...(await this.accounts.store.proxyConfig()),
+					keys: await this.keys.list(),
+					stats: this.pool.stats(),
+				},
 			});
 		}
 		const flow = FLOW_PATH.exec(path);
@@ -156,19 +229,68 @@ export class AiApi {
 		}
 		if (path === "/v1/models") {
 			// A static catalogue is deliberate: listing the gateway does not spend account quota or refresh a session.
-			const accounts = await this.accounts.list();
+			const accounts = (await this.accounts.list()).filter(
+				(account) =>
+					account.enabled &&
+					account.status === "connected" &&
+					(!key?.allowedAccounts || key.allowedAccounts.includes(account.id)) &&
+					(!key?.allowedProviders ||
+						key.allowedProviders.includes(account.provider))
+			);
+			const providers = new Set(accounts.map((account) => account.provider));
+			const { aliases } = await this.accounts.store.proxyConfig();
 			return json({
-				data: accounts.flatMap((account) =>
-					(
-						AI_PROVIDERS.find((entry) => entry.id === account.provider)
-							?.models ?? []
-					).map((model) => ({
-						account_id: account.id,
-						id: `${account.id}/${model.id}`,
-						name: model.name,
-						object: "model",
-						owned_by: account.provider,
-					}))
+				data: [
+					...AI_PROVIDERS.filter((provider) =>
+						providers.has(provider.id)
+					).flatMap((provider) =>
+						provider.models.map((model) => ({
+							created: 0,
+							id: `${provider.id}/${model.id}`,
+							name: model.name,
+							object: "model",
+							owned_by: provider.id,
+						}))
+					),
+					...accounts.flatMap((account) =>
+						(
+							AI_PROVIDERS.find((provider) => provider.id === account.provider)
+								?.models ?? []
+						).map((model) => ({
+							account_id: account.id,
+							created: 0,
+							id: `${account.id}/${model.id}`,
+							name: model.name,
+							object: "model",
+							owned_by: account.provider,
+						}))
+					),
+					...aliases
+						.filter(
+							(alias) =>
+								providers.has(alias.provider) &&
+								(!alias.accountId ||
+									accounts.some((account) => account.id === alias.accountId))
+						)
+						.map((alias) => ({
+							created: 0,
+							id: alias.id,
+							name: alias.id,
+							object: "model",
+							owned_by: alias.provider,
+						})),
+				].filter(
+					(model) =>
+						!key?.allowedModels ||
+						key.allowedModels.includes(model.id) ||
+						key.allowedModels.includes(
+							`${model.owned_by}/${model.id.split("/").at(-1)}`
+						) ||
+						aliases.some(
+							(alias) =>
+								alias.id === model.id &&
+								key.allowedModels?.includes(`${alias.provider}/${alias.model}`)
+						)
 				),
 				object: "list",
 				source: "catalog",
@@ -177,11 +299,62 @@ export class AiApi {
 		return json({ error: "AI endpoint не найден." }, 404);
 	}
 
+	private async proxyManagement(
+		request: Request,
+		path: string
+	): Promise<Response | undefined> {
+		const config = CONFIG_PATH.exec(path);
+		if (config?.[1]) {
+			await this.accounts.store.configureAccount(
+				decodeURIComponent(config[1]),
+				parse(accountConfigSchema, await body(request))
+			);
+			return json({ ok: true });
+		}
+		if (path === "/api/ai/proxy/config") {
+			const data = parse(proxyConfigSchema, await body(request));
+			const accounts = await this.accounts.store.list();
+			for (const alias of data.aliases) {
+				if (
+					alias.accountId &&
+					!accounts.some(
+						(account) =>
+							account.id === alias.accountId &&
+							account.provider === alias.provider
+					)
+				) {
+					throw new AiError(
+						"Аккаунт маршрута не соответствует провайдеру.",
+						400
+					);
+				}
+			}
+			await this.accounts.store.configureProxy(data);
+			return json({ ok: true });
+		}
+		if (path === "/api/ai/proxy/keys") {
+			return json(
+				await this.keys.create(parse(createKeySchema, await body(request)))
+			);
+		}
+		const revoke = REVOKE_PATH.exec(path);
+		if (revoke?.[1]) {
+			await this.keys.revoke(decodeURIComponent(revoke[1]));
+			return json({ ok: true });
+		}
+		return undefined;
+	}
+
 	private async post(
 		request: Request,
 		path: string,
-		origin: string
+		origin: string,
+		key?: AiProxyKey
 	): Promise<Response> {
+		const management = await this.proxyManagement(request, path);
+		if (management) {
+			return management;
+		}
 		if (path === "/api/ai/oauth/start") {
 			const data = parse(providerSchema, await body(request));
 			return json(
@@ -206,10 +379,7 @@ export class AiApi {
 			return json({ ok: true });
 		}
 		if (path === "/api/ai/chat") {
-			return this.inference.chat(
-				(await body(request)) as Parameters<AiInference["chat"]>[0],
-				request.signal
-			);
+			return this.chat(request);
 		}
 		if (
 			path === "/v1/chat/completions" ||
@@ -217,53 +387,160 @@ export class AiApi {
 			path === "/v1/messages"
 		) {
 			const data = record(await body(request));
-			const selected = await this.selectAccount(request, data, path);
-			return this.inference.gateway(
-				path,
-				selected.data,
-				selected.id,
-				request.signal
+			const route = await this.pool.route(
+				data.model,
+				PATH_PROVIDER[path],
+				request.headers.get("x-devhub-account") ?? undefined,
+				key
 			);
+			return this.dispatch(request, data, path, route, key);
 		}
 		return json({ error: "AI endpoint не найден." }, 404);
 	}
 
-	private async selectAccount(
+	private async chat(request: Request): Promise<Response> {
+		const data = record(await body(request));
+		if (
+			data.accountId !== undefined &&
+			(typeof data.accountId !== "string" ||
+				!data.accountId ||
+				data.accountId.length > 200)
+		) {
+			throw new AiError("Некорректное подключение.", 400);
+		}
+		if (
+			data.provider !== undefined &&
+			data.provider !== "codex" &&
+			data.provider !== "claude"
+		) {
+			throw new AiError("Неизвестный провайдер.", 400);
+		}
+		const route = await this.pool.route(
+			data.model,
+			data.provider as AiProvider | undefined,
+			typeof data.accountId === "string" ? data.accountId : undefined
+		);
+		return this.dispatch(request, data, "/api/ai/chat", route);
+	}
+
+	private async infer(
 		request: Request,
 		data: Record<string, unknown>,
-		path: string
-	): Promise<{ id: string; data: Record<string, unknown> }> {
-		const accounts = await this.accounts.list();
-		const model = typeof data.model === "string" ? data.model : "";
-		const slash = model.indexOf("/");
-		const prefixed = slash > 0 ? model.slice(0, slash) : undefined;
-		const header = request.headers.get("x-devhub-account") ?? undefined;
-		if (prefixed && header && prefixed !== header) {
-			throw new AiError("Аккаунт в model и x-devhub-account различается.", 400);
-		}
-		const selected = prefixed ?? header;
-		const provider = (
-			{ "/v1/messages": "claude", "/v1/responses": "codex" } as Record<
-				string,
-				string
-			>
-		)[path];
-		const candidates = accounts.filter(
-			(entry) =>
-				(!selected || entry.id === selected) &&
-				(!provider || entry.provider === provider)
-		);
-		if (candidates.length !== 1 || !candidates[0]) {
-			throw new AiError(
-				"Выберите подключение: model=accountId/model или заголовок x-devhub-account.",
-				400
-			);
-		}
-		return {
-			data: { ...data, model: prefixed ? model.slice(slash + 1) : data.model },
-			id: candidates[0].id,
+		path: string,
+		route: AiRoute,
+		lease: AiLease
+	): Promise<Response> {
+		const input: Record<string, unknown> = {
+			...Object.fromEntries(
+				Object.entries(data).filter(([name]) => name !== "provider")
+			),
+			model: route.model,
 		};
+		const response =
+			path === "/api/ai/chat"
+				? await this.inference.chat(
+						{ ...input, accountId: lease.accountId } as Parameters<
+							AiInference["chat"]
+						>[0],
+						request.signal,
+						lease.finish
+					)
+				: await this.inference.gateway(
+						path as "/v1/chat/completions" | "/v1/responses" | "/v1/messages",
+						input,
+						lease.accountId,
+						request.signal,
+						lease.finish
+					);
+		response.headers.set("x-devhub-account", lease.accountId);
+		response.headers.set("x-devhub-provider", route.provider);
+		response.headers.set("x-devhub-model", route.model);
+		return path === "/api/ai/chat"
+			? routeResponse(response, lease.accountId, route)
+			: response;
 	}
+
+	private async dispatch(
+		request: Request,
+		data: Record<string, unknown>,
+		path: string,
+		route: AiRoute,
+		key?: AiProxyKey
+	): Promise<Response> {
+		const excluded = new Set<string>();
+		let rejection: AiUpstreamError | undefined;
+		while (excluded.size < 32) {
+			request.signal.throwIfAborted();
+			let lease: AiLease;
+			try {
+				// biome-ignore lint/performance/noAwaitInLoops: Each failover requires the previous explicit upstream rejection.
+				lease = await this.pool.acquire(
+					route,
+					excluded,
+					request.headers.get("x-devhub-session") ?? undefined,
+					key
+				);
+			} catch (error) {
+				throw rejection ?? error;
+			}
+			try {
+				return await this.infer(request, data, path, route, lease);
+			} catch (error) {
+				const upstream = error instanceof AiUpstreamError ? error : undefined;
+				lease.finish({
+					code: upstream?.code,
+					credentialFingerprint: upstream?.credentialFingerprint,
+					kind: request.signal.aborted ? "cancel" : "error",
+					retryAfterMs: upstream?.retryAfterMs,
+					status: upstream?.upstreamStatus ?? safeAiError(error).status,
+				});
+				if (!upstream?.retryable || route.accountId || request.signal.aborted) {
+					throw error;
+				}
+				excluded.add(lease.accountId);
+				rejection = upstream;
+			}
+		}
+		throw (
+			rejection ??
+			new AiError("Не удалось выполнить запрос через пул подписок.", 429)
+		);
+	}
+}
+
+function routeResponse(
+	response: Response,
+	accountId: string,
+	route: AiRoute
+): Response {
+	const reader = response.body?.getReader();
+	let first = true;
+	return new Response(
+		new ReadableStream<Uint8Array>({
+			cancel: async (reason) => {
+				await reader?.cancel(reason);
+			},
+			pull: async (controller) => {
+				if (first) {
+					first = false;
+					controller.enqueue(
+						encoder.encode(
+							`${JSON.stringify({ accountId, model: route.model, provider: route.provider, type: "route" })}\n`
+						)
+					);
+					return;
+				}
+				const chunk = await reader?.read();
+				if (!chunk || chunk.done) {
+					controller.close();
+					reader?.releaseLock();
+				} else {
+					controller.enqueue(chunk.value);
+				}
+			},
+		}),
+		{ headers: response.headers, status: response.status }
+	);
 }
 
 export async function oauthCallback(
