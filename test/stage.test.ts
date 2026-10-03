@@ -484,6 +484,70 @@ describe("canonical staging with real disposable Git repositories", () => {
 		expect(existsSync(outside)).toBe(true);
 	});
 
+	test("archive preserves an unfinished task without integrating or publishing it", () => {
+		const { folder, project } = fixture({ mode: "mvp", remote: null });
+		project.init();
+		const main = git(folder, "rev-parse", "HEAD");
+		const tree = project.create("blocked");
+		const task = commitSource(tree, "unique unfinished commit");
+		writeFileSync(join(tree, "source.txt"), "staged task edit\n");
+		git(tree, "add", "source.txt");
+		writeFileSync(join(tree, "source.txt"), "unstaged task edit\n");
+		writeFileSync(join(tree, "draft.txt"), "untracked task work\n");
+		mkdirSync(join(tree, "ignored"));
+		writeFileSync(join(tree, "ignored", "private.txt"), "private task state\n");
+		writeFileSync(join(folder, "source.txt"), "foreign canonical work\n");
+		git(folder, "add", "source.txt");
+		writeFileSync(join(folder, "failure.flag"), "checks cannot pass\n");
+		const canonicalIndex = git(folder, "diff", "--cached", "--binary");
+		const archive = project.archive(tree);
+		const metadata = JSON.parse(
+			readFileSync(join(archive, "archive.json"), "utf8")
+		) as { archiveRef: string; head: string; state: string };
+		expect(metadata.state).toBe("archived");
+		expect(metadata.head).toBe(task);
+		expect(git(folder, "rev-parse", metadata.archiveRef)).toBe(task);
+		expect(git(folder, "rev-parse", "main")).toBe(main);
+		expect(git(folder, "diff", "--cached", "--binary")).toBe(canonicalIndex);
+		expect(readFileSync(join(folder, "source.txt"), "utf8")).toBe(
+			"foreign canonical work\n"
+		);
+		expect(readFileSync(join(archive, "files", "source.txt"), "utf8")).toBe(
+			"unstaged task edit\n"
+		);
+		expect(readFileSync(join(archive, "files", "draft.txt"), "utf8")).toBe(
+			"untracked task work\n"
+		);
+		expect(
+			readFileSync(join(archive, "files", "ignored", "private.txt"), "utf8")
+		).toBe("private task state\n");
+		expect(readFileSync(join(archive, "staged.patch"), "utf8")).toContain(
+			"+staged task edit"
+		);
+		expect(readFileSync(join(archive, "unstaged.patch"), "utf8")).toContain(
+			"+unstaged task edit"
+		);
+		expect(existsSync(join(archive, "index.bin"))).toBe(true);
+		expect(existsSync(tree)).toBe(false);
+		expect(project.worktrees()).toHaveLength(1);
+	});
+
+	test("archive rejects the canonical checkout and worktrees outside its policy", () => {
+		const { base, folder, project } = fixture({ mode: "mvp", remote: null });
+		project.init();
+		const outside = join(base, "outside-managed-directory");
+		git(folder, "worktree", "add", "-b", "codex/outside", outside, "main");
+		expect(() => project.archive(folder)).toThrow(
+			"архивирование допустимо только"
+		);
+		expect(() => project.archive(outside)).toThrow(
+			"архивирование допустимо только"
+		);
+		expect(existsSync(folder)).toBe(true);
+		expect(existsSync(outside)).toBe(true);
+		expect(project.worktrees()).toHaveLength(2);
+	});
+
 	test("shared lock rejects overlapping mutation and releases itself after failure", () => {
 		const { project } = fixture();
 		expect(() =>

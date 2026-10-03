@@ -51,6 +51,7 @@ const HELP = `DevHub: MVP → main + push + выпуск; Прод → stage →
   bun run stage check --project PATH          выполнить проверки из .devhub/worktree.json
   bun run stage status --project PATH         stage, worktree, актуальность проверки
   bun run stage finish PATH --project PATH    убрать чистый, уже влитый worktree
+  bun run stage archive PATH --project PATH   сохранить незавершённую задачу и убрать checkout
 
 В проекте те же команды доступны через bun/npm run worktree.
 DevHub запускает dev только из основной папки. В Прод push/deploy требуют отдельного выпуска.
@@ -648,6 +649,31 @@ export class StageProject {
 		return archived;
 	}
 
+	/** Preserve a failed or unfinished task without integrating or publishing it. */
+	archive(folder: string): string {
+		this.assertStage();
+		const path = resolve(folder);
+		const worktree = this.worktrees().find((item) =>
+			sameSourcePath(item.path, path)
+		);
+		if (
+			!(worktree?.head && isInsideProject(this.worktreeRoot, path)) ||
+			sameSourcePath(path, this.worktreeRoot)
+		) {
+			throw new Error(
+				`${path}: архивирование допустимо только для worktree внутри ${this.worktreeRoot}`
+			);
+		}
+		const archived = archiveWorktree({
+			allowedRoot: this.worktreeRoot,
+			archiveRoot: resolve(this.worktreeRoot, "../../archives/devhub"),
+			project: this.root,
+			worktree: path,
+		});
+		process.stdout.write(`незавершённый worktree сохранён: ${archived}\n`);
+		return archived;
+	}
+
 	/** Shared by synchronous Git operations and the asynchronous filesystem deletion lifecycle. */
 	acquireLock(): () => void {
 		let fd: number;
@@ -708,9 +734,13 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
 		process.stdout.write(HELP);
 		return;
 	}
-	const takesOperand = ["create", "integrate", "finish", "mode"].includes(
-		action
-	);
+	const takesOperand = [
+		"create",
+		"integrate",
+		"finish",
+		"archive",
+		"mode",
+	].includes(action);
 	if (
 		![
 			"init",
@@ -719,6 +749,7 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
 			"check",
 			"status",
 			"finish",
+			"archive",
 			"publish",
 			"mode",
 		].includes(action) ||
@@ -755,6 +786,8 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
 			stage.check();
 		} else if (action === "finish") {
 			stage.finish(operand);
+		} else if (action === "archive") {
+			stage.archive(operand);
 		} else if (action === "publish") {
 			stage.publish();
 		} else if (action === "mode") {
