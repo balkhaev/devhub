@@ -717,6 +717,202 @@ test("expired access tokens with an owned refresh token stay connected until ref
 	}
 });
 
+test("several Claude CLI access snapshots are retained and repeated import is idempotent", async () => {
+	const account = await fixture();
+	try {
+		const path = join(account.home, ".claude", ".credentials.json");
+		await mkdir(dirname(path));
+		const first = JSON.stringify({
+			claudeAiOauth: {
+				accessToken: "first-test-snapshot",
+				expiresAt: NOW + 7_200_000,
+			},
+		});
+		const second = JSON.stringify({
+			claudeAiOauth: {
+				accessToken: "second-test-snapshot",
+				expiresAt: NOW + 7_200_000,
+			},
+		});
+		await writeFile(path, first);
+		await account.ai.import("claude");
+		await account.ai.import("claude");
+		expect(await account.ai.list()).toHaveLength(1);
+		await writeFile(path, second);
+		await account.ai.import("claude");
+		expect(await account.ai.list()).toHaveLength(2);
+		expect(
+			(await account.ai.store.list()).map((entry) => entry.accessToken).sort()
+		).toEqual(["first-test-snapshot", "second-test-snapshot"]);
+		expect(await readFile(path, "utf8")).toBe(second);
+		expect(account.calls).toHaveLength(0);
+	} finally {
+		await account.cleanup();
+	}
+});
+
+test("changing pool settings while OAuth refresh is pending cannot re-enable an account", async () => {
+	const requested = deferred<void>();
+	const response = deferred<Response>();
+	const account = await fixture(() => {
+		requested.resolve();
+		return response.promise;
+	});
+	try {
+		await account.ai.store.put({
+			...CREDENTIAL,
+			enabled: true,
+			maxConcurrency: 4,
+			priority: 0,
+			weight: 1,
+		});
+		const refresh = account.ai.credential(CREDENTIAL.id);
+		await requested.promise;
+		await account.ai.store.configureAccount(CREDENTIAL.id, {
+			enabled: false,
+			label: "Paused",
+			maxConcurrency: 1,
+			priority: 10,
+			weight: 3,
+		});
+		response.resolve(
+			Response.json({
+				access_token: "refreshed-test-only",
+				expires_in: 3600,
+				refresh_token: "rotated-test-only",
+			})
+		);
+		await refresh;
+		expect(await new AiStore(account.root).get(CREDENTIAL.id)).toMatchObject({
+			accessToken: "refreshed-test-only",
+			enabled: false,
+			label: "Paused",
+			maxConcurrency: 1,
+			priority: 10,
+			weight: 3,
+		});
+	} finally {
+		response.resolve(Response.json({ access_token: "cleanup-test-only" }));
+		await account.cleanup();
+	}
+});
+
+test("fresh sign-in survives an older refresh success and an older refresh rejection", async () => {
+	for (const status of [200, 401]) {
+		const requested = deferred<void>();
+		const response = deferred<Response>();
+		// biome-ignore lint/performance/noAwaitInLoops: Verify independent delayed refresh outcomes with isolated vaults.
+		const account = await fixture(() => {
+			requested.resolve();
+			return response.promise;
+		});
+		try {
+			await account.ai.store.put(CREDENTIAL);
+			const refreshing = account.ai.credential(CREDENTIAL.id);
+			await requested.promise;
+			await account.ai.store.put({
+				...CREDENTIAL,
+				accessToken: "new-signin-test-access",
+				clientId: "new-signin-client",
+				expiresAt: NOW + 7_200_000,
+				refreshToken: "new-signin-test-refresh",
+			});
+			response.resolve(
+				status === 200
+					? Response.json({
+							access_token: "old-refresh-test-access",
+							refresh_token: "old-refresh-test-token",
+						})
+					: new Response("revoked old grant", { status })
+			);
+			expect(await refreshing).toMatchObject({
+				accessToken: "new-signin-test-access",
+				clientId: "new-signin-client",
+				refreshToken: "new-signin-test-refresh",
+			});
+			expect(await new AiStore(account.root).get(CREDENTIAL.id)).toMatchObject({
+				accessToken: "new-signin-test-access",
+				expiresAt: NOW + 7_200_000,
+				refreshToken: "new-signin-test-refresh",
+			});
+		} finally {
+			response.resolve(Response.json({ access_token: "cleanup-test-access" }));
+			await account.cleanup();
+		}
+	}
+});
+
+test("reconnecting the same verified ChatGPT subject updates its existing subscription", async () => {
+	const account = await openaiFixture();
+	try {
+		await account.ai.store.put({
+			...CREDENTIAL,
+			authMode: "siwc",
+			clientId: "previous-client",
+			enabled: false,
+			id: "previous-subscription",
+			label: "My account",
+			provider: "codex",
+			subject: "fixture-subject",
+		});
+		const { url } = await account.begin();
+		await account.ai.callback(callback(url.searchParams.get("state") ?? ""));
+		expect(await account.ai.list()).toHaveLength(1);
+		expect(await account.ai.store.get("previous-subscription")).toMatchObject({
+			accessToken: PRIVATE_ACCESS,
+			clientId: OPENAI_CLIENT,
+			enabled: false,
+			label: "My account",
+			subject: "fixture-subject",
+		});
+	} finally {
+		await account.cleanup();
+	}
+});
+
+test("a newer completed sign-in survives a disconnect waiting for an older refresh", async () => {
+	const requested = deferred<void>();
+	const response = deferred<Response>();
+	const account = await fixture((call) => {
+		if (new URLSearchParams(call.body).get("grant_type") === "refresh_token") {
+			requested.resolve();
+			return response.promise;
+		}
+		return Response.json({
+			access_token: "fresh-login-test-only",
+			account: { uuid: "shared-fixture-subject" },
+			expires_in: 3600,
+			refresh_token: "fresh-login-refresh-test",
+		});
+	});
+	try {
+		await account.ai.store.put({
+			...CREDENTIAL,
+			subject: "shared-fixture-subject",
+		});
+		const refreshing = account.ai
+			.credential(CREDENTIAL.id)
+			.catch((error: unknown) => error);
+		await requested.promise;
+		const disconnecting = account.ai.disconnect(CREDENTIAL.id);
+		const flow = await account.ai.startOAuth("claude", "http://127.0.0.1:4700");
+		const state = new URL(flow.url).searchParams.get("state") ?? "";
+		await account.ai.completeOAuth(flow.id, `test-code#${state}`);
+		response.resolve(Response.json({ access_token: "old-refresh-test-only" }));
+		await Promise.all([refreshing, disconnecting]);
+		expect(await account.ai.store.get(CREDENTIAL.id)).toMatchObject({
+			accessToken: "fresh-login-test-only",
+			refreshToken: "fresh-login-refresh-test",
+		});
+		expect((await account.ai.credential(CREDENTIAL.id)).accessToken).toBe(
+			"fresh-login-test-only"
+		);
+	} finally {
+		response.resolve(Response.json({ access_token: "cleanup-test-only" }));
+		await account.cleanup();
+	}
+});
+
 test("stopping the hub cancels pending OAuth persistence even after token exchange started", async () => {
 	const requested = deferred<void>();
 	const response = deferred<Response>();

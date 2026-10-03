@@ -367,7 +367,13 @@ export async function startHub(
 			"/auth/callback": (request) => oauthCallback(ai, request, local(request)),
 			"/v1/*": (request, bunServer) => {
 				bunServer.timeout(request, 0);
-				return aiApi.handle(request, allowed(request), origin, ready);
+				return aiApi.handle(
+					request,
+					allowed(request),
+					origin,
+					ready,
+					local(request)
+				);
 			},
 		},
 	});

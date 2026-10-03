@@ -3,11 +3,46 @@ import { useCallback, useEffect, useState } from "react";
 import { AiProviderCard } from "./ai-accounts";
 import { type AiState, aiRequest } from "./ai-api";
 import { AiPlayground } from "./ai-playground";
+import { AiProxy } from "./ai-proxy";
+
+type AiTab = "subscriptions" | "proxy" | "playground";
+const TABS: Record<AiTab, string> = {
+	playground: "Тест моделей",
+	proxy: "Прокси",
+	subscriptions: "Подписки",
+};
+const TAB_ORDER: AiTab[] = ["subscriptions", "proxy", "playground"];
+
+function AiTabButton({
+	id,
+	selected,
+	onSelect,
+}: {
+	id: AiTab;
+	selected: boolean;
+	onSelect: (id: AiTab) => void;
+}) {
+	const select = useCallback(() => onSelect(id), [id, onSelect]);
+	return (
+		<button
+			aria-controls={`ai-panel-${id}`}
+			aria-selected={selected}
+			className={`ai-tab${selected ? "ai-tab--selected" : ""}`}
+			id={`ai-tab-${id}`}
+			onClick={select}
+			role="tab"
+			type="button"
+		>
+			{TABS[id]}
+		</button>
+	);
+}
 
 export function AiPage() {
 	const [state, setState] = useState<AiState | null>(null);
 	const [error, setError] = useState<string | null>(null);
 	const [loading, setLoading] = useState(false);
+	const [tab, setTab] = useState<AiTab>("subscriptions");
 	const refresh = useCallback(async () => {
 		setLoading(true);
 		setError(null);
@@ -38,11 +73,11 @@ export function AiPage() {
 		<div className="ai-page">
 			<div className="ai-page__head">
 				<div>
-					<span className="ai-eyebrow">Личные подписки</span>
+					<span className="ai-eyebrow">Личные подписки · локальный прокси</span>
 					<h1>Claude и Codex</h1>
 					<p className="muted">
-						Подключите свой аккаунт и вызывайте модели из DevHub или локальных
-						приложений.
+						Объедините несколько аккаунтов и вызывайте модели из приложений
+						через один адрес.
 					</p>
 				</div>
 				<button
@@ -51,7 +86,7 @@ export function AiPage() {
 					onClick={refresh}
 					type="button"
 				>
-					{loading ? "Обновляю…" : "Обновить подключения"}
+					{loading ? "Обновляю…" : "Обновить"}
 				</button>
 			</div>
 			{error ? (
@@ -61,33 +96,55 @@ export function AiPage() {
 			) : null}
 			{state ? (
 				<>
-					<div className="ai-providers">
-						{state.providers.map((provider) => (
-							<AiProviderCard
-								accounts={state.accounts.filter(
-									(account) => account.provider === provider.id
-								)}
-								key={provider.id}
-								onRefresh={refresh}
-								provider={provider}
+					<div aria-label="Управление AI" className="ai-tabs" role="tablist">
+						{TAB_ORDER.map((id) => (
+							<AiTabButton
+								id={id}
+								key={id}
+								onSelect={setTab}
+								selected={tab === id}
 							/>
 						))}
 					</div>
-					<AiPlayground accounts={state.accounts} providers={state.providers} />
-					<details className="ai-api-note">
-						<summary>Вызов из локальных приложений</summary>
-						<p>
-							Отправляйте JSON в <code>POST /api/ai/chat</code> на адрес этого
-							пульта. Укажите <code>accountId</code>, <code>model</code> и{" "}
-							<code>messages</code>. Ответ передаётся потоком NDJSON.
-						</p>
-						<p className="muted">
-							Для локального клиента используйте заголовок{" "}
-							<code>x-devhub-client</code> с ключом из{" "}
-							<code>.state/client-token</code> в основной папке DevHub. Ключи
-							подписок остаются на сервере.
-						</p>
-					</details>
+					<div
+						aria-labelledby="ai-tab-subscriptions"
+						hidden={tab !== "subscriptions"}
+						id="ai-panel-subscriptions"
+						role="tabpanel"
+					>
+						<div className="ai-providers">
+							{state.providers.map((provider) => (
+								<AiProviderCard
+									accounts={state.accounts.filter(
+										(account) => account.provider === provider.id
+									)}
+									key={provider.id}
+									onRefresh={refresh}
+									provider={provider}
+								/>
+							))}
+						</div>
+					</div>
+					<div
+						aria-labelledby="ai-tab-proxy"
+						hidden={tab !== "proxy"}
+						id="ai-panel-proxy"
+						role="tabpanel"
+					>
+						<AiProxy onRefresh={refresh} state={state} />
+					</div>
+					<div
+						aria-labelledby="ai-tab-playground"
+						hidden={tab !== "playground"}
+						id="ai-panel-playground"
+						role="tabpanel"
+					>
+						<AiPlayground
+							accounts={state.accounts}
+							aliases={state.proxy.aliases}
+							providers={state.providers}
+						/>
+					</div>
 				</>
 			) : null}
 			{state || error ? null : <p className="muted">Загружаю подключения…</p>}

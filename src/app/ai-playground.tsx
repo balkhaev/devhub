@@ -7,7 +7,12 @@ import {
 	useState,
 } from "react";
 
-import type { AiAccountView, AiProviderView } from "../ai/types";
+import type {
+	AiAccountView,
+	AiModelAlias,
+	AiProvider,
+	AiProviderView,
+} from "../ai/types";
 import {
 	type AiMessage,
 	type AiModelList,
@@ -18,6 +23,33 @@ import {
 
 interface ChatMessage extends AiMessage {
 	id: string;
+}
+
+function requestedModel(
+	model: string,
+	customModel: string,
+	aliases: AiModelAlias[]
+): string {
+	if (model === "custom") {
+		return customModel.trim();
+	}
+	return model.startsWith("alias:")
+		? (aliases.find((alias) => alias.id === model.slice(6))?.id ?? "")
+		: model;
+}
+
+function poolModelAccount(
+	account: AiAccountView | undefined,
+	available: AiAccountView[],
+	provider: AiProvider
+): AiAccountView | undefined {
+	return (
+		account ??
+		available.find(
+			(entry) => entry.provider === provider && entry.pool.status === "ready"
+		) ??
+		available.find((entry) => entry.provider === provider)
+	);
 }
 
 function AiTokenLimit({
@@ -46,7 +78,7 @@ function AiTokenLimit({
 			</label>
 			{supported ? null : (
 				<p className="muted small">
-					Подключение из Codex CLI не поддерживает лимит токенов ответа.
+					Подключение OpenAI по подписке не поддерживает лимит токенов ответа.
 					Генерацию можно остановить вручную.
 				</p>
 			)}
@@ -89,9 +121,30 @@ export function AiConversation({
 	);
 }
 
+function AiChatStatus({
+	route,
+	status,
+	usage,
+}: {
+	route: string | null;
+	status: string | null;
+	usage: AiUsage | null;
+}) {
+	return (
+		<div className="ai-chat-status" role="status">
+			{route ? <p>Маршрут: {route}</p> : null}
+			{status}
+			{usage
+				? `Токены: ${usage.inputTokens} на входе · ${usage.outputTokens} в ответе`
+				: null}
+		</div>
+	);
+}
+
 function useModels(
 	account: AiAccountView | undefined,
-	providers: AiProviderView[]
+	providers: AiProviderView[],
+	providerId: AiProvider
 ) {
 	const [models, setModels] = useState<AiModelList | null>(null);
 	const [model, setModel] = useState("");
@@ -99,13 +152,18 @@ function useModels(
 	const [error, setError] = useState<string | null>(null);
 	const [revision, setRevision] = useState(0);
 	const accountId = account?.id;
-	const provider = providers.find((entry) => entry.id === account?.provider);
+	const catalog = JSON.stringify(
+		providers.find((entry) => entry.id === providerId)?.models ?? []
+	);
 	// biome-ignore lint/correctness/useExhaustiveDependencies: revision is the explicit user-requested refresh trigger.
 	useEffect(() => {
 		setModels(null);
 		setModel("");
 		setError(null);
+		const fallback = JSON.parse(catalog) as AiModelList["models"];
 		if (!accountId) {
+			setModels({ models: fallback, source: "catalog" });
+			setModel(fallback[0]?.id ?? "");
 			setLoading(false);
 			return;
 		}
@@ -125,9 +183,8 @@ function useModels(
 			})
 			.catch((failure: Error) => {
 				if (!controller.signal.aborted) {
-					const fallback = provider?.models ?? [];
 					setModels({ models: fallback, source: "catalog" });
-					setModel(fallback[0]?.id ?? "");
+					setModel(fallback.at(0)?.id ?? "");
 					setError(failure.message);
 				}
 			})
@@ -137,28 +194,40 @@ function useModels(
 				}
 			});
 		return () => controller.abort();
-	}, [accountId, provider, revision]);
+	}, [accountId, catalog, revision]);
 	const refresh = useCallback(() => setRevision((value) => value + 1), []);
 	return { error, loading, model, models, refresh, setModel };
 }
 
 export function AiPlayground({
 	accounts,
+	aliases = [],
 	providers,
 }: {
 	accounts: AiAccountView[];
+	aliases?: AiModelAlias[];
 	providers: AiProviderView[];
 }) {
-	const available = accounts.filter((entry) => entry.status === "connected");
+	const available = accounts.filter(
+		(entry) => entry.status === "connected" && entry.enabled
+	);
 	const [selected, setSelected] = useState("");
-	const account =
-		available.find((entry) => entry.id === selected) ?? available[0];
+	const [autoProvider, setAutoProvider] = useState<AiProvider>(
+		() => available[0]?.provider ?? "codex"
+	);
+	const account = available.find((entry) => entry.id === selected);
+	const poolProvider = account?.provider ?? autoProvider;
 	const selectAccount = useCallback(
 		(event: ChangeEvent<HTMLSelectElement>) =>
 			setSelected(event.currentTarget.value),
 		[]
 	);
-	if (!account) {
+	const selectProvider = useCallback(
+		(event: ChangeEvent<HTMLSelectElement>) =>
+			setAutoProvider(event.currentTarget.value as AiProvider),
+		[]
+	);
+	if (!available.length) {
 		return (
 			<section aria-label="Запрос к модели" className="ai-playground">
 				<h2>Запрос к модели</h2>
@@ -171,9 +240,12 @@ export function AiPlayground({
 	return (
 		<AiSession
 			account={account}
+			aliases={aliases}
 			available={available}
-			key={account.id}
+			key={account?.id ?? `auto-${poolProvider}`}
 			onAccountChange={selectAccount}
+			onProviderChange={selectProvider}
+			poolProvider={poolProvider}
 			providers={providers}
 		/>
 	);
@@ -181,17 +253,24 @@ export function AiPlayground({
 
 function AiSession({
 	account,
+	aliases,
 	available,
 	onAccountChange,
+	onProviderChange,
+	poolProvider,
 	providers,
 }: {
-	account: AiAccountView;
+	account: AiAccountView | undefined;
+	aliases: AiModelAlias[];
 	available: AiAccountView[];
 	onAccountChange: (event: ChangeEvent<HTMLSelectElement>) => void;
+	onProviderChange: (event: ChangeEvent<HTMLSelectElement>) => void;
+	poolProvider: AiProvider;
 	providers: AiProviderView[];
 }) {
-	const accountId = account.id;
-	const supportsTokenLimit = account.source !== "codex-cli";
+	const accountId = account?.id;
+	const supportsTokenLimit = poolProvider === "claude";
+	const modelAccount = poolModelAccount(account, available, poolProvider);
 	const {
 		error: modelError,
 		loading,
@@ -199,7 +278,7 @@ function AiSession({
 		models,
 		refresh,
 		setModel,
-	} = useModels(account, providers);
+	} = useModels(modelAccount, providers, poolProvider);
 	const [customModel, setCustomModel] = useState("");
 	const [messages, setMessages] = useState<ChatMessage[]>([]);
 	const [prompt, setPrompt] = useState("");
@@ -210,6 +289,7 @@ function AiSession({
 	const [error, setError] = useState<string | null>(null);
 	const [notice, setNotice] = useState<string | null>(null);
 	const [usage, setUsage] = useState<AiUsage | null>(null);
+	const [route, setRoute] = useState<string | null>(null);
 	const controller = useRef<AbortController | null>(null);
 	useEffect(() => () => controller.current?.abort(), []);
 	const newChat = useCallback(() => {
@@ -217,13 +297,14 @@ function AiSession({
 		setError(null);
 		setNotice(null);
 		setUsage(null);
+		setRoute(null);
 	}, []);
 	const send = useCallback(
 		async (event: FormEvent<HTMLFormElement>) => {
 			event.preventDefault();
 			const content = prompt.trim();
-			const modelId = model === "custom" ? customModel.trim() : model;
-			if (!(accountId && modelId && content) || pending) {
+			const modelId = requestedModel(model, customModel, aliases);
+			if (!(modelId && content) || pending) {
 				return;
 			}
 			const next = [
@@ -236,6 +317,7 @@ function AiSession({
 			setError(null);
 			setNotice(null);
 			setUsage(null);
+			setRoute(null);
 			setPending(true);
 			const request = new AbortController();
 			controller.current = request;
@@ -253,6 +335,7 @@ function AiSession({
 						maxTokens: requestedTokenLimit,
 						messages: context,
 						model: modelId,
+						provider: accountId ? undefined : poolProvider,
 					},
 					(chunk) => {
 						if (chunk.type === "text") {
@@ -263,6 +346,10 @@ function AiSession({
 										? { ...message, content: message.content + chunk.text }
 										: message
 								)
+							);
+						} else if (chunk.type === "route") {
+							setRoute(
+								`${available.find((entry) => entry.id === chunk.accountId)?.label ?? chunk.provider} · ${chunk.model}`
 							);
 						} else if (chunk.type === "done") {
 							setUsage(chunk.usage ?? null);
@@ -289,11 +376,14 @@ function AiSession({
 		},
 		[
 			accountId,
+			aliases,
+			available,
 			customModel,
 			requestedTokenLimit,
 			messages,
 			model,
 			pending,
+			poolProvider,
 			prompt,
 			system,
 		]
@@ -324,7 +414,7 @@ function AiSession({
 			setPrompt(event.currentTarget.value),
 		[]
 	);
-	const effectiveModel = model === "custom" ? customModel.trim() : model;
+	const effectiveModel = requestedModel(model, customModel, aliases);
 	const statusText = pending ? "Получаю ответ…" : notice;
 	return (
 		<section aria-label="Запрос к модели" className="ai-playground">
@@ -351,8 +441,9 @@ function AiSession({
 					<select
 						disabled={pending}
 						onChange={onAccountChange}
-						value={accountId}
+						value={accountId ?? ""}
 					>
+						<option value="">Автоматически из пула</option>
 						{available.map((entry) => (
 							<option key={entry.id} value={entry.id}>
 								{entry.provider === "codex" ? "Codex" : "Claude"} ·{" "}
@@ -361,6 +452,19 @@ function AiSession({
 						))}
 					</select>
 				</label>
+				{accountId ? null : (
+					<label className="ai-field">
+						<span>Пул провайдера</span>
+						<select
+							disabled={pending}
+							onChange={onProviderChange}
+							value={poolProvider}
+						>
+							<option value="codex">OpenAI</option>
+							<option value="claude">Claude</option>
+						</select>
+					</label>
+				)}
 				<label className="ai-field">
 					<span>Модель</span>
 					<select
@@ -374,6 +478,18 @@ function AiSession({
 								{entry.name}
 							</option>
 						))}
+						{accountId
+							? null
+							: aliases
+									.filter((alias) => alias.provider === poolProvider)
+									.map((alias) => (
+										<option
+											key={`alias:${alias.id}`}
+											value={`alias:${alias.id}`}
+										>
+											{alias.id} · {alias.model}
+										</option>
+									))}
 						<option value="custom">Другой идентификатор…</option>
 					</select>
 				</label>
@@ -431,12 +547,7 @@ function AiSession({
 			<div className="ai-chat">
 				<AiConversation messages={messages} pending={pending} />
 			</div>
-			<div className="ai-chat-status" role="status">
-				{statusText}
-				{usage
-					? `Токены: ${usage.inputTokens} на входе · ${usage.outputTokens} в ответе`
-					: null}
-			</div>
+			<AiChatStatus route={route} status={statusText} usage={usage} />
 			{error ? (
 				<p className="ai-error" role="alert">
 					{error}
