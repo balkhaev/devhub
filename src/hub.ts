@@ -349,7 +349,9 @@ export class Hub {
 				},
 			];
 		});
-		this.processes = runtime.processes ?? new Processes(root);
+		this.processes =
+			runtime.processes ??
+			new Processes(root, `http://127.0.0.1:${catalogue.port}`);
 		this.runtime = {
 			composeAction,
 			dockerView,
