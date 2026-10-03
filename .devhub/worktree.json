@@ -1,7 +1,11 @@
 {
-  "checks": ["bun run check", "bun run test"],
+  "checks": [
+    "bun run check",
+    "bun run test"
+  ],
   "releaseBranch": "main",
   "stageBranch": "stage",
   "version": 1,
-  "worktreeRoot": "../.worktrees/devhub"
+  "worktreeRoot": "D:/worktrees/devhub",
+  "mode": "mvp"
 }
