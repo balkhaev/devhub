@@ -27,6 +27,7 @@ import {
 	processInfo,
 } from "./probes";
 import { alive, killTree, type Managed, Processes } from "./processes";
+import { type ProjectMode, workflowPolicySchema } from "./workflow-policy";
 
 /**
  * The hub's picture of this computer, kept current: every catalogued service with its state, who owns each
@@ -97,8 +98,13 @@ export interface ProjectView {
 	/** The Docker Compose project its dev servers use. */
 	docker: ComposeView | null;
 	id: string;
+	integrationBranch: string | null;
+	localOnly: boolean;
+	mode: ProjectMode | null;
+	modeEditable: boolean;
 	name: string;
 	path: string;
+	releaseBranch: string | null;
 	services: ServiceView[];
 	stageBranch: string | null;
 }
@@ -172,10 +178,19 @@ const sleep = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
 
 function stageInfo(path: string): {
 	currentBranch: string | null;
+	integrationBranch: string | null;
+	localOnly: boolean;
+	mode: ProjectMode | null;
+	modeEditable: boolean;
+	releaseBranch: string | null;
 	stageBranch: string | null;
 } {
 	let currentBranch: string | null = null;
 	let stageBranch: string | null = null;
+	let integrationBranch: string | null = null;
+	let localOnly = false;
+	let mode: ProjectMode | null = null;
+	let releaseBranch: string | null = null;
 	try {
 		const head = readFileSync(resolve(path, ".git/HEAD"), "utf8").trim();
 		currentBranch = head.startsWith("ref: refs/heads/")
@@ -185,16 +200,24 @@ function stageInfo(path: string): {
 		/* Non-Git projects remain manageable. */
 	}
 	try {
-		stageBranch =
-			(
-				JSON.parse(
-					readFileSync(resolve(path, ".devhub/worktree.json"), "utf8")
-				) as { stageBranch?: string }
-			).stageBranch ?? null;
+		const policy = workflowPolicySchema.parse(
+			JSON.parse(readFileSync(resolve(path, ".devhub/worktree.json"), "utf8"))
+		);
+		({ mode, releaseBranch, stageBranch } = policy);
+		localOnly = policy.remote === null;
+		integrationBranch = mode === "mvp" ? releaseBranch : stageBranch;
 	} catch {
-		/* A project without a stage policy does not claim a stage branch. */
+		/* Missing or invalid policies do not claim a workflow or permit editing. */
 	}
-	return { currentBranch, stageBranch };
+	return {
+		currentBranch,
+		integrationBranch,
+		localOnly,
+		mode,
+		modeEditable: mode !== null,
+		releaseBranch,
+		stageBranch,
+	};
 }
 
 const windowsPath = (path: string): string =>

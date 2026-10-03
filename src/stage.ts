@@ -7,27 +7,26 @@ import {
 	openSync,
 	readdirSync,
 	readFileSync,
+	renameSync,
 	rmSync,
 	writeFileSync,
 } from "node:fs";
 import { isAbsolute, join, resolve } from "node:path";
-import { z } from "zod";
 
 import { isInsideProject, primaryCheckout, sameSourcePath } from "./checkouts";
 import { canonicalProjectFolder, loadCatalogue } from "./config";
+import {
+	type ProjectMode,
+	type WorkflowPolicy,
+	workflowPolicySchema,
+} from "./workflow-policy";
+import { archiveWorktree } from "./worktree-archive";
 
 const ROOT = primaryCheckout(resolve(import.meta.dir, ".."));
 const POLICY = join(".devhub", "worktree.json");
 const TOPIC_SEGMENT = /^[a-z0-9][a-z0-9-]*$/;
 const CODEX_PREFIX = /^codex\//;
 const BRANCH_PREFIX = /^refs\/heads\//;
-const policySchema = z.strictObject({
-	checks: z.array(z.string().trim().min(1)),
-	releaseBranch: z.string().min(1),
-	stageBranch: z.literal("stage"),
-	version: z.literal(1),
-	worktreeRoot: z.string().min(1),
-});
 
 interface CheckRecord {
 	checkedAt: string;
@@ -42,16 +41,18 @@ export interface WorktreeRecord {
 	path: string;
 }
 
-const HELP = `DevHub: worktree → stage → финальная проверка → явный выпуск
+const HELP = `DevHub: MVP → main + push + выпуск; Прод → stage → проверка → отдельный выпуск
   bun run stage init --project PATH           выделить stage, сохранив локальные правки
-  bun run stage create TOPIC --project PATH   codex/TOPIC от чистого stage
-  bun run stage integrate REF --project PATH  слить ветку или worktree в чистый stage и проверить
+  bun run stage create TOPIC --project PATH   временный codex/TOPIC от основной ветки режима
+  bun run stage integrate REF --project PATH  влить и проверить; MVP сразу push + выпуск
+  bun run stage publish --project PATH        проверить и опубликовать текущий main в MVP
+  bun run stage mode mvp|prod --project PATH   выбрать режим и основную ветку
   bun run stage check --project PATH          выполнить проверки из .devhub/worktree.json
   bun run stage status --project PATH         stage, worktree, актуальность проверки
   bun run stage finish PATH --project PATH    убрать чистый, уже влитый worktree
 
 В проекте те же команды доступны через bun/npm run worktree.
-DevHub запускает dev только из основной папки. Release-ветка и push требуют отдельного выпуска.
+DevHub запускает dev только из основной папки. В Прод push/deploy требуют отдельного выпуска.
 `;
 
 /** Git operations use argument arrays; paths and refs never become shell code. */
@@ -76,14 +77,14 @@ export function gitOutput(
 
 export class StageProject {
 	readonly root: string;
-	readonly policy: z.infer<typeof policySchema>;
+	readonly policy: WorkflowPolicy;
 	readonly worktreeRoot: string;
 	readonly stateFile: string;
 	readonly lockFile: string;
 
 	constructor(folder: string, stateRoot = join(ROOT, ".state", "stage")) {
 		this.root = primaryCheckout(folder);
-		this.policy = policySchema.parse(
+		this.policy = workflowPolicySchema.parse(
 			JSON.parse(readFileSync(join(this.root, POLICY), "utf8"))
 		);
 		this.worktreeRoot = resolve(this.root, this.policy.worktreeRoot);
@@ -115,10 +116,16 @@ export class StageProject {
 		);
 	}
 
+	get integrationBranch(): string {
+		return this.policy.mode === "mvp"
+			? this.policy.releaseBranch
+			: this.policy.stageBranch;
+	}
+
 	private assertStage(): void {
-		if (this.branch() !== this.policy.stageBranch) {
+		if (this.branch() !== this.integrationBranch) {
 			throw new Error(
-				`${this.root}: основная папка должна быть на ветке stage`
+				`${this.root}: основная папка должна быть на ветке ${this.integrationBranch}`
 			);
 		}
 	}
@@ -136,13 +143,13 @@ export class StageProject {
 
 	/** Same-HEAD branch creation preserves the index and all working files, even in an unborn repo. */
 	init(): void {
-		if (this.branch() === this.policy.stageBranch) {
+		if (this.branch() === this.integrationBranch) {
 			return;
 		}
 		const current = this.head();
 		const stage = gitOutput(
 			this.root,
-			["rev-parse", "--verify", `refs/heads/${this.policy.stageBranch}`],
+			["rev-parse", "--verify", `refs/heads/${this.integrationBranch}`],
 			true
 		);
 		if (!current) {
@@ -151,21 +158,107 @@ export class StageProject {
 					"в репозитории без HEAD уже есть stage; сначала проверьте существующую ветку"
 				);
 			}
-			gitOutput(this.root, ["symbolic-ref", "HEAD", "refs/heads/stage"]);
+			gitOutput(this.root, [
+				"symbolic-ref",
+				"HEAD",
+				`refs/heads/${this.integrationBranch}`,
+			]);
 		} else if (!stage) {
-			gitOutput(this.root, ["switch", "-c", this.policy.stageBranch]);
+			gitOutput(this.root, ["switch", "-c", this.integrationBranch]);
 		} else if (stage === current) {
-			gitOutput(this.root, ["switch", this.policy.stageBranch]);
+			gitOutput(this.root, ["switch", this.integrationBranch]);
 		} else {
 			throw new Error(
-				`${this.root}: stage уже существует на другом коммите; автоматический перенос локальных правок запрещён`
+				`${this.root}: ${this.integrationBranch} уже существует на другом коммите; автоматический перенос локальных правок запрещён`
 			);
 		}
 	}
 
+	/** Same-tree branch transitions preserve the index, private files and concurrent working edits. */
+	setMode(mode: ProjectMode, options: { commit?: boolean } = {}): void {
+		const policyHadEdits = Boolean(
+			gitOutput(this.root, ["diff", "HEAD", "--", POLICY], true)
+		);
+		const fresh = workflowPolicySchema.parse(
+			JSON.parse(readFileSync(join(this.root, POLICY), "utf8"))
+		);
+		if (JSON.stringify(fresh) !== JSON.stringify(this.policy)) {
+			throw new Error(
+				"политика проекта изменилась; перечитайте её перед сменой режима"
+			);
+		}
+		if (gitOutput(this.root, ["rev-parse", "--verify", "MERGE_HEAD"], true)) {
+			throw new Error("сначала завершите текущий merge");
+		}
+		const branch =
+			mode === "mvp" ? this.policy.releaseBranch : this.policy.stageBranch;
+		const head = this.head();
+		const ref = `refs/heads/${branch}`;
+		const target = gitOutput(this.root, ["rev-parse", "--verify", ref], true);
+		const other = this.worktrees().find(
+			(item) => item.branch === branch && !sameSourcePath(item.path, this.root)
+		);
+		if (other) {
+			throw new Error(
+				`${branch} уже используется в ${other.path}; сначала завершите worktree`
+			);
+		}
+		if (head && target && target !== head) {
+			const ancestor = spawnSync(
+				"git",
+				["-C", this.root, "merge-base", "--is-ancestor", target, head],
+				{ windowsHide: true }
+			);
+			if (ancestor.status !== 0) {
+				throw new Error(
+					`${branch} содержит другую историю; автоматическая смена режима запрещена`
+				);
+			}
+		}
+		if (head && target !== head) {
+			gitOutput(this.root, [
+				"update-ref",
+				ref,
+				head,
+				target || "0000000000000000000000000000000000000000",
+			]);
+		}
+		if (head) {
+			gitOutput(this.root, ["switch", branch]);
+		} else {
+			gitOutput(this.root, ["symbolic-ref", "HEAD", ref]);
+		}
+		this.policy.mode = mode;
+		const file = join(this.root, POLICY);
+		const temporary = `${file}.${process.pid}.tmp`;
+		writeFileSync(temporary, `${JSON.stringify(this.policy, null, 2)}\n`);
+		renameSync(temporary, file);
+		// A UI mode change must not leave its own configuration blocking the next task.
+		// Existing policy edits belong to their author and are never swept into this commit.
+		if (
+			options.commit !== false &&
+			head &&
+			!policyHadEdits &&
+			gitOutput(this.root, ["diff", "HEAD", "--name-only", "--", POLICY])
+		) {
+			gitOutput(this.root, ["add", "--", POLICY]);
+			gitOutput(this.root, [
+				"commit",
+				"--only",
+				"-m",
+				`Set project mode to ${mode}`,
+				"--",
+				POLICY,
+			]);
+		}
+		rmSync(this.stateFile, { force: true });
+	}
+
 	create(topic: string): string {
 		this.assertStage();
-		this.assertClean();
+		if (this.policy.mode === "prod") {
+			this.assertClean();
+		}
 		const name = topic.replace(CODEX_PREFIX, "");
 		if (!name.split("/").every((part) => TOPIC_SEGMENT.test(part))) {
 			throw new Error(
@@ -191,7 +284,7 @@ export class StageProject {
 			"-b",
 			`codex/${name}`,
 			folder,
-			"refs/heads/stage",
+			`refs/heads/${this.integrationBranch}`,
 		]);
 		return folder;
 	}
@@ -248,11 +341,146 @@ export class StageProject {
 
 	integrate(source: string): void {
 		this.assertStage();
-		this.assertClean();
+		if (this.policy.mode === "prod") {
+			this.assertClean();
+		}
+		if (
+			gitOutput(this.root, ["diff", "--cached", "--name-only"]) ||
+			gitOutput(this.root, ["rev-parse", "--verify", "MERGE_HEAD"], true)
+		) {
+			throw new Error(
+				"индекс основной папки занят; сохраните staged-правки или завершите merge"
+			);
+		}
 		const commit = this.resolveSource(source);
+		const sourcePath = resolve(source);
+		const sourceTree = this.worktrees().find(
+			(item) =>
+				sameSourcePath(item.path, sourcePath) ||
+				item.branch === source.replace(BRANCH_PREFIX, "")
+		);
+		if (this.policy.mode === "mvp" && this.status().dirty && !sourceTree) {
+			throw new Error(
+				"для MVP с посторонними правками нужен чистый worktree задачи: он проверит точный main перед push"
+			);
+		}
 		// A failed merge remains visible in stage for conflict resolution; nothing is reset or pushed.
 		gitOutput(this.root, ["merge", "--no-ff", "--no-edit", commit]);
 		this.check();
+		if (this.policy.mode === "mvp") {
+			const tree =
+				this.status().dirty && sourceTree
+					? this.verifyCommittedCheckout(sourceTree.path, commit)
+					: undefined;
+			this.publishChecked(tree, tree ? sourceTree?.path : undefined);
+			if (
+				sourceTree &&
+				isInsideProject(this.worktreeRoot, sourceTree.path) &&
+				!sameSourcePath(this.worktreeRoot, sourceTree.path)
+			) {
+				this.finish(sourceTree.path);
+			}
+		}
+	}
+
+	private verifyCommittedCheckout(folder: string, expected: string): string {
+		this.assertClean(folder);
+		if (gitOutput(folder, ["rev-parse", "HEAD"]) !== expected) {
+			throw new Error(
+				"worktree задачи изменился во время интеграции; push отменён"
+			);
+		}
+		const head = this.head();
+		if (!head) {
+			throw new Error("main не содержит коммит");
+		}
+		gitOutput(folder, ["switch", "--detach", head]);
+		const before = this.fingerprint();
+		this.runChecks(folder);
+		this.assertClean(folder);
+		if (
+			before !== this.fingerprint() ||
+			gitOutput(folder, ["rev-parse", "HEAD"]) !== head
+		) {
+			throw new Error(
+				"исходники изменились во время проверки main; push отменён"
+			);
+		}
+		return gitOutput(folder, ["rev-parse", "HEAD^{tree}"]);
+	}
+
+	/** MVP publication never force-pushes and never includes uncommitted edits. */
+	private publishChecked(verifiedTree?: string, verifiedFolder?: string): void {
+		this.assertStage();
+		const status = this.status();
+		const exactTree =
+			verifiedTree &&
+			verifiedTree === gitOutput(this.root, ["rev-parse", "HEAD^{tree}"]);
+		if (
+			this.policy.mode !== "mvp" ||
+			!status.checked ||
+			(status.dirty && !exactTree)
+		) {
+			throw new Error(
+				"автоматический выпуск доступен только после финальной проверки MVP"
+			);
+		}
+		if (this.policy.remote === null) {
+			console.log(`MVP сохранён в локальном ${this.policy.releaseBranch}`);
+			return;
+		}
+		if (
+			!gitOutput(this.root, ["remote", "get-url", this.policy.remote], true)
+		) {
+			throw new Error(
+				`не настроен Git remote ${this.policy.remote}; main проверен, но не опубликован`
+			);
+		}
+		gitOutput(this.root, [
+			"push",
+			this.policy.remote,
+			`refs/heads/${this.policy.releaseBranch}:refs/heads/${this.policy.releaseBranch}`,
+		]);
+		if (this.policy.deploy) {
+			const deployEnv: Record<string, string | undefined> = {
+				...process.env,
+				NODE_ENV: "production",
+			};
+			for (const key of [
+				"DEVHUB_ROOT",
+				"DEVHUB_SERVICE",
+				"DEVHUB_FRAME_ORIGIN",
+				"DEVHUB_STAGE",
+			]) {
+				delete deployEnv[key];
+			}
+			const result = spawnSync(this.policy.deploy, {
+				cwd: verifiedFolder ?? this.root,
+				env: deployEnv,
+				shell: true,
+				stdio: "inherit",
+				windowsHide: true,
+			});
+			if (result.error) {
+				throw result.error;
+			}
+			if (result.status !== 0) {
+				throw new Error(
+					`main опубликован; production-команда завершилась с exit ${result.status}`
+				);
+			}
+		}
+	}
+
+	publish(): void {
+		if (this.policy.mode !== "mvp") {
+			throw new Error(
+				"в режиме Прод выпуск выполняется отдельно после проверки stage"
+			);
+		}
+		this.assertClean();
+		this.check();
+		this.publishChecked();
 	}
 
 	private fingerprint(): string {
@@ -262,6 +490,7 @@ export class StageProject {
 				branch: this.branch(),
 				checks: this.policy.checks,
 				head: this.head(),
+				mode: this.policy.mode,
 			})
 		);
 		digest.update(
@@ -317,10 +546,24 @@ export class StageProject {
 		// Invalidate a previous successful run before starting, including on interruption.
 		rmSync(this.stateFile, { force: true });
 		const before = this.fingerprint();
+		this.runChecks(this.root);
+		const after = this.fingerprint();
+		if (before !== after) {
+			throw new Error(
+				"проверки изменили исходники; проверьте изменения и запустите check повторно"
+			);
+		}
+		writeFileSync(
+			this.stateFile,
+			`${JSON.stringify({ checkedAt: new Date().toISOString(), checks: this.policy.checks, fingerprint: after, head: this.head() } satisfies CheckRecord, null, 2)}\n`
+		);
+	}
+
+	private runChecks(folder: string): void {
 		for (const command of this.policy.checks) {
-			process.stdout.write(`stage: ${this.root} · ${command}\n`);
+			process.stdout.write(`check: ${folder} · ${command}\n`);
 			const result = spawnSync(command, {
-				cwd: this.root,
+				cwd: folder,
 				env: { ...process.env, DEVHUB_STAGE: "1" },
 				shell: true,
 				stdio: "inherit",
@@ -335,25 +578,6 @@ export class StageProject {
 				);
 			}
 		}
-		const after = this.fingerprint();
-		if (before !== after) {
-			throw new Error(
-				"проверки изменили исходники; проверьте изменения и запустите check повторно"
-			);
-		}
-		writeFileSync(
-			this.stateFile,
-			`${JSON.stringify(
-				{
-					checkedAt: new Date().toISOString(),
-					checks: this.policy.checks,
-					fingerprint: after,
-					head: this.head(),
-				} satisfies CheckRecord,
-				null,
-				2
-			)}\n`
-		);
 	}
 
 	status() {
@@ -373,17 +597,22 @@ export class StageProject {
 			checkedAt: checked ? record?.checkedAt : undefined,
 			dirty,
 			head: this.head(),
+			integrationBranch: this.integrationBranch,
+			mode: this.policy.mode,
 			releaseBranch: this.policy.releaseBranch,
-			releaseReady: checked && !dirty && this.branch() === "stage",
+			releaseReady:
+				checked && !dirty && this.branch() === this.integrationBranch,
 			root: this.root,
 			worktrees: this.worktrees(),
 		};
 	}
 
-	finish(folder: string): void {
+	finish(folder: string): string {
 		this.assertStage();
-		this.assertClean();
-		if (!this.status().releaseReady) {
+		if (this.policy.mode === "prod") {
+			this.assertClean();
+		}
+		if (!this.status().checked) {
 			throw new Error("сначала успешно проверьте текущий чистый stage");
 		}
 		const path = resolve(folder);
@@ -399,25 +628,20 @@ export class StageProject {
 			);
 		}
 		this.assertClean(path);
-		if (
-			gitOutput(path, [
-				"ls-files",
-				"--others",
-				"--ignored",
-				"--exclude-standard",
-			])
-		) {
-			throw new Error(
-				`${path}: сохраните ignored-файлы вне worktree перед удалением`
-			);
-		}
 		gitOutput(this.root, [
 			"merge-base",
 			"--is-ancestor",
 			worktree.head,
-			"refs/heads/stage",
+			`refs/heads/${this.integrationBranch}`,
 		]);
-		gitOutput(this.root, ["worktree", "remove", path]);
+		const archived = archiveWorktree({
+			allowedRoot: this.worktreeRoot,
+			archiveRoot: resolve(this.worktreeRoot, "../../archives/devhub"),
+			project: this.root,
+			worktree: path,
+		});
+		process.stdout.write(`worktree сохранён и удалён: ${archived}\n`);
+		return archived;
 	}
 
 	/** Shared by synchronous Git operations and the asynchronous filesystem deletion lifecycle. */
@@ -480,11 +704,20 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
 		process.stdout.write(HELP);
 		return;
 	}
-	const takesOperand = ["create", "integrate", "finish"].includes(action);
+	const takesOperand = ["create", "integrate", "finish", "mode"].includes(
+		action
+	);
 	if (
-		!["init", "create", "integrate", "check", "status", "finish"].includes(
-			action
-		) ||
+		![
+			"init",
+			"create",
+			"integrate",
+			"check",
+			"status",
+			"finish",
+			"publish",
+			"mode",
+		].includes(action) ||
 		operands.length !== (takesOperand ? 1 : 0)
 	) {
 		throw new Error(`неверная команда\n${HELP}`);
@@ -506,17 +739,26 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
 		process.stdout.write(`${JSON.stringify(stage.status(), null, 2)}\n`);
 		return;
 	}
+	const [operand = ""] = operands;
 	stage.withLock(() => {
 		if (action === "init") {
 			stage.init();
 		} else if (action === "create") {
-			process.stdout.write(`${stage.create(operands[0] ?? "")}\n`);
+			process.stdout.write(`${stage.create(operand)}\n`);
 		} else if (action === "integrate") {
-			stage.integrate(operands[0] ?? "");
+			stage.integrate(operand);
 		} else if (action === "check") {
 			stage.check();
 		} else if (action === "finish") {
-			stage.finish(operands[0] ?? "");
+			stage.finish(operand);
+		} else if (action === "publish") {
+			stage.publish();
+		} else if (action === "mode") {
+			const mode = operand;
+			if (mode !== "mvp" && mode !== "prod") {
+				throw new Error("режим: mvp или prod");
+			}
+			stage.setMode(mode);
 		}
 	});
 	process.stdout.write(`${stage.root}: ${action} — готово\n`);
