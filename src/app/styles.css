@@ -64,6 +64,17 @@ code {
 	font-size: 12px;
 }
 
+.sr-only {
+	position: absolute;
+	width: 1px;
+	height: 1px;
+	padding: 0;
+	overflow: hidden;
+	white-space: nowrap;
+	border: 0;
+	clip-path: inset(50%);
+}
+
 .pad {
 	padding: 24px;
 }
@@ -190,6 +201,40 @@ code {
 	list-style: none;
 }
 
+.side-group__head {
+	display: flex;
+	gap: 4px;
+	align-items: center;
+	padding: 0 4px;
+}
+
+.side-group__head .side-group__title {
+	flex: 1;
+	min-width: 0;
+	margin: 0;
+}
+
+.side-group__actions {
+	display: flex;
+	flex: none;
+	gap: 1px;
+	align-items: center;
+}
+
+.side-group__status {
+	display: grid;
+	gap: 2px;
+	padding: 0 4px 5px;
+}
+
+.side-group__status .small {
+	font-size: 10px;
+}
+
+.side-group__current {
+	color: var(--accent);
+}
+
 .side-item {
 	display: flex;
 	gap: 8px;
@@ -233,6 +278,7 @@ code {
 .side-item:focus-visible,
 .side-project:focus-visible,
 .button:focus-visible,
+.project-icon:focus-visible,
 .toggle:focus-visible,
 .tabs__item:focus-visible {
 	outline: 2px solid var(--accent);
@@ -356,6 +402,7 @@ code {
 	text-align: left;
 	text-transform: inherit;
 	letter-spacing: inherit;
+	overflow-wrap: anywhere;
 	cursor: pointer;
 	background: transparent;
 	border: 0;
@@ -364,6 +411,44 @@ code {
 .side-project:hover,
 .side-project--selected {
 	color: var(--text);
+}
+
+.project-icon {
+	display: inline-flex;
+	flex: none;
+	align-items: center;
+	justify-content: center;
+	width: 30px;
+	height: 30px;
+	padding: 0;
+	font-size: 19px;
+	line-height: 1;
+	color: var(--muted);
+	text-decoration: none;
+	cursor: pointer;
+	background: transparent;
+	border: 1px solid transparent;
+	border-radius: 6px;
+}
+
+.project-icon:hover {
+	color: var(--text);
+	background: var(--raised);
+	border-color: var(--line-strong);
+}
+
+.project-favorite[aria-pressed="true"] {
+	color: var(--accent);
+}
+
+.side-group__actions .project-icon {
+	width: 26px;
+	height: 28px;
+	font-size: 17px;
+}
+
+.side-frontend {
+	font-size: 15px;
 }
 
 .toggle[aria-pressed="true"] {
@@ -549,6 +634,7 @@ code {
 	display: grid;
 	grid-template-columns: repeat(auto-fill, minmax(290px, 1fr));
 	gap: 12px;
+	align-items: start;
 }
 
 .cards--single {
@@ -573,6 +659,23 @@ code {
 .card__head h2 {
 	margin: 0;
 	font-size: 15px;
+}
+
+.card__title {
+	min-width: 0;
+}
+
+.card__title h2 {
+	overflow-wrap: anywhere;
+}
+
+.project-status {
+	display: block;
+	margin-top: 2px;
+}
+
+.card--collapsed .card__head {
+	align-items: center;
 }
 
 .card__head h2 a {

@@ -3,6 +3,7 @@ import { useCallback, useEffect } from "react";
 import { useHub, useRoute } from "./api";
 import { ComposeCard, Overview } from "./overview";
 import { ProjectPage } from "./project";
+import { ProjectPreferencesProvider } from "./project-preferences";
 import { projectRoute } from "./project-ui";
 import { ServicePage } from "./service";
 import { Sidebar } from "./sidebar";
@@ -85,29 +86,31 @@ export function App() {
 	const services = view?.projects.flatMap((project) => project.services) ?? [];
 	const up = services.filter((service) => isUp(service.status)).length;
 	return (
-		<div className="app">
-			<header className="header">
-				<a className="brand" href="#/">
-					<span aria-hidden="true" className="brand__mark" />
-					<strong>Пульт</strong>
-				</a>
-				<span className="muted">
-					{view
-						? `работают ${up} из ${services.length}`
-						: "читаю, что запущено…"}
-				</span>
-				<span className={cx("live", connected && "live--on")}>
-					{connected ? "на связи" : "нет связи с пультом"}
-				</span>
-			</header>
-			<Sidebar onOpen={go} selected={route} view={view} />
-			<main className="main">
-				{view ? (
-					<Main onDeleted={deleted} route={route} view={view} />
-				) : (
-					<p className="muted pad">Загрузка…</p>
-				)}
-			</main>
-		</div>
+		<ProjectPreferencesProvider>
+			<div className="app">
+				<header className="header">
+					<a className="brand" href="#/">
+						<span aria-hidden="true" className="brand__mark" />
+						<strong>Пульт</strong>
+					</a>
+					<span className="muted">
+						{view
+							? `работают ${up} из ${services.length}`
+							: "читаю, что запущено…"}
+					</span>
+					<span className={cx("live", connected && "live--on")}>
+						{connected ? "на связи" : "нет связи с пультом"}
+					</span>
+				</header>
+				<Sidebar onOpen={go} selected={route} view={view} />
+				<main className="main">
+					{view ? (
+						<Main onDeleted={deleted} route={route} view={view} />
+					) : (
+						<p className="muted pad">Загрузка…</p>
+					)}
+				</main>
+			</div>
+		</ProjectPreferencesProvider>
 	);
 }

@@ -1,8 +1,15 @@
 import { type MouseEvent, useCallback } from "react";
 
 import type { HubView, ProjectView, ServiceView } from "../hub";
+import {
+	FavoriteProjectButton,
+	ProjectCollapseButton,
+	ProjectStatus,
+	SidebarFrontendLink,
+} from "./project-preference-controls";
+import { favoriteProjects, useProjectPreferences } from "./project-preferences";
 import { projectRoute } from "./project-ui";
-import { composeStatus, cx, isUp, STATUS_SHORT } from "./words";
+import { composeStatus, cx, STATUS_SHORT } from "./words";
 
 /** Every project and its services with their state; the overview at the top, Docker at the bottom. */
 
@@ -47,37 +54,67 @@ function ProjectGroup({
 	project: ProjectView;
 	selected: string | null;
 }) {
-	const up = project.services.filter((service) => isUp(service.status)).length;
+	const { preferences, toggleCollapse } = useProjectPreferences();
+	const collapsed = preferences.collapsed.sidebar.includes(project.id);
+	const details = `sidebar-project-${project.id}`;
+	const collapse = useCallback(
+		() => toggleCollapse("sidebar", project.id),
+		[project.id, toggleCollapse]
+	);
+	const currentService = project.services.find(
+		(service) => service.key === selected
+	);
 	return (
 		<section className="side-group">
-			<h3 className="side-group__title">
-				<button
-					aria-current={
-						selected === projectRoute(project.id) ? "true" : undefined
-					}
-					className={cx(
-						"side-project",
-						selected === projectRoute(project.id) && "side-project--selected"
-					)}
-					data-key={projectRoute(project.id)}
-					onClick={onOpen}
-					type="button"
-				>
-					{project.name}
-					<span className="side-group__count">
-						{up}/{project.services.length}
-					</span>
-				</button>
-			</h3>
-			<ul className="side-group__list">
-				{project.services.map((service) => (
-					<ServiceRow
-						key={service.key}
-						onOpen={onOpen}
-						selected={service.key === selected}
-						service={service}
+			<div className="side-group__head">
+				<h3 className="side-group__title">
+					<button
+						aria-current={
+							selected === projectRoute(project.id) ? "true" : undefined
+						}
+						className={cx(
+							"side-project",
+							(selected === projectRoute(project.id) ||
+								Boolean(currentService)) &&
+								"side-project--selected"
+						)}
+						data-key={projectRoute(project.id)}
+						onClick={onOpen}
+						type="button"
+					>
+						{project.name}
+					</button>
+				</h3>
+				<div className="side-group__actions">
+					<SidebarFrontendLink project={project} />
+					<FavoriteProjectButton project={project} />
+					<ProjectCollapseButton
+						collapsed={collapsed}
+						controls={details}
+						onToggle={collapse}
+						project={project}
 					/>
-				))}
+				</div>
+			</div>
+			<div className="side-group__status">
+				<ProjectStatus project={project} />
+				{collapsed && currentService ? (
+					<span className="side-group__current muted small">
+						Открыт: {currentService.name}
+					</span>
+				) : null}
+			</div>
+			<ul className="side-group__list" hidden={collapsed} id={details}>
+				{collapsed
+					? null
+					: project.services.map((service) => (
+							<ServiceRow
+								key={service.key}
+								onOpen={onOpen}
+								selected={service.key === selected}
+								service={service}
+							/>
+						))}
 			</ul>
 		</section>
 	);
@@ -92,6 +129,7 @@ export function Sidebar({
 	selected: string | null;
 	view: HubView | null;
 }) {
+	const { preferences } = useProjectPreferences();
 	const open = useCallback(
 		(event: MouseEvent<HTMLButtonElement>) => {
 			onOpen(event.currentTarget.dataset.key ?? null);
@@ -116,14 +154,16 @@ export function Sidebar({
 			>
 				Обзор
 			</button>
-			{(view?.projects ?? []).map((project) => (
-				<ProjectGroup
-					key={project.id}
-					onOpen={open}
-					project={project}
-					selected={selected}
-				/>
-			))}
+			{favoriteProjects(view?.projects ?? [], preferences.favorites).map(
+				(project) => (
+					<ProjectGroup
+						key={project.id}
+						onOpen={open}
+						project={project}
+						selected={selected}
+					/>
+				)
+			)}
 			{view?.docker.available ? (
 				<section className="side-group">
 					<h3 className="side-group__title">

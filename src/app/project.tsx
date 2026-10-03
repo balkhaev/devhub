@@ -1,6 +1,7 @@
 import type { ProjectView } from "../hub";
 import { FrontendLink, ProjectControls } from "./project-controls";
 import { DeleteProjectButton } from "./project-delete";
+import { FavoriteProjectButton } from "./project-preference-controls";
 import { mainFrontend } from "./project-ui";
 import { cx, STATUS_WORDS } from "./words";
 
@@ -25,7 +26,10 @@ export function ProjectPage({
 						<p className="muted">{project.description}</p>
 					) : null}
 				</div>
-				<FrontendLink project={project} />
+				<div className="card__actions">
+					<FavoriteProjectButton project={project} />
+					<FrontendLink project={project} />
+				</div>
 			</header>
 			<div className="card project-stage">
 				<h2>Dev / stage</h2>
