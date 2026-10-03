@@ -59,13 +59,16 @@ class FakeProcesses extends Processes {
 async function fixture(
 	services: unknown[],
 	runtime: HubRuntime = {},
-	launch: Record<string, string[]> = {}
+	launch: Record<string, string[]> = {},
+	projectPath = "."
 ) {
 	const processes = new FakeProcesses();
 	const ports = new Map<number, number>();
 	const hub = new Hub(
 		catalogueSchema.parse({
-			projects: [{ id: "app", launch, name: "App", path: ".", services }],
+			projects: [
+				{ id: "app", launch, name: "App", path: projectPath, services },
+			],
 		}),
 		".",
 		{
@@ -166,6 +169,146 @@ test("an external dependency cannot satisfy development readiness, even when hea
 	expect(processes.launches).toEqual([]);
 	expect(processes.stops).toEqual([]);
 	expect(hub.current.projects[0]?.services[1]?.needs[0]?.up).toBe(false);
+});
+
+const DETACHED_PID = process.pid + 999_999;
+const DETACHED_PARENT = DETACHED_PID + 1;
+const QUEUE_COMMAND = ".venv/Scripts/python.exe -m inference.tray";
+
+async function detachedFixture(
+	options: {
+		duplicatePort?: boolean;
+		healthy?: boolean;
+		listenerCommand?: string;
+		parentCommand?: string;
+		service?: Record<string, unknown>;
+	} = {}
+) {
+	const parentCommand =
+		options.parentCommand ??
+		"D:/code/inference/.venv/Scripts/python.exe -m inference.cli --config D:/code/inference/inference.toml serve";
+	const listenerCommand =
+		options.listenerCommand ??
+		"C:/runtime/python.exe -m inference.cli --config C:/inference.toml serve";
+	const services = [
+		configService("api", {
+			command: QUEUE_COMMAND,
+			detachedListener: true,
+			health: "/health",
+			port: 8765,
+			...options.service,
+		}),
+		configService("web", { needs: ["app/api"] }),
+	];
+	if (options.duplicatePort) {
+		services.push(configService("other", { port: 8765 }));
+	}
+	const result = await fixture(
+		services,
+		{
+			healthy: async () => options.healthy ?? true,
+			processInfo: async (pids) =>
+				new Map(
+					pids.map((pid) => [
+						pid,
+						{
+							command: pid === DETACHED_PID ? listenerCommand : parentCommand,
+							name: "python.exe",
+							parent: pid === DETACHED_PID ? DETACHED_PARENT : 0,
+							pid,
+						},
+					])
+				),
+		},
+		{},
+		"D:/code/inference"
+	);
+	result.processes.entries.set("app/api", {
+		command: QUEUE_COMMAND,
+		cwd: "D:/code/inference",
+		exit: null,
+		log: "test.log",
+		pid: process.pid,
+		startedAt: Date.now(),
+		stopping: false,
+	});
+	result.ports.set(8765, DETACHED_PID);
+	await result.hub.refresh(true);
+	return result;
+}
+
+test("opted-in canonical detached queue satisfies readiness without adopting its listener", async () => {
+	const { hub, processes } = await detachedFixture();
+	const queue = hub.current.projects[0]?.services[0];
+	expect(queue?.status).toBe("running");
+	expect(queue?.pid).toBe(process.pid);
+	expect(queue?.owner?.pid).toBe(DETACHED_PID);
+	expect(queue?.owner?.checkout).toBe("D:\\code\\inference");
+	await hub.startService("app/web");
+	expect(processes.launches).toEqual(["app/web"]);
+	expect(processes.get("app/api")?.pid).toBe(process.pid);
+	expect(processes.stops).toEqual([]);
+});
+
+test.each([
+	["default strict ownership", { service: { detachedListener: undefined } }],
+	["explicit disabled contract", { service: { detachedListener: false } }],
+	["foreign checkout", { parentCommand: "D:/code/other/.venv/python.exe" }],
+	["unknown checkout", { parentCommand: "C:/runtime/python.exe" }],
+	["failed health", { healthy: false }],
+	["missing health", { service: { health: undefined } }],
+	[
+		"wrong health host",
+		{ service: { health: "http://127.0.0.2:8765/health" } },
+	],
+	[
+		"wrong health port",
+		{ service: { health: "http://127.0.0.1:8089/health" } },
+	],
+	["wrong health endpoint", { service: { health: "/docs" } }],
+	["ambiguous shared port", { duplicatePort: true }],
+	["foreign listener module", { listenerCommand: "python.exe -m http.server" }],
+	[
+		"CLI without serve",
+		{ listenerCommand: "python.exe -m inference.cli status" },
+	],
+	[
+		"unknown supervisor contract",
+		{ service: { command: "run-other-supervisor" } },
+	],
+] as const)("detached readiness refuses %s", async (_name, options) => {
+	const { hub, processes } = await detachedFixture(options);
+	expect(hub.current.projects[0]?.services[0]?.status).toBe("busy");
+	await expect(hub.startService("app/web")).rejects.toThrow("порт 8765 занят");
+	expect(processes.launches).toEqual([]);
+	expect(processes.stops).toEqual([]);
+});
+
+test("detached readiness refuses stopping or dead supervisors", async () => {
+	const { hub, processes } = await detachedFixture();
+	const managed = processes.get("app/api");
+	if (!managed) {
+		throw new Error("Missing managed queue fixture");
+	}
+	managed.stopping = true;
+	await hub.refresh(true);
+	expect(hub.current.projects[0]?.services[0]?.status).toBe("busy");
+	managed.stopping = false;
+	managed.pid = process.pid + 999_997;
+	await hub.refresh(true);
+	expect(hub.current.projects[0]?.services[0]?.status).toBe("busy");
+	expect(processes.stops).toEqual([]);
+});
+
+test("detached listener health is rechecked when the listening PID changes", async () => {
+	const { hub, ports } = await detachedFixture();
+	expect(hub.current.projects[0]?.services[0]?.status).toBe("running");
+	ports.set(8765, DETACHED_PID + 2);
+	await hub.refresh();
+	expect(hub.current.projects[0]?.services[0]?.status).toBe("running");
+	expect(hub.current.projects[0]?.services[0]?.owner?.pid).toBe(
+		DETACHED_PID + 2
+	);
 });
 
 test("a held unhealthy port is rejected without launching or stopping its owner", async () => {

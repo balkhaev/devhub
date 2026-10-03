@@ -92,9 +92,14 @@ function Get-DevHubStartupWrapper([string]$Bun, [string]$Root, [string]$Service)
         throw "Invalid DevHub service key: $Service"
     }
     $cli = Join-Path $Root 'src\cli.ts'
+    $target = ConvertTo-DevHubLiteral $Service
+    if ($Service -eq 'inference/queue') {
+        $project = Join-Path (Split-Path -Parent $Root) 'inference'
+        $target = '--project ' + (ConvertTo-DevHubLiteral $project) + ' --script dev'
+    }
     return @(
         "`$ErrorActionPreference = 'Stop'",
-        ('& ' + (ConvertTo-DevHubLiteral $Bun) + ' ' + (ConvertTo-DevHubLiteral $cli) + ' start ' + (ConvertTo-DevHubLiteral $Service)),
+        ('& ' + (ConvertTo-DevHubLiteral $Bun) + ' ' + (ConvertTo-DevHubLiteral $cli) + ' start ' + $target),
         'if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }',
         ''
     ) -join "`r`n"
