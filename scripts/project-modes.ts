@@ -38,6 +38,13 @@ function readOptional(file: string): string {
 	return existsSync(file) ? readFileSync(file, "utf8") : "";
 }
 
+function editorPolicyChanges(before: string, root: string): boolean {
+	return (
+		Boolean(before) &&
+		replaceOwnerPolicyBlock(before, ownerProjectPolicyBlock(root)) !== before
+	);
+}
+
 function fingerprint(
 	policy: string,
 	agents: string,
@@ -91,10 +98,7 @@ export function planMvpMode(
 		) {
 			plan.changes.push(agentsFile);
 		}
-		if (
-			cursor &&
-			replaceOwnerPolicyBlock(cursor, ownerProjectPolicyBlock(root)) !== cursor
-		) {
+		if (editorPolicyChanges(cursor, root)) {
 			plan.changes.push(cursorFile);
 		}
 		if (branch !== "main") {
