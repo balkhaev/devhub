@@ -20,7 +20,7 @@ function git(folder: string, ...args: string[]): string {
 	const result = spawnSync("git", ["-C", folder, ...args], {
 		encoding: "utf8",
 		windowsHide: true,
-	}, 30_000);
+	});
 	if (result.status !== 0) {
 		throw new Error(result.stderr || `Fixture Git failed: ${args[0]}`);
 	}
