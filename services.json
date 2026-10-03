@@ -1,0 +1,9 @@
+{
+  "code": "D:/code",
+  "port": 4700,
+  "discover": ["${code}", "C:/Users/user/Documents/ChatGPT"],
+  "projects": [],
+  "aliases": {
+    "C:/Users/user/Documents/ChatGPT/mediapipes": "D:/code/mediapipes"
+  }
+}

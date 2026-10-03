@@ -1,0 +1,23 @@
+---
+description: Canonical DevHub staging and isolated task worktrees
+alwaysApply: true
+---
+<!-- BEGIN:DEVHUB:WORKTREE-POLICY -->
+## DevHub staging and worktrees — owner policy, 2026-10-03
+
+The canonical checkout is `D:/code/devhub`. Its local integration branch is
+`stage`; the release branch is `main`.
+Read the canonical [worktree policy](D:/code/devhub/.devhub/worktree.json) and
+[workflow](D:/code/devhub/WORKTREES.md) before changing repository state.
+
+- Author task changes in an isolated worktree on `codex/<task>`, created from the canonical staging branch. Reuse a suitable existing task worktree; do not create another clone.
+- Integrate the completed task into the canonical staging checkout, then run final repository checks and inspect the application there. Worktree checks alone do not complete final validation.
+- DevHub starts every development service from the canonical project directory. Never run a dev server from a linked worktree or register a worktree as a second application. A worktree's dev command routes to the canonical checkout and displays only integrated changes.
+- Use `bun D:/code/devhub/src/stage.ts create|integrate|check|status|finish --project "D:/code/devhub" [task-or-ref-or-path]`; JavaScript repositories also expose `npm run worktree -- <command> [task-or-ref-or-path]` / `bun run worktree <command> [task-or-ref-or-path]`. Create takes a task name, integrate takes a Git ref or checkout path, finish takes the full worktree path.
+- Preserve unrelated edits, untracked files, ignored private files and other agents' work. If integration is unsafe, report the concrete conflict and keep both checkouts intact. Never reset, force-remove, stash all changes or bulk-merge existing worktrees to make staging clean.
+- Release happens only after canonical staging validation and when the current task explicitly authorizes release. Prior direct-to-main, automatic push/deploy, no-feature-branch and forced worktree-cleanup instructions are superseded by this staging policy. Project-specific release verification and security rules still apply when a release is authorized.
+- Remove a finished worktree only after its commits are contained in staging and its tracked, untracked and private ignored files are safely preserved. For Codex-managed worktrees use the app's archive operation so its attachment stays consistent.
+
+Production `build`, `start`, `deploy` and container entrypoints remain standalone.
+<!-- END:DEVHUB:WORKTREE-POLICY -->
+

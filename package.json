@@ -1,0 +1,36 @@
+{
+  "name": "devhub",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Пульт: один локальный интерфейс, откуда запускаются серверы разработки всех проектов и открываются их веб-интерфейсы.",
+  "type": "module",
+  "scripts": {
+    "check": "tsc --noEmit && ultracite check",
+    "dev": "bun --hot src/server.ts --dev",
+    "fix": "ultracite fix",
+    "hub": "bun src/cli.ts",
+    "install:client": "bun scripts/install-client.ts",
+    "migrate": "bun scripts/migrate-projects.ts",
+    "open": "bun src/open.ts",
+    "stage": "bun src/stage.ts",
+    "start": "bun src/server.ts",
+    "startup:migrate": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/adopt-windows-startup.ps1",
+    "test": "bun test",
+    "tray:install": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-windows.ps1",
+    "tray:uninstall": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/uninstall-windows.ps1",
+    "worktree": "node .devhub/worktree.cjs"
+  },
+  "dependencies": {
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "zod": "^4.5.4"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.12",
+    "@types/bun": "^1.4.2",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.7",
+    "typescript": "^6.0.3",
+    "ultracite": "7.11.0"
+  }
+}
