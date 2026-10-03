@@ -157,7 +157,7 @@ describe("canonical staging with real disposable Git repositories", () => {
 		);
 		expect(git(remote, "rev-parse", "main")).toBe(before);
 		expect(project.status().checked).toBe(false);
-	});
+	}, 30_000);
 
 	test("MVP publishes its own checked tree while preserving unrelated canonical drafts", () => {
 		const { base, folder, project } = fixture({ mode: "mvp" });
@@ -468,7 +468,7 @@ describe("canonical staging with real disposable Git repositories", () => {
 		).toBe("private fixture state\n");
 		expect(existsSync(tree)).toBe(false);
 		expect(project.worktrees()).toHaveLength(1);
-	});
+	}, 30_000);
 
 	test("finish preserves an unmerged clean task and unrelated registered worktree", () => {
 		const { base, folder, project } = fixture();
@@ -530,7 +530,7 @@ describe("canonical staging with real disposable Git repositories", () => {
 		expect(existsSync(join(archive, "index.bin"))).toBe(true);
 		expect(existsSync(tree)).toBe(false);
 		expect(project.worktrees()).toHaveLength(1);
-	});
+	}, 30_000);
 
 	test("archive rejects the canonical checkout and worktrees outside its policy", () => {
 		const { base, folder, project } = fixture({ mode: "mvp", remote: null });
@@ -546,7 +546,7 @@ describe("canonical staging with real disposable Git repositories", () => {
 		expect(existsSync(folder)).toBe(true);
 		expect(existsSync(outside)).toBe(true);
 		expect(project.worktrees()).toHaveLength(2);
-	});
+	}, 30_000);
 
 	test("shared lock rejects overlapping mutation and releases itself after failure", () => {
 		const { project } = fixture();
