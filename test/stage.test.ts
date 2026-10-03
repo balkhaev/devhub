@@ -12,6 +12,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 
 import { StageProject } from "../src/stage";
+import { withProjectModeText } from "../src/workflow-policy";
 
 const fixtures: string[] = [];
 
@@ -96,6 +97,14 @@ afterEach(() => {
 });
 
 describe("canonical staging with real disposable Git repositories", () => {
+	test("mode changes preserve existing JSON arrays and repository formatting", () => {
+		const text =
+			'{\r\n  "checks": ["bun run check", "bun run test"],\r\n  "releaseBranch": "main",\r\n  "stageBranch": "stage",\r\n  "version": 1,\r\n  "worktreeRoot": "D:/worktrees/project",\r\n  "mode": "mvp"\r\n}\r\n';
+		expect(withProjectModeText(text, "prod")).toBe(
+			text.replace('"mode": "mvp"', '"mode": "prod"')
+		);
+		expect(withProjectModeText(text, "mvp")).toBe(text);
+	});
 	test("explicit local MVP integrates into main and cleans its completed worktree without a remote", () => {
 		const { folder, project } = fixture({ mode: "mvp", remote: null });
 		project.init();

@@ -18,6 +18,7 @@ import { canonicalProjectFolder, loadCatalogue } from "./config";
 import {
 	type ProjectMode,
 	type WorkflowPolicy,
+	withProjectModeText,
 	workflowPolicySchema,
 } from "./workflow-policy";
 import { archiveWorktree } from "./worktree-archive";
@@ -231,7 +232,10 @@ export class StageProject {
 		this.policy.mode = mode;
 		const file = join(this.root, POLICY);
 		const temporary = `${file}.${process.pid}.tmp`;
-		writeFileSync(temporary, `${JSON.stringify(this.policy, null, 2)}\n`);
+		writeFileSync(
+			temporary,
+			withProjectModeText(readFileSync(file, "utf8"), mode)
+		);
 		renameSync(temporary, file);
 		// A UI mode change must not leave its own configuration blocking the next task.
 		// Existing policy edits belong to their author and are never swept into this commit.

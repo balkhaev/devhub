@@ -1,5 +1,8 @@
 import { z } from "zod";
 
+const MODE_FIELD = /("mode"\s*:\s*)"(?:mvp|prod)"/;
+const PROPERTY_INDENT = /\n([\t ]+)"/;
+
 export const projectModeSchema = z.enum(["mvp", "prod"]);
 export type ProjectMode = z.infer<typeof projectModeSchema>;
 
@@ -19,3 +22,21 @@ export const workflowPolicySchema = z.strictObject({
 });
 
 export type WorkflowPolicy = z.infer<typeof workflowPolicySchema>;
+
+/** Keep repository formatting and unrelated JSON fields unchanged when switching modes. */
+export function withProjectModeText(before: string, mode: ProjectMode): string {
+	const original = JSON.parse(before);
+	workflowPolicySchema.parse(original);
+	if (Object.hasOwn(original, "mode")) {
+		const updated = before.replace(MODE_FIELD, `$1"${mode}"`);
+		if (workflowPolicySchema.parse(JSON.parse(updated)).mode !== mode) {
+			throw new Error("нормализуйте ключ mode в политике перед сменой режима");
+		}
+		return updated;
+	}
+	const closing = before.lastIndexOf("}");
+	const indent = PROPERTY_INDENT.exec(before)?.[1] ?? "  ";
+	const line = before.includes("\r\n") ? "\r\n" : "\n";
+	// Parsing above validates the object before editing its final top-level property.
+	return `${before.slice(0, closing).trimEnd()},${line}${indent}"mode": "${mode}"${line}${before.slice(closing)}`;
+}
