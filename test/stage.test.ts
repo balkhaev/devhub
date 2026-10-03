@@ -5,7 +5,6 @@ import {
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
-	rmdirSync,
 	rmSync,
 	writeFileSync,
 } from "node:fs";
@@ -27,7 +26,14 @@ function git(folder: string, ...args: string[]): string {
 	return result.stdout.trimEnd();
 }
 
-function fixture(options: { committed?: boolean; checks?: string[] } = {}) {
+function fixture(
+	options: {
+		committed?: boolean;
+		checks?: string[];
+		mode?: "mvp" | "prod";
+		remote?: string | null;
+	} = {}
+) {
 	const base = mkdtempSync(join(tmpdir(), "devhub-stage-test-"));
 	fixtures.push(base);
 	const folder = join(base, "project");
@@ -45,6 +51,8 @@ function fixture(options: { committed?: boolean; checks?: string[] } = {}) {
 		join(folder, ".devhub", "worktree.json"),
 		`${JSON.stringify({
 			checks: options.checks ?? ["node check.mjs"],
+			...(options.mode ? { mode: options.mode } : {}),
+			...(options.remote === undefined ? {} : { remote: options.remote }),
 			releaseBranch: "main",
 			stageBranch: "stage",
 			version: 1,
@@ -88,6 +96,126 @@ afterEach(() => {
 });
 
 describe("canonical staging with real disposable Git repositories", () => {
+	test("explicit local MVP integrates into main and cleans its completed worktree without a remote", () => {
+		const { folder, project } = fixture({ mode: "mvp", remote: null });
+		project.init();
+		const worktree = project.create("local-task");
+		const commit = commitSource(worktree, "local MVP change");
+		project.integrate(worktree);
+		expect(project.branch()).toBe("main");
+		expect(git(folder, "merge-base", "--is-ancestor", commit, "main")).toBe("");
+		expect(readFileSync(join(folder, "source.txt"), "utf8")).toBe(
+			"local MVP change\n"
+		);
+		expect(existsSync(worktree)).toBe(false);
+		expect(project.status().checked).toBe(true);
+	});
+
+	test("MVP integrates checked commits into main and immediately pushes its configured remote", () => {
+		const { base, folder, project } = fixture({ mode: "mvp" });
+		const remote = join(base, "origin.git");
+		mkdirSync(remote);
+		git(remote, "init", "--bare", "--initial-branch=main");
+		git(folder, "remote", "add", "origin", remote);
+		git(folder, "push", "origin", "main");
+		project.init();
+		expect(project.branch()).toBe("main");
+		const tree = project.create("mvp-change");
+		commitSource(tree, "published MVP change");
+		project.integrate(tree);
+		expect(git(remote, "rev-parse", "main")).toBe(project.head() ?? "");
+		expect(git(remote, "show", "main:source.txt")).toBe("published MVP change");
+		expect(project.status()).toMatchObject({
+			integrationBranch: "main",
+			mode: "mvp",
+			releaseReady: true,
+		});
+	});
+
+	test("failed MVP checks do not publish a changed main", () => {
+		const { base, folder, project } = fixture({ mode: "mvp" });
+		const remote = join(base, "origin.git");
+		mkdirSync(remote);
+		git(remote, "init", "--bare", "--initial-branch=main");
+		git(folder, "remote", "add", "origin", remote);
+		git(folder, "push", "origin", "main");
+		const before = git(remote, "rev-parse", "main");
+		const tree = project.create("bad-mvp");
+		commitSource(tree, "not yet safe to publish");
+		writeFileSync(join(folder, "failure.flag"), "fail check\n");
+		expect(() => project.integrate(tree)).toThrow(
+			"финальная проверка не прошла"
+		);
+		expect(git(remote, "rev-parse", "main")).toBe(before);
+		expect(project.status().checked).toBe(false);
+	});
+
+	test("MVP publishes its own checked tree while preserving unrelated canonical drafts", () => {
+		const { base, folder, project } = fixture({ mode: "mvp" });
+		writeFileSync(join(folder, "other.txt"), "original\n");
+		git(folder, "add", "other.txt");
+		git(folder, "commit", "-m", "Independent file");
+		const remote = join(base, "origin.git");
+		mkdirSync(remote);
+		git(remote, "init", "--bare", "--initial-branch=main");
+		git(folder, "remote", "add", "origin", remote);
+		git(folder, "push", "origin", "main");
+		writeFileSync(join(folder, "other.txt"), "someone else's draft\n");
+		writeFileSync(join(folder, "draft.txt"), "untracked draft\n");
+		const tree = project.create("mvp-scoped");
+		commitSource(tree, "own completed change");
+		project.integrate(tree);
+		expect(git(remote, "show", "main:source.txt")).toBe("own completed change");
+		expect(git(remote, "show", "main:other.txt")).toBe("original");
+		expect(readFileSync(join(folder, "other.txt"), "utf8")).toBe(
+			"someone else's draft\n"
+		);
+		expect(readFileSync(join(folder, "draft.txt"), "utf8")).toBe(
+			"untracked draft\n"
+		);
+		expect(existsSync(tree)).toBe(false);
+		expect(project.worktrees()).toHaveLength(1);
+	});
+
+	test("mode transition fast-forwards main without losing staged, unstaged or private work", () => {
+		const { folder, project } = fixture();
+		project.init();
+		const head = commitSource(folder, "validated stage change");
+		writeFileSync(join(folder, "source.txt"), "staged draft\n");
+		git(folder, "add", "source.txt");
+		writeFileSync(join(folder, "source.txt"), "unstaged draft\n");
+		writeFileSync(join(folder, "draft.txt"), "untracked\n");
+		mkdirSync(join(folder, "ignored"));
+		writeFileSync(join(folder, "ignored", "private.txt"), "private\n");
+		project.setMode("mvp");
+		expect(project.branch()).toBe("main");
+		expect(git(folder, "rev-parse", "HEAD^")).toBe(head);
+		expect(
+			git(folder, "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD")
+		).toBe(".devhub/worktree.json");
+		expect(git(folder, "show", ":source.txt")).toBe("staged draft");
+		expect(readFileSync(join(folder, "source.txt"), "utf8")).toBe(
+			"unstaged draft\n"
+		);
+		expect(readFileSync(join(folder, "draft.txt"), "utf8")).toBe("untracked\n");
+		expect(readFileSync(join(folder, "ignored", "private.txt"), "utf8")).toBe(
+			"private\n"
+		);
+	});
+
+	test("mode transition refuses divergent main and leaves both histories intact", () => {
+		const { folder, project } = fixture();
+		git(folder, "branch", "stage");
+		const mainHead = commitSource(folder, "main branch history");
+		git(folder, "switch", "stage");
+		const stageHead = commitSource(folder, "divergent stage history");
+		expect(() => project.setMode("mvp")).toThrow("другую историю");
+		expect(project.branch()).toBe("stage");
+		expect(project.head()).toBe(stageHead);
+		expect(git(folder, "rev-parse", "main")).toBe(mainHead);
+		expect(project.policy.mode).toBe("prod");
+	});
+
 	test("initialization preserves committed HEAD, index, dirty files and untracked work", () => {
 		const { folder, project } = fixture();
 		const head = git(folder, "rev-parse", "HEAD");
@@ -325,12 +453,10 @@ describe("canonical staging with real disposable Git repositories", () => {
 		mkdirSync(ignored);
 		const privateFile = join(ignored, "local-state.txt");
 		writeFileSync(privateFile, "private fixture state\n");
-		expect(() => project.finish(tree)).toThrow("сохраните ignored-файлы");
-		expect(readFileSync(privateFile, "utf8")).toBe("private fixture state\n");
-		expect(existsSync(tree)).toBe(true);
-		rmSync(privateFile);
-		rmdirSync(ignored);
-		project.finish(tree);
+		const archive = project.finish(tree);
+		expect(
+			readFileSync(join(archive, "files", "ignored", "local-state.txt"), "utf8")
+		).toBe("private fixture state\n");
 		expect(existsSync(tree)).toBe(false);
 		expect(project.worktrees()).toHaveLength(1);
 	});

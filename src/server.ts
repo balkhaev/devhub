@@ -10,6 +10,7 @@ import { type Catalogue, loadCatalogue } from "./config";
 import { Hub, type HubRuntime, type HubView } from "./hub";
 import { frameable } from "./probes";
 import { Projects } from "./projects";
+import { StageProject } from "./stage";
 
 /**
  * The hub's server, on 127.0.0.1 only: the page, the state of every service (and its changes as server-sent
@@ -29,6 +30,7 @@ const json = (value: unknown, status = 200) => Response.json(value, { status });
 const ACTION_WORDS: Record<string, string> = {
 	delete: "удалить с диска",
 	"delete-plan": "проверить удаление",
+	mode: "изменить режим",
 	restart: "перезапустить",
 	start: "запустить",
 	stop: "остановить",
@@ -113,6 +115,30 @@ export async function startHub(
 	const token = await clientToken(root);
 	const hub = new Hub(catalogue, root, options.runtime);
 	const projects = new Projects(hub, root);
+	const changeProjectMode = async (request: Request, id: string) => {
+		const body: unknown = await request.json();
+		if (
+			!body ||
+			typeof body !== "object" ||
+			!("mode" in body) ||
+			(body.mode !== "mvp" && body.mode !== "prod")
+		) {
+			throw new Error("Нужен режим mvp или prod");
+		}
+		const project = hub.current.projects.find((entry) => entry.id === id);
+		if (!project) {
+			throw new Error(`нет проекта ${id}`);
+		}
+		const { mode } = body;
+		const stage = new StageProject(project.path);
+		stage.withLock(() => stage.setMode(mode));
+		await hub.refresh();
+		return {
+			integrationBranch: stage.integrationBranch,
+			mode: stage.policy.mode,
+			releaseBranch: stage.policy.releaseBranch,
+		};
+	};
 	let ready = false;
 	const port = options.port ?? catalogue.port;
 	let origin = `http://127.0.0.1:${port}`;
@@ -225,6 +251,9 @@ export async function startHub(
 				POST: (request) =>
 					act(request, async () => {
 						const { action, id } = request.params;
+						if (action === "mode") {
+							return changeProjectMode(request, id);
+						}
 						if (action === "delete-plan") {
 							return projects.plan(id);
 						}

@@ -12,6 +12,11 @@ import {
 	primaryCheckout,
 	sameSourcePath,
 } from "../src/checkouts";
+import {
+	ownerProjectPolicyBlock,
+	replaceOwnerPolicyBlock,
+} from "../src/workflow-instructions";
+import { workflowPolicySchema } from "../src/workflow-policy";
 
 /** Repeatable workstation migration. Dry-run is the default; --write applies it. */
 interface Service {
@@ -67,6 +72,7 @@ interface MigrationResult {
 	root?: string;
 	scripts: number;
 	services: number;
+	workflow?: { mode: "mvp" | "prod"; checksConfigured: boolean };
 }
 
 interface Edit {
@@ -119,6 +125,37 @@ function readJson<T>(file: string): T {
 
 function serialize(value: unknown): string {
 	return `${JSON.stringify(value, null, 2)}\n`;
+}
+
+/** New registrations start in MVP; existing checks, mode and release configuration are preserved. */
+export function installProjectWorkflow(root: string): {
+	mode: "mvp" | "prod";
+	checksConfigured: boolean;
+} {
+	const file = join(root, ".devhub", "worktree.json");
+	const existing = existsSync(file);
+	const proposed = existing
+		? readJson(file)
+		: {
+				checks: [],
+				mode: "mvp",
+				releaseBranch: "main",
+				stageBranch: "stage",
+				version: 1,
+				worktreeRoot: `D:/worktrees/${basename(root)}`,
+			};
+	const policy = workflowPolicySchema.parse(proposed);
+	const agents = join(root, "AGENTS.md");
+	const before = existsSync(agents) ? readFileSync(agents, "utf8") : "";
+	const after = replaceOwnerPolicyBlock(before, ownerProjectPolicyBlock(root));
+	if (!existing) {
+		mkdirSync(dirname(file), { recursive: true });
+		writeFileSync(file, serialize(proposed));
+	}
+	if (after !== before) {
+		writeFileSync(agents, after);
+	}
+	return { checksConfigured: policy.checks.length > 0, mode: policy.mode };
 }
 
 function slug(value: string): string {
@@ -916,6 +953,7 @@ function writeMigration(
 		writeFileSync(edit.file, serialize(edit.data));
 	}
 	writeLaunchers(root, launchers);
+	installProjectWorkflow(root);
 }
 
 function migrate(
@@ -947,7 +985,19 @@ function migrate(
 	if (write) {
 		writeMigration(root, project, originals, edits, template, launchers);
 	}
-	return { id: project.id, scripts: count, services: project.services.length };
+	const policyFile = join(root, ".devhub", "worktree.json");
+	const policy = existsSync(policyFile)
+		? workflowPolicySchema.parse(readJson(policyFile))
+		: null;
+	return {
+		id: project.id,
+		scripts: count,
+		services: project.services.length,
+		workflow: {
+			checksConfigured: (policy?.checks.length ?? 0) > 0,
+			mode: policy?.mode ?? "mvp",
+		},
+	};
 }
 
 function scanProjects(
