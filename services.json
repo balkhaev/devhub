@@ -1,9 +1,13 @@
 {
-  "code": "D:/code",
-  "port": 4700,
-  "discover": ["${code}", "C:/Users/user/Documents/ChatGPT"],
-  "projects": [],
   "aliases": {
     "C:/Users/user/Documents/ChatGPT/mediapipes": "D:/code/mediapipes"
-  }
+  },
+  "code": "D:/code",
+  "discover": ["${code}", "C:/Users/user/Documents/ChatGPT"],
+  "exclude": [
+    "C:\\Users\\user\\Documents\\ChatGPT\\gameradar-postgres-only-20260908",
+    "C:\\Users\\user\\Documents\\ChatGPT\\vibecoder"
+  ],
+  "port": 4700,
+  "projects": []
 }
