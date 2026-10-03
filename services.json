@@ -6,7 +6,8 @@
   "discover": ["${code}", "C:/Users/user/Documents/ChatGPT"],
   "exclude": [
     "C:\\Users\\user\\Documents\\ChatGPT\\gameradar-postgres-only-20260908",
-    "C:\\Users\\user\\Documents\\ChatGPT\\vibecoder"
+    "C:\\Users\\user\\Documents\\ChatGPT\\vibecoder",
+    "D:\\code\\balkhaev"
   ],
   "port": 4700,
   "projects": []
