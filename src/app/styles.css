@@ -231,6 +231,7 @@ code {
 }
 
 .side-item:focus-visible,
+.side-project:focus-visible,
 .button:focus-visible,
 .toggle:focus-visible,
 .tabs__item:focus-visible {
@@ -324,6 +325,45 @@ code {
 .button--small {
 	padding: 3px 9px;
 	font-size: 11px;
+}
+
+.button--danger {
+	font-weight: 600;
+	color: #2b0707;
+	background: var(--crashed);
+	border-color: var(--crashed);
+}
+
+.button--delete {
+	padding: 3px 6px;
+	font-size: 11px;
+	color: var(--muted);
+	background: transparent;
+	border-color: transparent;
+}
+
+.button--delete:hover {
+	color: var(--crashed);
+	border-color: var(--crashed);
+}
+
+.side-project {
+	display: flex;
+	justify-content: space-between;
+	width: 100%;
+	padding: 4px 0;
+	font: inherit;
+	text-align: left;
+	text-transform: inherit;
+	letter-spacing: inherit;
+	cursor: pointer;
+	background: transparent;
+	border: 0;
+}
+
+.side-project:hover,
+.side-project--selected {
+	color: var(--text);
 }
 
 .toggle[aria-pressed="true"] {
@@ -524,6 +564,7 @@ code {
 
 .card__head {
 	display: flex;
+	flex-wrap: wrap;
 	gap: 10px;
 	align-items: flex-start;
 	justify-content: space-between;
@@ -547,6 +588,94 @@ code {
 	flex-wrap: wrap;
 	gap: 6px;
 	justify-content: flex-end;
+}
+
+.card__folder {
+	display: grid;
+	gap: 3px;
+	margin: 8px 0;
+}
+
+.card__footer {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	align-items: center;
+	justify-content: space-between;
+	padding-top: 10px;
+	margin-top: 8px;
+	border-top: 1px solid var(--line);
+}
+
+.project-controls .error {
+	margin: 8px 0 0;
+}
+
+.project-page {
+	display: grid;
+	gap: 24px;
+	max-width: 1100px;
+	padding: 24px;
+}
+
+.project-page__head {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 12px;
+	align-items: center;
+	justify-content: space-between;
+}
+
+.project-page h1 {
+	margin: 0;
+	font-size: 22px;
+}
+
+.project-page__head p {
+	margin: 4px 0 0;
+}
+
+.project-stage h2 {
+	margin: 0 0 8px;
+	font-size: 14px;
+}
+
+.project-frontend {
+	display: grid;
+	gap: 4px;
+}
+
+.project-services {
+	padding: 0;
+	margin: 0;
+	list-style: none;
+}
+
+.project-services__link {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 10px;
+	align-items: center;
+	padding: 12px 4px;
+	text-decoration: none;
+	border-bottom: 1px solid var(--line);
+}
+
+.project-services__link:hover {
+	background: var(--panel);
+}
+
+.project-services__link > :last-child {
+	margin-left: auto;
+}
+
+.project-page__footer {
+	padding-top: 12px;
+	border-top: 1px solid var(--line);
+}
+
+.service__project {
+	text-decoration: none;
 }
 
 .card__services {
@@ -678,6 +807,49 @@ a.card__service:hover {
 
 .confirm__actions {
 	display: flex;
+	flex-wrap: wrap;
 	gap: 8px;
 	justify-content: flex-end;
+}
+
+.confirm--delete {
+	width: 620px;
+	max-width: calc(100vw - 32px);
+	max-height: calc(100vh - 32px);
+	overflow-y: auto;
+}
+
+.confirm--delete h2 {
+	margin: 0 0 12px;
+	font-size: 18px;
+}
+
+.confirm--delete .error {
+	margin: 12px 0;
+}
+
+.delete-paths {
+	display: grid;
+	gap: 10px;
+	padding: 12px;
+	margin: 16px 0;
+	list-style: none;
+	background: var(--panel);
+	border-radius: 8px;
+}
+
+.delete-paths li {
+	display: grid;
+	gap: 3px;
+}
+
+.delete-notes {
+	padding-left: 18px;
+	margin: 4px 0;
+}
+
+.delete-folder {
+	padding: 12px;
+	background: var(--panel);
+	border-radius: 8px;
 }

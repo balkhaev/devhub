@@ -1,9 +1,11 @@
-import { type MouseEvent, type ReactNode, useCallback, useState } from "react";
+import type { MouseEvent } from "react";
 
 import type { ComposeView } from "../docker";
 import type { HubView, ProjectView } from "../hub";
-import { act } from "./api";
-import { useConfirm } from "./confirm";
+import { useAction } from "./actions";
+import { FrontendLink, ProjectControls } from "./project-controls";
+import { DeleteProjectButton } from "./project-delete";
+import { projectRoute } from "./project-ui";
 import {
 	composeStatus,
 	composeWords,
@@ -15,30 +17,6 @@ import {
 } from "./words";
 
 /** Everything at once: what runs now, every project with its services, Docker and every listening port. */
-
-function useAction(): {
-	dialog: ReactNode;
-	error: string | null;
-	pending: string | null;
-	run: (event: MouseEvent<HTMLButtonElement>) => Promise<void>;
-} {
-	const [error, setError] = useState<string | null>(null);
-	const [pending, setPending] = useState<string | null>(null);
-	const [confirm, dialog] = useConfirm();
-	const run = useCallback(
-		async (event: MouseEvent<HTMLButtonElement>) => {
-			const { path, confirm: ask } = event.currentTarget.dataset;
-			if (!path || (ask && !(await confirm(ask)))) {
-				return;
-			}
-			setPending(path);
-			setError(await act(path));
-			setPending(null);
-		},
-		[confirm]
-	);
-	return { dialog, error, pending, run };
-}
 
 /** Bring up and stop buttons of a compose project; none while Docker itself is not running. */
 function ComposeButtons({
@@ -109,58 +87,35 @@ function ComposeButtons({
 
 function ProjectCard({
 	dockerUp,
+	onDeleted,
 	project,
 }: {
 	dockerUp: boolean;
+	onDeleted: (id: string) => void;
 	project: ProjectView;
 }) {
 	const { dialog, error, pending, run } = useAction();
-	// A service whose port another holds cannot start: it is not offered.
-	const down = project.services.filter(
-		(service) =>
-			service.canStart && !isUp(service.status) && service.status !== "busy"
-	);
-	const managed = project.services.filter((service) => service.managed);
-	const start = `/api/projects/${project.id}/start`;
 	const { docker } = project;
 	return (
 		<article className="card">
 			<header className="card__head">
 				<div>
 					<h2>
-						<a href={`#/${project.services[0]?.key ?? ""}`}>{project.name}</a>
+						<a href={`#/${projectRoute(project.id)}`}>{project.name}</a>
 					</h2>
 					{project.description ? (
 						<p className="muted small">{project.description}</p>
 					) : null}
 				</div>
 				<div className="card__actions">
-					{down.length > 0 ? (
-						<button
-							className="button button--small"
-							data-path={start}
-							disabled={pending !== null}
-							onClick={run}
-							title={down.map((service) => service.name).join(", ")}
-							type="button"
-						>
-							{pending === start ? "Запускаю…" : "Запустить проект"}
-						</button>
-					) : null}
-					{managed.length > 0 ? (
-						<button
-							className="button button--small"
-							data-path={`/api/projects/${project.id}/stop`}
-							disabled={pending !== null}
-							onClick={run}
-							title="Остановить то, что запущено из пульта"
-							type="button"
-						>
-							Остановить
-						</button>
-					) : null}
+					<FrontendLink project={project} />
 				</div>
 			</header>
+			<p className="card__folder muted small">
+				<span>dev · {project.currentBranch ?? "без Git-ветки"}</span>
+				<code>{project.path}</code>
+			</p>
+			<ProjectControls project={project} />
 			<ul className="card__services">
 				{project.services.map((service) => (
 					<li key={service.key}>
@@ -194,6 +149,12 @@ function ProjectCard({
 				) : null}
 			</ul>
 			{error ? <p className="error small">{error}</p> : null}
+			<footer className="card__footer">
+				<a className="muted small" href={`#/${projectRoute(project.id)}`}>
+					Управление проектом
+				</a>
+				<DeleteProjectButton onDeleted={onDeleted} project={project} />
+			</footer>
 			{dialog}
 		</article>
 	);
@@ -326,7 +287,13 @@ function DockerSection({
 	);
 }
 
-export function Overview({ view }: { view: HubView }) {
+export function Overview({
+	onDeleted,
+	view,
+}: {
+	onDeleted: (id: string) => void;
+	view: HubView;
+}) {
 	const services = view.projects.flatMap((project) => project.services);
 	const up = services.filter((service) => isUp(service.status));
 	const managed = services.filter((service) => service.managed);
@@ -366,6 +333,7 @@ export function Overview({ view }: { view: HubView }) {
 						<ProjectCard
 							dockerUp={view.docker.available}
 							key={project.id}
+							onDeleted={onDeleted}
 							project={project}
 						/>
 					))}

@@ -564,7 +564,37 @@ function addStandaloneProduction(
 	}
 }
 
-function packageEdits(
+function syntheticEntrypoint(
+	project: Project,
+	entry: Entry,
+	key: string,
+	originals: Originals,
+	rel: string,
+	managed: string
+): boolean {
+	if (
+		originals.packages[rel]?.[key] !== undefined ||
+		entry.data.scripts?.[key] !== managed
+	) {
+		return false;
+	}
+	// New aggregate entrypoints have no retired raw package command; the contract owns all raw leaves.
+	const targets = project.launch?.[launchKey(entry, key)] ?? [];
+	return (
+		targets.length > 0 &&
+		targets.every((target) => {
+			const id = target.startsWith(`${project.id}/`)
+				? target.slice(project.id.length + 1)
+				: target;
+			const command = project.services.find(
+				(service) => service.id === id
+			)?.command;
+			return Boolean(command && !WRAPPER.test(command));
+		})
+	);
+}
+
+export function packageEdits(
 	root: string,
 	project: Project,
 	entries: Entry[],
@@ -583,6 +613,10 @@ function packageEdits(
 			const managed = wrapper(entry, key);
 			const current = entry.data.scripts?.[key];
 			if (WRAPPER.test(raw)) {
+				if (syntheticEntrypoint(project, entry, key, originals, rel, managed)) {
+					count += 1;
+					continue;
+				}
 				throw new Error(
 					`${entry.file}: original ${key} is a wrapper; cannot recover raw command`
 				);

@@ -12,6 +12,7 @@
     "install:client": "bun scripts/install-client.ts",
     "migrate": "bun scripts/migrate-projects.ts",
     "open": "bun src/open.ts",
+    "project:interfaces": "bun scripts/project-interfaces.ts",
     "stage": "bun src/stage.ts",
     "start": "bun src/server.ts",
     "startup:migrate": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/adopt-windows-startup.ps1",

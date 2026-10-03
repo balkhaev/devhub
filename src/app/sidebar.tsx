@@ -1,6 +1,7 @@
 import { type MouseEvent, useCallback } from "react";
 
 import type { HubView, ProjectView, ServiceView } from "../hub";
+import { projectRoute } from "./project-ui";
 import { composeStatus, cx, isUp, STATUS_SHORT } from "./words";
 
 /** Every project and its services with their state; the overview at the top, Docker at the bottom. */
@@ -50,10 +51,23 @@ function ProjectGroup({
 	return (
 		<section className="side-group">
 			<h3 className="side-group__title">
-				{project.name}
-				<span className="side-group__count">
-					{up}/{project.services.length}
-				</span>
+				<button
+					aria-current={
+						selected === projectRoute(project.id) ? "true" : undefined
+					}
+					className={cx(
+						"side-project",
+						selected === projectRoute(project.id) && "side-project--selected"
+					)}
+					data-key={projectRoute(project.id)}
+					onClick={onOpen}
+					type="button"
+				>
+					{project.name}
+					<span className="side-group__count">
+						{up}/{project.services.length}
+					</span>
+				</button>
 			</h3>
 			<ul className="side-group__list">
 				{project.services.map((service) => (
@@ -89,7 +103,7 @@ export function Sidebar({
 		(project) => project.ready
 	);
 	return (
-		<nav aria-label="Сервисы" className="sidebar">
+		<nav aria-label="Проекты и сервисы" className="sidebar">
 			<button
 				aria-current={selected ? undefined : "true"}
 				className={cx(
