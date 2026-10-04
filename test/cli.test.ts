@@ -40,10 +40,27 @@ test("CLI requires complete project/script routing and refuses unregistered flag
 	).toEqual({
 		action: "start",
 		json: false,
+		lines: 80,
+		logs: false,
 		project: "D:/code/demo",
 		script: "apps/web:dev",
 		targets: [],
+		web: true,
 	});
+	expect(
+		parseArguments(["prod", "altay", "--logs", "--lines", "20"])
+	).toMatchObject({
+		action: "prod",
+		lines: 20,
+		logs: true,
+		targets: ["altay"],
+	});
+	expect(
+		parseArguments(["create", "python", "notes", "--no-web"])
+	).toMatchObject({ targets: ["python", "notes"], web: false });
+	expect(() => parseArguments(["logs", "a/b", "--lines", "0"])).toThrow(
+		"--lines"
+	);
 	expect(() => parseArguments(["start", "--project", "demo"])).toThrow(
 		"вместе"
 	);

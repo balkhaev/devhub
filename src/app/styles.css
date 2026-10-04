@@ -1025,3 +1025,183 @@ a.card__service:hover {
 	background: var(--panel);
 	border-radius: 8px;
 }
+
+/* Production (Coolify) */
+
+.prod-head {
+	display: flex;
+	gap: 12px;
+	align-items: flex-start;
+	justify-content: space-between;
+}
+
+.prod-head p {
+	margin: 0;
+}
+
+.prod-title {
+	display: flex;
+	gap: 8px;
+	align-items: center;
+}
+
+.prod-apps {
+	display: grid;
+	gap: 8px;
+	padding: 0;
+	margin: 10px 0 0;
+	list-style: none;
+}
+
+.prod-app {
+	display: grid;
+	gap: 4px;
+	min-width: 0;
+	padding: 8px 10px;
+	background: var(--raised);
+	border: 1px solid var(--line);
+	border-radius: 8px;
+}
+
+.prod-app__head {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+	align-items: center;
+}
+
+.prod-app__actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px;
+	margin-left: auto;
+}
+
+.prod-app__facts {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px 12px;
+	overflow-wrap: anywhere;
+}
+
+.prod-deployments {
+	margin-top: 4px;
+}
+
+.prod-deployments td {
+	vertical-align: top;
+}
+
+.prod-badge {
+	display: inline-block;
+	padding: 1px 7px;
+	font-size: 11px;
+	border-radius: 999px;
+}
+
+.prod-badge--ok {
+	color: #062a1c;
+	background: var(--running);
+}
+
+.prod-badge--bad {
+	color: #2b0707;
+	background: var(--crashed);
+}
+
+.prod-badge--busy {
+	color: #2a1d02;
+	background: var(--starting);
+}
+
+.prod-logs {
+	margin-top: 4px;
+	overflow: hidden;
+	border: 1px solid var(--line);
+	border-radius: 8px;
+}
+
+.prod-logs .log__bar {
+	align-items: center;
+	padding: 6px 10px;
+	background: var(--panel);
+}
+
+.prod-logs__text {
+	max-height: 360px;
+	padding: 8px 10px;
+}
+
+/* New project */
+
+.create {
+	max-width: 760px;
+}
+
+.create h1 {
+	margin: 0 0 4px;
+}
+
+.create__form {
+	display: grid;
+	gap: 14px;
+}
+
+.create__templates {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+	gap: 10px;
+	padding: 0;
+	margin: 0;
+	border: 0;
+}
+
+.create__template {
+	display: grid;
+	grid-template-columns: auto 1fr;
+	gap: 4px 8px;
+	align-items: start;
+	padding: 10px 12px;
+	cursor: pointer;
+	background: var(--raised);
+	border: 1px solid var(--line-strong);
+	border-radius: 8px;
+}
+
+.create__template .muted {
+	grid-column: 2;
+}
+
+.create__template--selected {
+	border-color: var(--accent);
+}
+
+.create__field {
+	display: grid;
+	gap: 4px;
+}
+
+.create__field input {
+	padding: 7px 10px;
+	font: inherit;
+	color: var(--text);
+	background: var(--bg);
+	border: 1px solid var(--line-strong);
+	border-radius: 8px;
+}
+
+.create__field input:focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: 1px;
+}
+
+.create__check {
+	display: flex;
+	gap: 8px;
+	align-items: center;
+}
+
+.create__log {
+	max-height: 420px;
+	border-radius: 8px;
+}

@@ -165,3 +165,31 @@ export function useRoute(): [string | null, (key: string | null) => void] {
 	}, []);
 	return [route, go];
 }
+
+/** Reads the hub answers only for its own page, marked with a header. */
+export async function readHub<T>(path: string): Promise<T> {
+	const response = await fetch(path, { headers: { "x-devhub": "1" } });
+	const body = (await response.json()) as T & { error?: string };
+	if (!response.ok) {
+		throw new Error(body.error ?? `ошибка ${response.status}`);
+	}
+	return body;
+}
+
+/** An action with a JSON body; the hub answers `{ ok, result }`. */
+export async function sendHub<T>(path: string, data: unknown): Promise<T> {
+	const response = await fetch(path, {
+		body: JSON.stringify(data),
+		headers: { "Content-Type": "application/json", "x-devhub": "1" },
+		method: "POST",
+	});
+	const body = (await response.json()) as {
+		error?: string;
+		ok?: boolean;
+		result: T;
+	};
+	if (!(response.ok && body.ok)) {
+		throw new Error(body.error ?? `ошибка ${response.status}`);
+	}
+	return body.result;
+}

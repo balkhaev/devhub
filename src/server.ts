@@ -10,6 +10,8 @@ import page from "./app/index.html";
 import { primaryCheckout, sameSourcePath } from "./checkouts";
 import { authenticatedClient, clientToken } from "./client";
 import { type Catalogue, loadCatalogue } from "./config";
+import { Coolify, CoolifyError } from "./coolify";
+import { type CreateRequest, ProjectCreator } from "./create";
 import { Hub, type HubRuntime, type HubView } from "./hub";
 import { frameable } from "./probes";
 import { Projects } from "./projects";
@@ -31,6 +33,7 @@ const encoder = new TextEncoder();
 const json = (value: unknown, status = 200) => Response.json(value, { status });
 
 const ACTION_WORDS: Record<string, string> = {
+	create: "создать проект",
 	delete: "удалить с диска",
 	"delete-plan": "проверить удаление",
 	mode: "изменить режим",
@@ -48,6 +51,9 @@ const TARGET_WORDS: Record<string, string> = {
 /** An action's address in words: `/api/docker/gameradar/stop` → «Docker gameradar: остановить». */
 export function actionWords(path: string): string {
 	const [kind = "", ...rest] = path.split("/").slice(2);
+	if (rest.length === 0) {
+		return ACTION_WORDS[kind] ?? kind;
+	}
 	const action = rest.at(-1) ?? "";
 	const target = rest.slice(0, -1).join("/");
 	return `${TARGET_WORDS[kind] ?? ""}${target}: ${ACTION_WORDS[action] ?? action}`;
@@ -108,6 +114,8 @@ export async function startHub(
 		ai?: AiAccounts;
 		aiInference?: AiInference;
 		catalogue?: Catalogue;
+		coolify?: Coolify;
+		creator?: ProjectCreator;
 		dev?: boolean;
 		port?: number;
 		root?: string;
@@ -125,6 +133,15 @@ export async function startHub(
 		options.aiInference ??
 		new AiInference({ credential: (id, force) => ai.credential(id, force) });
 	const aiApi = new AiApi(ai, aiInference);
+	const coolify = options.coolify ?? new Coolify(() => hub.configuration);
+	const creator =
+		options.creator ??
+		new ProjectCreator({
+			catalogue: () => hub.configuration,
+			hubRoot: primaryCheckout(root),
+			registered: async () =>
+				hub.replaceCatalogue(await loadCatalogue(join(root, "services.json"))),
+		});
 	const changeProjectMode = async (request: Request, id: string) => {
 		const body: unknown = await request.json();
 		if (
@@ -188,6 +205,22 @@ export async function startHub(
 	const refused = () =>
 		json({ error: "Пульт отвечает только на своём адресе" }, 403);
 
+	/** Reads from the hub's own page or CLI only: production state and logs are not for other sites. */
+	const guarded = async (
+		request: Request,
+		work: () => Promise<unknown>
+	): Promise<Response> => {
+		if (!allowed(request)) {
+			return json({ error: "Доступно только со страницы пульта" }, 403);
+		}
+		try {
+			return json(await work());
+		} catch (error) {
+			const status = error instanceof CoolifyError ? error.status : 409;
+			return json({ error: (error as Error).message }, status);
+		}
+	};
+
 	const act = async (
 		request: Request,
 		work: () => Promise<unknown>
@@ -227,6 +260,30 @@ export async function startHub(
 				bunServer.timeout(request, 0);
 				return aiApi.handle(request, allowed(request), origin, ready);
 			},
+			"/api/create": {
+				GET: (request) => guarded(request, async () => creator.list()),
+				POST: (request) =>
+					act(request, async () => {
+						const body = (await request.json()) as Partial<CreateRequest>;
+						return creator.start({
+							description:
+								typeof body.description === "string" && body.description.trim()
+									? body.description.trim().slice(0, 200)
+									: undefined,
+							name: String(body.name ?? "").trim(),
+							template: body.template === "python" ? "python" : "bts",
+							web: body.web !== false,
+						});
+					}),
+			},
+			"/api/create/:id": (request) =>
+				guarded(request, () => {
+					const job = creator.job(request.params.id);
+					if (!job) {
+						return Promise.reject(new Error("нет такого создания проекта"));
+					}
+					return Promise.resolve(job);
+				}),
 			"/api/docker/:name/:action": {
 				POST: (request) =>
 					act(request, () => {
@@ -273,6 +330,19 @@ export async function startHub(
 							ready ? 200 : 503
 						)
 					: refused(),
+			"/api/prod": (request) =>
+				guarded(request, () =>
+					coolify.view(new URL(request.url).searchParams.has("refresh"))
+				),
+			"/api/prod/apps/:uuid/deployments": (request) =>
+				guarded(request, () => coolify.deployments(request.params.uuid)),
+			"/api/prod/apps/:uuid/logs": (request) =>
+				guarded(request, async () => ({
+					logs: await coolify.logs(
+						request.params.uuid,
+						Number(new URL(request.url).searchParams.get("lines") ?? 200)
+					),
+				})),
 			"/api/projects/:id/:action": {
 				POST: (request) =>
 					act(request, async () => {

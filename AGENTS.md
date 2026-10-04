@@ -1,3 +1,16 @@
+<!-- BEGIN:DEVHUB:DEV-SERVER -->
+## DevHub is the development server — owner policy, 2026-10-04
+
+DevHub (`D:/code/devhub`, http://127.0.0.1:4700/) owns every local dev server on this computer. Agents start, inspect and stop development services only through it.
+
+- Start: `bun D:/code/devhub/src/cli.ts start <project>[/<service>]` or the project's registered `bun run dev` / `dev:*` scripts, which delegate to DevHub. The command returns after readiness; a repeated start reuses the running process.
+- Inspect: `bun D:/code/devhub/src/cli.ts status [--json]`, `bun D:/code/devhub/src/cli.ts list`, `bun D:/code/devhub/src/cli.ts logs <project>/<service> [--lines N]`. Stop or restart with `bun D:/code/devhub/src/cli.ts stop|restart <project>/<service>`.
+- Browser preview: `.claude/launch.json` entries run `bun D:/code/devhub/src/cli.ts attach <project>/<service>`, which starts the service in DevHub and follows its log. Or start it through DevHub and open `http://localhost:<port>/`.
+- Never run `next dev`, `vite`, `bun --hot`, `node --watch`, `turbo dev`, `uvicorn --reload`, `expo start`, `wrangler dev` and similar directly, in the background or through another process manager. Never kill a process to free a port; a port held outside DevHub needs an explicit migration.
+- New or changed services are described in the project's `devhub.json` (command, relative cwd, port, health, env, needs, launch); restart the hub afterwards. New projects are created from the hub page («Новый проект») or `bun D:/code/devhub/src/cli.ts create bts|python <name>`, which registers them.
+- Production: `bun D:/code/devhub/src/cli.ts prod [<project>]` shows the project's Coolify applications, databases and services with status, domains and commit; `bun D:/code/devhub/src/cli.ts prod <project> --logs` adds each application's last deployment and recent logs. The hub page «Прод» shows the same with deployment history. Production `build`, `start`, `deploy` and containers stay standalone and never depend on DevHub.
+<!-- END:DEVHUB:DEV-SERVER -->
+
 <!-- BEGIN:DEVHUB:WORKTREE-POLICY -->
 ## DevHub project modes and temporary worktrees — owner policy, 2026-10-03
 

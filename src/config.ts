@@ -10,6 +10,7 @@ import {
 	primaryProjectFolder,
 	sameSourcePath,
 } from "./checkouts";
+import { coolifyConfigSchema } from "./coolify";
 
 /**
  * The hub's catalogue: projects, the dev servers each one runs, where their interfaces are and what they need first.
@@ -76,6 +77,8 @@ export const catalogueSchema = z.strictObject({
 	aliases: z.record(z.string(), z.string().min(1)).default({}),
 	/** Where projects are, substituted for `${code}`. */
 	code: z.string().default("D:/code"),
+	/** The Coolify instance that runs these projects in production, read-only. */
+	coolify: coolifyConfigSchema.optional(),
 	/** Folders whose immediate project directories contain devhub.json. */
 	discover: z.array(z.string()).default([]),
 	/** Retired standalone copies remain on disk without becoming development projects. */

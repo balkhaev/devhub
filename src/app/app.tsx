@@ -2,7 +2,9 @@ import { useCallback, useEffect } from "react";
 
 import { AiPage } from "./ai";
 import { useHub, useRoute } from "./api";
+import { CreatePage } from "./create";
 import { ComposeCard, Overview } from "./overview";
+import { ProdPage } from "./prod";
 import { ProjectPage } from "./project";
 import { ProjectPreferencesProvider } from "./project-preferences";
 import { projectRoute } from "./project-ui";
@@ -15,6 +17,8 @@ import { cx, isUp } from "./words";
  * an overview of what runs, Docker and every listening port. It follows the computer live.
  */
 
+const STATIC_ROUTES = new Set(["ai", "new", "prod"]);
+
 function Main({
 	onDeleted,
 	route,
@@ -26,6 +30,12 @@ function Main({
 }) {
 	if (route === "ai") {
 		return <AiPage />;
+	}
+	if (route === "new") {
+		return <CreatePage />;
+	}
+	if (route === "prod") {
+		return <ProdPage projects={view.projects} />;
 	}
 	if (route?.startsWith("docker/")) {
 		const name = route.slice("docker/".length);
@@ -75,7 +85,11 @@ export function App() {
 	const [route, go] = useRoute();
 	const deleted = useCallback(() => go(null), [go]);
 	useEffect(() => {
-		if (!(view && route) || route === "ai" || route.startsWith("docker/")) {
+		if (
+			!(view && route) ||
+			STATIC_ROUTES.has(route) ||
+			route.startsWith("docker/")
+		) {
 			return;
 		}
 		const exists = view.projects.some(
