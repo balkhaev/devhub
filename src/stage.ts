@@ -451,14 +451,11 @@ export class StageProject {
 				...process.env,
 				NODE_ENV: "production",
 			};
-			for (const key of [
-				"DEVHUB_ROOT",
-				"DEVHUB_PROJECT",
-				"DEVHUB_SERVICE",
-				"DEVHUB_FRAME_ORIGIN",
-				"DEVHUB_STAGE",
-			]) {
-				delete deployEnv[key];
+			// New local integrations must never become inherited release configuration.
+			for (const key of Object.keys(deployEnv)) {
+				if (key.toUpperCase().startsWith("DEVHUB_")) {
+					delete deployEnv[key];
+				}
 			}
 			const result = spawnSync(this.policy.deploy, {
 				cwd: verifiedFolder ?? this.root,

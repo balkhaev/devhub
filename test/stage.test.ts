@@ -154,10 +154,14 @@ describe("canonical staging with real disposable Git repositories", () => {
 			"DEVHUB_SERVICE",
 			"DEVHUB_FRAME_ORIGIN",
 			"DEVHUB_STAGE",
+			"DEVHUB_CLIENT_TOKEN",
+			"DEVHUB_FUTURE_INTEGRATION",
+			"DevHub_Mixed_Case",
 		];
+		const applicationKey = "MY_DEVHUB_APP_SETTING";
 		writeFileSync(
 			join(folder, "deploy.mjs"),
-			`import { mkdirSync, writeFileSync } from "node:fs";\nmkdirSync("ignored", { recursive: true });\nwriteFileSync("ignored/deploy-env.json", JSON.stringify({ NODE_ENV: process.env.NODE_ENV, markers: ${JSON.stringify(markers)}.map(key => process.env[key] ?? null) }));\n`
+			`import { mkdirSync, writeFileSync } from "node:fs";\nmkdirSync("ignored", { recursive: true });\nwriteFileSync("ignored/deploy-env.json", JSON.stringify({ NODE_ENV: process.env.NODE_ENV, application: process.env[${JSON.stringify(applicationKey)}], markers: ${JSON.stringify(markers)}.map(key => process.env[key] ?? null), remainingDevHub: Object.keys(process.env).filter(key => key.toUpperCase().startsWith("DEVHUB_")) }));\n`
 		);
 		git(folder, "add", "deploy.mjs");
 		git(folder, "commit", "-m", "Fixture standalone deploy");
@@ -165,7 +169,7 @@ describe("canonical staging with real disposable Git repositories", () => {
 		mkdirSync(remote);
 		git(remote, "init", "--bare", "--initial-branch=main");
 		git(folder, "remote", "add", "origin", remote);
-		const inherited = [...markers, "NODE_ENV"];
+		const inherited = [...markers, "NODE_ENV", applicationKey];
 		const previous = inherited.map((key) => process.env[key]);
 		try {
 			for (const key of inherited) {
@@ -185,7 +189,12 @@ describe("canonical staging with real disposable Git repositories", () => {
 		expect(git(remote, "rev-parse", "main")).toBe(project.head() ?? "");
 		expect(
 			JSON.parse(readFileSync(join(folder, "ignored/deploy-env.json"), "utf8"))
-		).toEqual({ markers: markers.map(() => null), NODE_ENV: "production" });
+		).toEqual({
+			application: "development-owner-fixture",
+			markers: markers.map(() => null),
+			NODE_ENV: "production",
+			remainingDevHub: [],
+		});
 	}, 30_000);
 
 	test("failed MVP checks do not publish a changed main", () => {
