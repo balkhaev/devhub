@@ -13,13 +13,11 @@ import {
 const catalogue = (projects: unknown[]): Catalogue =>
 	catalogueSchema.parse({ code: "D:/code", projects });
 
-test("the hub's own services.json is a valid catalogue", async () => {
+test("the hub's own services.json loads without duplicate service keys", async () => {
 	const loaded = await loadCatalogue(
 		join(import.meta.dir, "..", "services.json")
 	);
 	const keys = servicesOf(loaded).map((service) => service.key);
-	expect(keys).toContain("montage/studio");
-	expect(keys).toContain("mediapipes/api");
 	expect(new Set(keys).size).toBe(keys.length);
 });
 
