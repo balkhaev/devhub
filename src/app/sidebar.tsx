@@ -167,6 +167,32 @@ export function Sidebar({
 			>
 				Claude и Codex
 			</button>
+			<button
+				aria-current={selected === "prod" ? "true" : undefined}
+				className={cx(
+					"side-item",
+					"side-item--home",
+					selected === "prod" && "side-item--selected"
+				)}
+				data-key="prod"
+				onClick={open}
+				type="button"
+			>
+				Прод
+			</button>
+			<button
+				aria-current={selected === "new" ? "true" : undefined}
+				className={cx(
+					"side-item",
+					"side-item--home",
+					selected === "new" && "side-item--selected"
+				)}
+				data-key="new"
+				onClick={open}
+				type="button"
+			>
+				+ Новый проект
+			</button>
 			{favoriteProjects(view?.projects ?? [], preferences.favorites).map(
 				(project) => (
 					<ProjectGroup

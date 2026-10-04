@@ -1,4 +1,5 @@
 import type { ProjectView } from "../hub";
+import { ProjectProd } from "./prod";
 import { FrontendLink, ProjectControls } from "./project-controls";
 import { DeleteProjectButton } from "./project-delete";
 import { ProjectModeBadge, ProjectModeControl } from "./project-mode";
@@ -89,6 +90,7 @@ export function ProjectPage({
 					<p className="muted">Dev-сервисы ещё не настроены.</p>
 				) : null}
 			</section>
+			<ProjectProd project={project} />
 			<footer className="project-page__footer">
 				<DeleteProjectButton onDeleted={onDeleted} project={project} />
 			</footer>

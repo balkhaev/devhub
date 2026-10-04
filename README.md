@@ -83,6 +83,10 @@ bun run hub start altay/site
 bun run hub start luvclub
 bun run hub stop altay/site
 bun run hub restart altay/site
+bun run hub logs altay/site --lines 50
+bun run hub attach altay/site
+bun run hub create bts my-app
+bun run hub prod altay --logs
 ```
 
 `--json` у `list` и `status` выдаёт машиночитаемый результат. `start` возвращает успех после готовности
@@ -235,6 +239,59 @@ Gameradar использует `docker-compose.dev.yml`, чтобы открыт
 - Управление сервисами запускает те же команды, что вы запустили бы в терминале. Сервисы,
   которые тратят деньги (MediaPipes для Montage на RunPod) или держат видеокарту (очередь Inference), помечены
   предупреждением.
+
+## Агенты работают через пульт
+
+Claude Code, Codex и другие агенты запускают dev-серверы только через DevHub:
+`bun D:/code/devhub/src/cli.ts start|stop|restart|status|logs|attach`. `bun run agents` показывает план,
+`bun run agents --write` применяет его:
+
+- блок `DEVHUB:DEV-SERVER` в `D:/code/AGENTS.md`, `~/.claude/CLAUDE.md` и `~/.codex/AGENTS.md` —
+  правила и команды пульта; остальной текст файлов сохраняется;
+- hook `PreToolUse` в `~/.claude/settings.json` (`src/agent-guard.ts`): внутри проекта с `devhub.json`
+  он отклоняет `next dev`, `vite`, `bun --hot`, `node --watch`, `turbo dev`, `uvicorn --reload`, `expo start`
+  и подобные команды, а также `preview_start` для записи `.claude/launch.json`, которая запускает сервер сама.
+  Сборки, тесты и `bun run dev` проходят; при ошибке hook ничего не блокирует;
+- с `--projects` — тот же блок в AGENTS.md каждого проекта и `.claude/launch.json`, где превью запускается
+  через `cli.ts attach <проект>/<сервис>`: сервис стартует в пульте, а команда только показывает его лог.
+  Прежняя конфигурация с самостоятельным запуском сохраняется в `.devhub/original-claude-launch.json`.
+  Это правки репозиториев проектов: их коммит и выпуск идут по правилам режима каждого проекта.
+
+`logs <проект>/<сервис> [--lines N]` печатает конец лога из `.logs`, `attach` запускает сервис и следит
+за логом; Ctrl+C отключает только вывод.
+
+## Новый проект
+
+«+ Новый проект» в боковом списке или `bun run hub create bts|python ИМЯ [--description ТЕКСТ] [--no-web]`.
+Проект создаётся в папке `code` из `services.json` и сразу появляется в пульте:
+
+- **Better-T-Stack** — `create-better-t-stack create-json`: Next.js, Hono на Bun, tRPC, Better Auth,
+  Drizzle + Postgres в Docker, Turborepo, Biome/Ultracite, lefthook, evlog, skills и MCP, Dockerfile для
+  web и server. Как у analytics и brains.
+- **Python** — чистый проект на uv: пакет в `src/`, pytest, ruff; по умолчанию FastAPI с `/health`
+  и Dockerfile, с `--no-web` — пакет без dev-сервиса.
+
+Пульт выбирает свободные порты (приложения с 3020, Postgres с 5433, Python API с 8100), пишет их в
+`devhub.json`, `.env` и `docker-compose.yml`, заменяет dev-скрипты обёртками, сохраняет исходные в
+`.devhub/original-scripts.json`, создаёт политику MVP с `remote: null`, AGENTS.md с правилами,
+`.claude/launch.json` и первый коммит в `main`. Remote, Coolify и деплой подключаются отдельно.
+Если код шаблона ещё не проходит Ultracite, `bun run check` не входит в финальные проверки,
+пока замечания не исправлены.
+
+## Прод (Coolify)
+
+Раздел «Прод» и блок на странице проекта показывают, что работает в Coolify: статус и домены приложений,
+коммит, последние деплои, логи, базы и сервисы проекта, ссылки в консоль Coolify. Пульт только читает:
+он не деплоит и не перезапускает. В терминале: `bun run hub prod [проект] [--logs] [--lines N] [--json]`.
+
+```json
+"coolify": { "url": "https://deploy.balkhaev.com", "tokenEnv": "COOLIFY_ACCESS_TOKEN", "links": {} }
+```
+
+Токен берётся из переменной окружения (на Windows также из пользовательских переменных) и не уходит
+на страницу; страница получает только выбранные поля без секретов, переменных и логов сборки.
+Приложения сопоставляются с проектами по git-репозиторию, затем по имени проекта Coolify;
+`links` задаёт явную связь: `"montage": ["<uuid приложения>", "<имя проекта Coolify>"]`.
 
 ## Проверка кода
 

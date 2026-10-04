@@ -3,6 +3,10 @@
     "C:/Users/user/Documents/ChatGPT/mediapipes": "D:/code/mediapipes"
   },
   "code": "D:/code",
+  "coolify": {
+    "url": "https://deploy.balkhaev.com",
+    "tokenEnv": "COOLIFY_ACCESS_TOKEN"
+  },
   "discover": ["${code}", "C:/Users/user/Documents/ChatGPT"],
   "exclude": [
     "C:\\Users\\user\\Documents\\ChatGPT\\gameradar-postgres-only-20260908",

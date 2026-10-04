@@ -5,6 +5,7 @@
   "description": "Пульт: один локальный интерфейс, откуда запускаются серверы разработки всех проектов и открываются их веб-интерфейсы.",
   "type": "module",
   "scripts": {
+    "agents": "bun scripts/agents.ts",
     "check": "tsc --noEmit && ultracite check",
     "dev": "bun --hot src/server.ts --dev",
     "fix": "ultracite fix",
