@@ -1084,12 +1084,33 @@ a.card__service:hover {
 	overflow-wrap: anywhere;
 }
 
-.prod-deployments {
-	margin-top: 4px;
+.cards--prod {
+	grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
 }
 
-.prod-deployments td {
-	vertical-align: top;
+.prod-deployments {
+	display: grid;
+	gap: 4px;
+	padding: 6px 0 0;
+	margin: 0;
+	list-style: none;
+	border-top: 1px solid var(--line);
+}
+
+.prod-deploy {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 2px 8px;
+	align-items: baseline;
+	min-width: 0;
+}
+
+.prod-deploy__message {
+	flex: 1 1 140px;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
 }
 
 .prod-badge {
