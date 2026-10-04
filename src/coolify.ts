@@ -504,7 +504,8 @@ export class Coolify {
 					name: app.name,
 					project: where?.project ?? null,
 					repository:
-						app.build_pack === "dockerimage"
+						app.build_pack === "dockerimage" ||
+						repositorySlug(app.git_repository) === PLACEHOLDER_REPOSITORY
 							? null
 							: (app.git_repository ?? null),
 					status: prodStatus(app.status),
