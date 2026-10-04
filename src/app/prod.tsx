@@ -104,42 +104,44 @@ function Deployments({ uuid }: { uuid: string }) {
 		return <p className="muted small">Деплоев ещё не было.</p>;
 	}
 	return (
-		<table className="prod-deployments table">
-			<tbody>
-				{list.map((deployment) => {
-					const created = at(deployment.createdAt);
-					return (
-						<tr key={deployment.uuid}>
-							<td>
-								<span
-									className={cx(
-										"prod-badge",
-										`prod-badge--${DEPLOY_TONE[deployment.status] ?? "busy"}`
-									)}
-								>
-									{DEPLOY_WORDS[deployment.status] ?? deployment.status}
-								</span>
-							</td>
-							<td className="muted">
-								{created ? `${since(created)} назад` : ""}
-							</td>
-							<td>
-								<code>{deployment.commit?.slice(0, 7) ?? "—"}</code>{" "}
-								{deployment.message ?? ""}
-							</td>
-							<td className="muted">{TRIGGER_WORDS[deployment.trigger]}</td>
-							<td>
-								{deployment.console ? (
-									<a href={deployment.console} rel="noopener" target="_blank">
-										лог ↗
-									</a>
-								) : null}
-							</td>
-						</tr>
-					);
-				})}
-			</tbody>
-		</table>
+		<ul className="prod-deployments">
+			{list.map((deployment) => {
+				const created = at(deployment.createdAt);
+				return (
+					<li className="prod-deploy" key={deployment.uuid}>
+						<span
+							className={cx(
+								"prod-badge",
+								`prod-badge--${DEPLOY_TONE[deployment.status] ?? "busy"}`
+							)}
+						>
+							{DEPLOY_WORDS[deployment.status] ?? deployment.status}
+						</span>
+						<code>{deployment.commit?.slice(0, 7) ?? "—"}</code>
+						<span
+							className="prod-deploy__message"
+							title={deployment.message ?? undefined}
+						>
+							{deployment.message ?? ""}
+						</span>
+						<span className="muted small">
+							{created ? `${since(created)} назад · ` : ""}
+							{TRIGGER_WORDS[deployment.trigger]}
+						</span>
+						{deployment.console ? (
+							<a
+								className="small"
+								href={deployment.console}
+								rel="noopener"
+								target="_blank"
+							>
+								лог ↗
+							</a>
+						) : null}
+					</li>
+				);
+			})}
+		</ul>
 	);
 }
 
@@ -381,7 +383,7 @@ export function ProdPage({ projects }: { projects: ProjectView[] }) {
 				</button>
 			</header>
 			<ProdState error={error} loading={loading} view={view} />
-			<div className="cards">
+			<div className="cards cards--prod">
 				{(view?.projects ?? []).map((project) => (
 					<section className="card" key={project.id}>
 						<div className="card__head">
