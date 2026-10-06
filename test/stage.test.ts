@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import {
 	existsSync,
 	mkdirSync,
@@ -10,6 +10,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
+import { setTimeout as delay } from "node:timers/promises";
 
 import { StageProject } from "../src/stage";
 import { withProjectModeText } from "../src/workflow-policy";
@@ -613,5 +614,132 @@ describe("canonical staging with real disposable Git repositories", () => {
 		project.withLock(() => project.init());
 		expect(project.branch()).toBe("stage");
 		expect(existsSync(project.lockFile)).toBe(false);
+	}, 30_000);
+
+	test("a lock left by a killed stage process is recovered, a live one is kept", async () => {
+		const { project } = fixture();
+		const finished = spawnSync(process.execPath, ["-e", "0"]);
+		writeFileSync(project.lockFile, `${finished.pid}\n`);
+		const running = spawn(
+			process.execPath,
+			["-e", "setTimeout(() => {}, 60000)"],
+			{ stdio: "ignore", windowsHide: true }
+		);
+		try {
+			project.withLock(() => project.init());
+			expect(project.branch()).toBe("stage");
+			expect(existsSync(project.lockFile)).toBe(false);
+			// The holder started before it took the lock, as every real holder does.
+			await delay(500);
+			const live = `${running.pid}\n`;
+			writeFileSync(project.lockFile, live);
+			expect(() => project.withLock(() => project.init())).toThrow(
+				`проект занят другим stage-процессом: ${project.lockFile} (PID ${running.pid})`
+			);
+			expect(readFileSync(project.lockFile, "utf8")).toBe(live);
+		} finally {
+			running.kill();
+			rmSync(project.lockFile, { force: true });
+		}
+	}, 30_000);
+});
+
+describe("recovery after an interrupted create", () => {
+	const adminOf = (folder: string) =>
+		resolve(
+			folder,
+			readFileSync(join(folder, ".git"), "utf8").replace("gitdir:", "").trim()
+		);
+
+	test("a checkout whose Git registration is gone is rebuilt with an empty branch", () => {
+		const { folder, project } = fixture({ mode: "mvp" });
+		const task = project.create("interrupted");
+		const stale = git(folder, "rev-parse", "codex/interrupted");
+		rmSync(adminOf(task), { force: true, recursive: true });
+		rmSync(join(task, "check.mjs"));
+		commitSource(folder, "moved on");
+		expect(() =>
+			git(
+				folder,
+				"worktree",
+				"add",
+				"-b",
+				"codex/interrupted",
+				`${task}-x`,
+				"main"
+			)
+		).toThrow("already exists");
+		expect(project.create("interrupted")).toBe(task);
+		expect(git(task, "rev-parse", "HEAD")).toBe(
+			git(folder, "rev-parse", "main")
+		);
+		expect(git(task, "rev-parse", "HEAD")).not.toBe(stale);
+		expect(git(task, "status", "--porcelain")).toBe("");
+		expect(project.worktrees().map((item) => item.branch)).toContain(
+			"codex/interrupted"
+		);
+	}, 30_000);
+
+	test("a registration still locked as initializing is not reused as a ready worktree", () => {
+		const { project } = fixture({ mode: "mvp" });
+		const task = project.create("initializing");
+		writeFileSync(join(adminOf(task), "locked"), "initializing");
+		rmSync(join(task, "source.txt"));
+		expect(
+			project.worktrees().find((item) => item.branch === "codex/initializing")
+				?.locked
+		).toBe("initializing");
+		expect(project.create("initializing")).toBe(task);
+		expect(readFileSync(join(task, "source.txt"), "utf8")).toBe("initial\n");
+		expect(
+			project.worktrees().find((item) => item.branch === "codex/initializing")
+				?.locked
+		).toBeUndefined();
+	}, 30_000);
+
+	test("a leftover branch without a checkout is replaced only when it has no own commits", () => {
+		const { folder, project } = fixture({ mode: "mvp" });
+		git(folder, "branch", "codex/branch-only", "main");
+		expect(project.create("branch-only")).toBe(
+			resolve(project.worktreeRoot, "branch-only")
+		);
+		git(folder, "switch", "-c", "codex/with-work");
+		const work = commitSource(folder, "work");
+		git(folder, "switch", "main");
+		expect(() => project.create("with-work")).toThrow(
+			"ветка codex/with-work содержит коммиты вне main (1)"
+		);
+		expect(git(folder, "rev-parse", "codex/with-work")).toBe(work);
+		expect(existsSync(resolve(project.worktreeRoot, "with-work"))).toBe(false);
+	}, 30_000);
+
+	test("an orphaned checkout with edits, extra files or commits is reported and kept", () => {
+		const { folder, project } = fixture({ mode: "mvp" });
+		const edited = project.create("edited");
+		writeFileSync(join(edited, "notes.txt"), "keep me\n");
+		writeFileSync(join(edited, "source.txt"), "changed\n");
+		rmSync(adminOf(edited), { force: true, recursive: true });
+		expect(() => project.create("edited")).toThrow(
+			"прерванный create не очищен"
+		);
+		expect(readFileSync(join(edited, "notes.txt"), "utf8")).toBe("keep me\n");
+		expect(git(folder, "rev-parse", "--verify", "codex/edited")).toBeTruthy();
+
+		const committed = project.create("committed");
+		const work = commitSource(committed, "work");
+		rmSync(adminOf(committed), { force: true, recursive: true });
+		expect(() => project.create("committed")).toThrow(
+			"ветка codex/committed содержит коммиты вне main"
+		);
+		expect(existsSync(join(committed, "source.txt"))).toBe(true);
+		expect(git(folder, "rev-parse", "codex/committed")).toBe(work);
+
+		const foreign = resolve(project.worktreeRoot, "foreign");
+		mkdirSync(foreign, { recursive: true });
+		writeFileSync(join(foreign, "data.txt"), "not a checkout\n");
+		expect(() => project.create("foreign")).toThrow(
+			`путь worktree недоступен: ${foreign}`
+		);
+		expect(existsSync(join(foreign, "data.txt"))).toBe(true);
 	}, 30_000);
 });

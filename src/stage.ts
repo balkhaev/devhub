@@ -1,20 +1,22 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
-	closeSync,
 	existsSync,
 	mkdirSync,
-	openSync,
+	mkdtempSync,
 	readdirSync,
 	readFileSync,
 	renameSync,
 	rmSync,
+	statSync,
 	writeFileSync,
 } from "node:fs";
+import { tmpdir } from "node:os";
 import { isAbsolute, join, resolve } from "node:path";
 
 import { isInsideProject, primaryCheckout, sameSourcePath } from "./checkouts";
 import { canonicalProjectFolder, loadCatalogue } from "./config";
+import { acquireFileLock, type ProcessProbe, systemProbe } from "./stage-lock";
 import {
 	type ProjectMode,
 	type WorkflowPolicy,
@@ -28,6 +30,7 @@ const POLICY = join(".devhub", "worktree.json");
 const TOPIC_SEGMENT = /^[a-z0-9][a-z0-9-]*$/;
 const CODEX_PREFIX = /^codex\//;
 const BRANCH_PREFIX = /^refs\/heads\//;
+const GITDIR_LINE = /^gitdir:\s*(.+?)\s*$/m;
 
 interface CheckRecord {
 	checkedAt: string;
@@ -39,6 +42,7 @@ interface CheckRecord {
 export interface WorktreeRecord {
 	branch?: string;
 	head?: string;
+	locked?: string;
 	path: string;
 }
 
@@ -274,24 +278,213 @@ export class StageProject {
 		if (!isInsideProject(this.worktreeRoot, folder)) {
 			throw new Error(`путь worktree недоступен: ${folder}`);
 		}
-		if (existsSync(folder)) {
-			const existing = this.worktrees().find((item) =>
-				sameSourcePath(item.path, folder)
-			);
-			if (existing?.branch === `codex/${name}`) {
-				return folder;
-			}
-			throw new Error(`путь worktree недоступен: ${folder}`);
+		const branch = `codex/${name}`;
+		const existing = this.worktrees().find((item) =>
+			sameSourcePath(item.path, folder)
+		);
+		if (
+			existing?.branch === branch &&
+			existing.locked !== "initializing" &&
+			existsSync(folder)
+		) {
+			return folder;
+		}
+		if (existing || existsSync(folder) || this.branchHead(branch)) {
+			this.recoverInterruptedCreate(branch, folder, existing);
 		}
 		gitOutput(this.root, [
 			"worktree",
 			"add",
 			"-b",
-			`codex/${name}`,
+			branch,
 			folder,
 			`refs/heads/${this.integrationBranch}`,
 		]);
 		return folder;
+	}
+
+	private branchHead(branch: string): string {
+		return gitOutput(
+			this.root,
+			["rev-parse", "--verify", "--quiet", `refs/heads/${branch}^{commit}`],
+			true
+		);
+	}
+
+	/**
+	 * A killed `create` leaves a half checked-out folder, its Git registration (locked as
+	 * "initializing", or already gone) and a codex branch without commits. They are removed only
+	 * when the branch adds nothing to the integration branch and every file in the folder is
+	 * the unchanged committed version; anything else is reported and kept.
+	 */
+	private recoverInterruptedCreate(
+		branch: string,
+		folder: string,
+		registered?: WorktreeRecord
+	): void {
+		const keep = (reason: string) =>
+			new Error(
+				`${folder}: ${reason}; прерванный create не очищен — сохраните работу (archive, если worktree зарегистрирован) или выберите другое имя задачи`
+			);
+		if (registered && registered.branch !== branch) {
+			throw new Error(`путь worktree недоступен: ${folder}`);
+		}
+		const common = gitOutput(this.root, [
+			"rev-parse",
+			"--path-format=absolute",
+			"--git-common-dir",
+		]);
+		const present = existsSync(folder);
+		const filled = present && readdirSync(folder).length > 0;
+		if (filled && !registered) {
+			this.assertOrphanedCheckout(folder, common);
+		}
+		const head = this.branchHead(branch);
+		if (head) {
+			this.assertEmptyTaskBranch(branch, folder, keep);
+		}
+		if (filled) {
+			const base =
+				registered?.head ||
+				head ||
+				gitOutput(this.root, [
+					"rev-parse",
+					"--verify",
+					`refs/heads/${this.integrationBranch}`,
+				]);
+			const changed = this.changedAgainst(common, folder, base);
+			if (changed.length) {
+				throw keep(
+					`в папке есть файлы, отличные от ${base.slice(0, 12)}: ${changed.slice(0, 10).join(", ")}${changed.length > 10 ? ", …" : ""}`
+				);
+			}
+		}
+		if (registered) {
+			// Removes exactly this entry, including the "initializing" lock, and its folder.
+			gitOutput(this.root, [
+				"worktree",
+				"remove",
+				"--force",
+				"--force",
+				folder,
+			]);
+		} else if (present) {
+			rmSync(folder, { force: true, maxRetries: 3, recursive: true });
+		}
+		if (head) {
+			// Compare-and-delete: a branch that moved in the meantime is kept.
+			gitOutput(this.root, ["update-ref", "-d", `refs/heads/${branch}`, head]);
+		}
+		process.stderr.write(
+			`stage: очищен прерванный create ${branch}: ${folder}\n`
+		);
+	}
+
+	/** Only a checkout whose Git registration is gone counts as left over by create. */
+	private assertOrphanedCheckout(folder: string, common: string): void {
+		const marker = join(folder, ".git");
+		const gitdir =
+			existsSync(marker) && statSync(marker).isFile()
+				? GITDIR_LINE.exec(readFileSync(marker, "utf8"))?.[1]
+				: undefined;
+		const admin = gitdir ? resolve(folder, gitdir) : undefined;
+		if (
+			!(
+				admin &&
+				isInsideProject(join(common, "worktrees"), admin) &&
+				!existsSync(admin)
+			)
+		) {
+			throw new Error(`путь worktree недоступен: ${folder}`);
+		}
+	}
+
+	/** A task branch may be replaced only while nothing uses it and it adds no commits. */
+	private assertEmptyTaskBranch(
+		branch: string,
+		folder: string,
+		keep: (reason: string) => Error
+	): void {
+		const user = this.worktrees().find(
+			(item) => item.branch === branch && !sameSourcePath(item.path, folder)
+		);
+		if (user) {
+			throw keep(`ветка ${branch} используется в ${user.path}`);
+		}
+		const ahead = gitOutput(this.root, [
+			"rev-list",
+			"--count",
+			`refs/heads/${this.integrationBranch}..refs/heads/${branch}`,
+		]);
+		if (ahead !== "0") {
+			throw keep(
+				`ветка ${branch} содержит коммиты вне ${this.integrationBranch} (${ahead})`
+			);
+		}
+	}
+
+	/** Paths in a folder that are not the committed version; files missing from it do not count. */
+	private changedAgainst(
+		common: string,
+		folder: string,
+		commit: string
+	): string[] {
+		const scratch = mkdtempSync(join(tmpdir(), "devhub-stage-index-"));
+		const run = (args: string[]) => {
+			const result = spawnSync(
+				"git",
+				[
+					"-c",
+					"core.fsmonitor=false",
+					"-c",
+					"core.untrackedCache=false",
+					`--git-dir=${common}`,
+					`--work-tree=${folder}`,
+					...args,
+				],
+				{
+					cwd: folder,
+					encoding: "utf8",
+					env: { ...process.env, GIT_INDEX_FILE: join(scratch, "index") },
+					maxBuffer: 32 * 1024 * 1024,
+					windowsHide: true,
+				}
+			);
+			if (result.error) {
+				throw result.error;
+			}
+			if (result.status !== 0) {
+				throw new Error(
+					result.stderr.trim() || `git ${args[0]}: ${result.status}`
+				);
+			}
+			return result.stdout;
+		};
+		try {
+			run(["read-tree", commit]);
+			return (
+				run([
+					"status",
+					"--porcelain",
+					"-z",
+					"--no-renames",
+					"--untracked-files=all",
+					"--ignored",
+				])
+					.split("\0")
+					// The first column compares with the repository HEAD, not with this commit; a
+					// missing file (D) is only an unfinished checkout.
+					.filter(
+						(entry) =>
+							entry.startsWith("??") ||
+							entry.startsWith("!!") ||
+							!" D".includes(entry[1] ?? " ")
+					)
+					.map((entry) => entry.slice(3))
+			);
+		} finally {
+			rmSync(scratch, { force: true, recursive: true });
+		}
 	}
 
 	worktrees(): WorktreeRecord[] {
@@ -311,6 +504,11 @@ export class StageProject {
 				current.head = token.slice(5);
 			} else if (current && token.startsWith("branch refs/heads/")) {
 				current.branch = token.slice(18);
+			} else if (
+				current &&
+				(token === "locked" || token.startsWith("locked "))
+			) {
+				current.locked = token.slice(7);
 			}
 		}
 		return result;
@@ -672,27 +870,16 @@ export class StageProject {
 		return archived;
 	}
 
-	/** Shared by synchronous Git operations and the asynchronous filesystem deletion lifecycle. */
-	acquireLock(): () => void {
-		let fd: number;
-		try {
-			fd = openSync(this.lockFile, "wx");
-		} catch (cause) {
-			throw new Error(`проект занят другим stage-процессом: ${this.lockFile}`, {
-				cause,
-			});
-		}
-		const release = () => {
-			closeSync(fd);
-			rmSync(this.lockFile, { force: true });
-		};
-		try {
-			writeFileSync(fd, `${process.pid}\n`);
-		} catch (error) {
-			release();
-			throw error;
-		}
-		return release;
+	/**
+	 * Shared by synchronous Git operations and the asynchronous filesystem deletion lifecycle.
+	 * A lock left by a killed process is replaced only after its holder is provably gone.
+	 */
+	acquireLock(probe: ProcessProbe = systemProbe): () => void {
+		return acquireFileLock(
+			this.lockFile,
+			"проект занят другим stage-процессом",
+			probe
+		);
 	}
 
 	withLock<T>(action: () => T): T {
