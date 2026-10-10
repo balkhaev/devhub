@@ -159,6 +159,43 @@ test("shared dependencies launch once and become healthy before either dependent
 	expect(processes.launches).toEqual(["app/api", "app/web", "app/worker"]);
 });
 
+test("starting a running dependent restores its stopped backend and waits for readiness without relaunching it", async () => {
+	let backendReady = true;
+	const { hub, ports, processes } = await fixture(
+		[
+			configService("api", { health: "/ready", port: 3000 }),
+			configService("web", { needs: ["app/api"], port: 3001 }),
+		],
+		{ healthy: async () => backendReady }
+	);
+	processes.onStart = async (service) => {
+		if (service.port) {
+			ports.set(service.port, process.pid);
+		}
+		await Promise.resolve();
+	};
+	await hub.startService("app/web");
+	const web = processes.get("app/web");
+	await hub.stopService("app/api", false);
+	ports.delete(3000);
+	backendReady = false;
+	let resolved = false;
+	const restarted = hub.startService("app/web");
+	restarted
+		.then(() => {
+			resolved = true;
+		})
+		.catch(() => undefined);
+	await sleep(5);
+	expect(processes.launches).toEqual(["app/api", "app/web", "app/api"]);
+	expect(resolved).toBe(false);
+	backendReady = true;
+	await restarted;
+	expect(processes.get("app/web")).toBe(web);
+	expect(processes.launches).toEqual(["app/api", "app/web", "app/api"]);
+	expect(hub.current.projects[0]?.services[1]?.needs[0]?.up).toBe(true);
+});
+
 test("an external dependency cannot satisfy development readiness, even when healthy", async () => {
 	const { hub, ports, processes } = await fixture([
 		configService("api", { health: "/ready", port: 3000 }),

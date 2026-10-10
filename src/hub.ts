@@ -1068,11 +1068,10 @@ export class Hub {
 		await this.refresh(true);
 		this.assertStartWanted(service.key);
 		const current = this.processes.get(service.key);
-		if (current && !current.exit && alive(current.pid)) {
-			await this.waitReady(service);
-			return;
+		const alreadyRunning = current && !current.exit && alive(current.pid);
+		if (!alreadyRunning) {
+			this.assertPortFree(service);
 		}
-		this.assertPortFree(service);
 		for (const need of service.needs) {
 			if (need.startsWith(DOCKER_NEED)) {
 				// biome-ignore lint/performance/noAwaitInLoops: what a service needs comes up in order
@@ -1081,6 +1080,10 @@ export class Hub {
 			}
 			// A foreign process cannot satisfy a managed development dependency.
 			await this.startService(need, [...chain, service.key]);
+		}
+		if (alreadyRunning) {
+			await this.waitReady(service);
+			return;
 		}
 		const launching = this.launching
 			.catch(() => undefined)
