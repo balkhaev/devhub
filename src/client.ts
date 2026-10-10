@@ -78,7 +78,8 @@ export async function requestHub(
 	const response = await fetch(new URL(path, address), {
 		headers: action ? { "x-devhub-client": token } : {},
 		method: action ? "POST" : "GET",
-		signal: AbortSignal.timeout(240_000),
+		// Starting a frontend can include Docker readiness and a backend before its own cold compilation.
+		signal: AbortSignal.timeout(action ? 900_000 : 240_000),
 	});
 	const result = (await response.json()) as {
 		error?: string;

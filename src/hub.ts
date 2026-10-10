@@ -133,7 +133,7 @@ const TICK_MS = 2000;
  */
 const FULL_EVERY = 5;
 /** A started service gets this long to open its port and pass its health check before it counts as unhealthy. */
-const WARMUP_MS = 120_000;
+const WARMUP_MS = 300_000;
 /** How long a Docker project brought up for a service may take to become healthy. */
 const COMPOSE_READY_MS = 90_000;
 const PORT_FREE_MS = 15_000;
