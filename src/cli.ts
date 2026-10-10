@@ -28,7 +28,7 @@ const HELP = `devhub — управление локальной разрабо�
   bun run hub start --project PATH --script dev[:name]
   bun run hub logs project/service [--lines N]   последние строки лога
   bun run hub attach project/service    запустить и следить за логом (для превью агентов)
-  bun run hub create bts|python NAME [--description TEXT] [--no-web]
+  bun run hub create bts|python NAME [--base-dir PATH] [--description TEXT] [--no-web]
                                         создать проект и подключить его к пульту
   bun run hub prod [project] [--logs] [--lines N] [--json]
                                         что работает в проде (Coolify)
@@ -57,6 +57,7 @@ export function scriptTargets(
 
 interface Arguments {
 	action: string;
+	baseDir?: string;
 	description?: string;
 	json: boolean;
 	lines: number;
@@ -83,6 +84,9 @@ const FLAGS: Record<string, (parsed: Arguments) => void> = {
 	},
 };
 const VALUES: Record<string, (parsed: Arguments, value: string) => void> = {
+	"--base-dir": (parsed, value) => {
+		parsed.baseDir = value;
+	},
 	"--description": (parsed, value) => {
 		parsed.description = value;
 	},
@@ -331,6 +335,7 @@ async function create(options: Arguments): Promise<void> {
 	const address = await ensureHub();
 	const token = await clientToken(ROOT);
 	const started = (await hubJson(address, "/api/create", token, {
+		baseDir: options.baseDir,
 		description: options.description,
 		name,
 		template,

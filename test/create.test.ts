@@ -3,16 +3,17 @@ import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { sleep } from "bun";
+import { sleep, spawn } from "bun";
 
 import { DEV_SERVER_MARKER } from "../src/agents";
-import { type Catalogue, manifestSchema } from "../src/config";
+import { type Catalogue, loadCatalogue, manifestSchema } from "../src/config";
 import {
 	btsInput,
 	type CreateJob,
 	freePorts,
 	ProjectCreator,
 	type Runner,
+	registerCreationFolder,
 	usedPorts,
 	validateName,
 	withEnv,
@@ -129,6 +130,56 @@ function setup() {
 		return { catalogue, code };
 	});
 }
+
+test("creation in a custom parent folder persists discovery and preserves the catalogue", async () => {
+	const { catalogue, code } = await setup();
+	const baseDir = join(code, "..", "custom projects");
+	const file = join(code, "..", "services.json");
+	await writeFile(
+		file,
+		JSON.stringify({ ...catalogue, exclude: ["private-copy"] })
+	);
+	const creator = new ProjectCreator({
+		catalogue: () => catalogue,
+		hubRoot: HUB,
+		registered: (folder) => {
+			registerCreationFolder(file, folder);
+			return Promise.resolve();
+		},
+		runner: (command, { cwd }) =>
+			command[0] === "git" && command[1] === "init"
+				? spawn(command, { cwd, stderr: "ignore", stdout: "ignore" }).exited
+				: Promise.resolve(0),
+	});
+	expect(() =>
+		creator.start({ baseDir: "relative", name: "demo", template: "python" })
+	).toThrow("абсолютным");
+	const job = await waitFor(
+		creator,
+		creator.start({
+			baseDir,
+			name: "custom-app",
+			template: "python",
+			web: false,
+		}).id
+	);
+	expect(job.status).toBe("done");
+	expect(job.path).toBe(join(baseDir, "custom-app").replaceAll("\\", "/"));
+	expect(existsSync(join(code, "custom-app"))).toBe(false);
+	expect(existsSync(join(baseDir, "custom-app", "devhub.json"))).toBe(true);
+	registerCreationFolder(file, baseDir);
+	const saved = await readJson<Catalogue>(file);
+	expect(saved.discover).toEqual([
+		code,
+		resolve(baseDir).replaceAll("\\", "/"),
+	]);
+	expect(saved.exclude).toEqual(["private-copy"]);
+	expect(saved.projects).toEqual([]);
+	const reloaded = await loadCatalogue(file);
+	expect(reloaded.projects.map((project) => project.id)).toEqual([
+		"custom-app",
+	]);
+});
 
 test("a Python project is written, registered and committed through the runner", async () => {
 	const { catalogue, code } = await setup();

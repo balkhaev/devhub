@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import { spawn } from "bun";
 
 import {
@@ -9,6 +9,7 @@ import {
 	devServerBlock,
 	replaceMarkedBlock,
 } from "./agents";
+import { sameSourcePath } from "./checkouts";
 import type { Catalogue } from "./config";
 import {
 	ownerProjectPolicyBlock,
@@ -25,6 +26,8 @@ import {
 export type Template = "bts" | "python";
 
 export interface CreateRequest {
+	/** Absolute parent folder; defaults to the catalogue's code folder. */
+	baseDir?: string;
 	description?: string;
 	name: string;
 	template: Template;
@@ -78,6 +81,32 @@ const BTS_MCP = [
 const serialize = (value: unknown): string =>
 	`${JSON.stringify(value, null, 2)}\n`;
 const slash = (path: string): string => path.replaceAll("\\", "/");
+
+/** Keep custom creation folders discoverable after a hub restart. No await between read and replace. */
+export function registerCreationFolder(file: string, folder: string): void {
+	const configuration = JSON.parse(readFileSync(file, "utf8")) as {
+		code?: string;
+		discover?: string[];
+	};
+	const folders = configuration.discover ?? [];
+	if (
+		folders.some((entry) =>
+			sameSourcePath(
+				resolve(
+					dirname(file),
+					entry.replaceAll(/\$\{code\}/g, () => configuration.code ?? "D:/code")
+				),
+				resolve(folder)
+			)
+		)
+	) {
+		return;
+	}
+	configuration.discover = [...folders, slash(resolve(folder))];
+	const temporary = `${file}.${randomUUID()}.tmp`;
+	writeFileSync(temporary, serialize(configuration));
+	renameSync(temporary, file);
+}
 
 export function validateName(name: string): void {
 	if (!NAME.test(name) || name.includes("--")) {
@@ -504,14 +533,14 @@ export class ProjectCreator {
 	private readonly jobs = new Map<string, CreateJob>();
 	private readonly catalogue: () => Catalogue;
 	private readonly hubRoot: string;
-	private readonly registered: () => Promise<void>;
+	private readonly registered: (folder: string) => Promise<void>;
 	private readonly run: Runner;
 
 	constructor(options: {
 		catalogue: () => Catalogue;
 		hubRoot: string;
 		/** Called after the files are written: the hub reloads its catalogue. */
-		registered: () => Promise<void>;
+		registered: (folder: string) => Promise<void>;
 		runner?: Runner;
 	}) {
 		this.catalogue = options.catalogue;
@@ -535,7 +564,13 @@ export class ProjectCreator {
 			throw new Error("Шаблон: bts или python");
 		}
 		const catalogue = this.catalogue();
-		const code = resolve(catalogue.code);
+		if (
+			request.baseDir !== undefined &&
+			(typeof request.baseDir !== "string" || !isAbsolute(request.baseDir))
+		) {
+			throw new Error("Базовая папка должна быть абсолютным путём");
+		}
+		const code = resolve(request.baseDir ?? catalogue.code);
 		const path = join(code, request.name);
 		if (existsSync(path)) {
 			throw new Error(`Папка ${slash(path)} уже существует`);
@@ -610,6 +645,7 @@ export class ProjectCreator {
 		catalogue: Catalogue
 	): Promise<void> {
 		const used = await usedPorts(catalogue);
+		await mkdir(code, { recursive: true });
 		const bun = process.execPath;
 		if (request.template === "bts") {
 			const [server = 0, web = 0] = freePorts(used, FIRST_APP_PORT, 2);
@@ -680,6 +716,6 @@ export class ProjectCreator {
 			job.path
 		);
 		this.say(job, "\nРегистрирую в пульте…\n");
-		await this.registered();
+		await this.registered(code);
 	}
 }

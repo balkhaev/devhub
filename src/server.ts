@@ -11,7 +11,11 @@ import { primaryCheckout, sameSourcePath } from "./checkouts";
 import { authenticatedClient, clientToken } from "./client";
 import { type Catalogue, loadCatalogue } from "./config";
 import { Coolify, CoolifyError } from "./coolify";
-import { type CreateRequest, ProjectCreator } from "./create";
+import {
+	type CreateRequest,
+	ProjectCreator,
+	registerCreationFolder,
+} from "./create";
 import { Hub, type HubRuntime, type HubView } from "./hub";
 import { frameable } from "./probes";
 import { Projects } from "./projects";
@@ -139,8 +143,12 @@ export async function startHub(
 		new ProjectCreator({
 			catalogue: () => hub.configuration,
 			hubRoot: primaryCheckout(root),
-			registered: async () =>
-				hub.replaceCatalogue(await loadCatalogue(join(root, "services.json"))),
+			registered: async (folder) => {
+				registerCreationFolder(join(root, "services.json"), folder);
+				await hub.replaceCatalogue(
+					await loadCatalogue(join(root, "services.json"))
+				);
+			},
 		});
 	const changeProjectMode = async (request: Request, id: string) => {
 		const body: unknown = await request.json();
@@ -266,6 +274,7 @@ export async function startHub(
 					act(request, async () => {
 						const body = (await request.json()) as Partial<CreateRequest>;
 						return creator.start({
+							baseDir: body.baseDir,
 							description:
 								typeof body.description === "string" && body.description.trim()
 									? body.description.trim().slice(0, 200)

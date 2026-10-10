@@ -4,6 +4,23 @@ import { parseArguments, scriptTargets } from "../src/cli";
 import { authenticatedClient } from "../src/client";
 import { catalogueSchema } from "../src/config";
 
+test("CLI forwards custom creation folder as one argument", () => {
+	expect(
+		parseArguments([
+			"create",
+			"python",
+			"my-app",
+			"--base-dir",
+			"D:/my projects",
+			"--no-web",
+		])
+	).toMatchObject({
+		baseDir: "D:/my projects",
+		targets: ["python", "my-app"],
+		web: false,
+	});
+});
+
 test("public project scripts resolve to deduplicated services", () => {
 	const {
 		projects: [project],
