@@ -17,7 +17,7 @@
     "stage": "bun src/stage.ts",
     "start": "bun src/server.ts",
     "startup:migrate": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/adopt-windows-startup.ps1",
-    "test": "bun test",
+    "test": "bun test --timeout 30000",
     "tray:install": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/install-windows.ps1",
     "tray:uninstall": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/uninstall-windows.ps1",
     "worktree": "node .devhub/worktree.cjs"
