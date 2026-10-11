@@ -79,6 +79,8 @@ export const catalogueSchema = z.strictObject({
 	code: z.string().default("F:/code"),
 	/** The Coolify instance that runs these projects in production, read-only. */
 	coolify: coolifyConfigSchema.optional(),
+	/** Models, runtimes and other state too heavy for Git: one folder per project, named as in `code`; `F:/AI` when absent. */
+	data: z.string().min(1).optional(),
 	/** Folders whose immediate project directories contain devhub.json. */
 	discover: z.array(z.string()).default([]),
 	/** Retired standalone copies remain on disk without becoming development projects. */

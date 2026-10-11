@@ -509,17 +509,46 @@ describe("canonical staging with real disposable Git repositories", () => {
 		);
 	}, 30_000);
 
-	test("finish closes a clean integrated task and retains its branch without archives", () => {
+	test("finish closes a clean integrated task and deletes its merged branch without archives", () => {
 		const { project } = fixture();
 		project.init();
 		const tree = project.create("done");
 		const head = commitSource(tree, "finished task");
 		project.integrate("codex/done");
 		expect(project.finish(tree)).toBe(tree);
-		expect(git(project.root, "rev-parse", "codex/done")).toBe(head);
+		expect(git(project.root, "for-each-ref", "refs/heads/codex")).toBe("");
+		expect(
+			git(project.root, "merge-base", "--is-ancestor", head, "stage")
+		).toBe("");
 		expect(git(project.root, "for-each-ref", "refs/archive")).toBe("");
 		expect(existsSync(tree)).toBe(false);
 		expect(project.worktrees()).toHaveLength(1);
+	}, 30_000);
+
+	test("finish removes rebuildable ignored folders with the checkout", () => {
+		const { folder, project } = fixture();
+		writeFileSync(
+			join(folder, ".gitignore"),
+			"ignored/\nfailure.flag\nnode_modules/\n.pytest_cache/\n*.tsbuildinfo\n"
+		);
+		git(folder, "add", ".gitignore");
+		git(folder, "commit", "-m", "Ignore dependencies");
+		project.init();
+		const tree = project.create("installed");
+		commitSource(tree, "finished task");
+		project.integrate("codex/installed");
+		mkdirSync(join(tree, "packages", "web", "node_modules", "left-pad"), {
+			recursive: true,
+		});
+		writeFileSync(
+			join(tree, "packages", "web", "node_modules", "left-pad", "index.js"),
+			"module.exports = 1;\n"
+		);
+		mkdirSync(join(tree, ".pytest_cache"));
+		writeFileSync(join(tree, ".pytest_cache", "lastfailed"), "{}\n");
+		writeFileSync(join(tree, "tsconfig.tsbuildinfo"), "{}\n");
+		expect(project.finish(tree)).toBe(tree);
+		expect(existsSync(tree)).toBe(false);
 	}, 30_000);
 
 	test("finish keeps private ignored data in the working checkout", () => {
@@ -593,6 +622,65 @@ describe("canonical staging with real disposable Git repositories", () => {
 		expect(() => project.close(outside)).toThrow("закрытие допустимо только");
 		expect(existsSync(folder)).toBe(true);
 		expect(existsSync(outside)).toBe(true);
+	}, 30_000);
+
+	test("tidy reports what tasks left behind and removes only what holds nothing", () => {
+		const { base, folder, project } = fixture({ mode: "mvp", remote: null });
+		project.init();
+		// Closed and merged: a branch left by an earlier finish.
+		git(folder, "branch", "codex/merged");
+		// Closed with its own commit: parked work.
+		const parked = project.create("parked");
+		const parkedHead = commitSource(parked, "parked work");
+		project.close(parked);
+		// A registration whose folder was deleted by hand.
+		const gone = project.create("gone");
+		const goneHead = commitSource(gone, "lost folder");
+		rmSync(gone, { force: true, recursive: true });
+		// A working task and a checkout outside the policy folder.
+		const working = project.create("working");
+		writeFileSync(join(working, "draft.txt"), "unsaved work\n");
+		const outside = join(base, "elsewhere");
+		git(folder, "worktree", "add", "-b", "claude/session", outside, "main");
+		writeFileSync(join(folder, "canonical-draft.txt"), "owner draft\n");
+
+		const report = project.tidy();
+		expect(report.canonicalChanges).toBe(1);
+		expect(report.merged.map((item) => item.branch)).toEqual(["codex/merged"]);
+		expect(report.missing).toHaveLength(1);
+		expect(report.parked).toEqual([
+			{ ahead: 1, branch: "codex/parked", days: 0 },
+		]);
+		expect(
+			report.working.map((item) => [
+				item.branch,
+				item.ahead,
+				item.changes,
+				item.outside,
+			])
+		).toEqual([
+			["codex/working", 0, 1, false],
+			["claude/session", 0, 0, true],
+		]);
+
+		const applied = project.tidyApply();
+		expect(applied.branches).toEqual(["codex/merged"]);
+		expect(applied.pruned).toHaveLength(1);
+		// Own commits survive pruning: the branch becomes parked work.
+		expect(git(folder, "rev-parse", "codex/gone")).toBe(goneHead);
+		expect(git(folder, "rev-parse", "codex/parked")).toBe(parkedHead);
+		expect(git(folder, "for-each-ref", "refs/heads/codex/merged")).toBe("");
+		const after = project.tidy();
+		expect(after.merged).toEqual([]);
+		expect(after.missing).toEqual([]);
+		expect(after.parked.map((item) => item.branch)).toEqual([
+			"codex/gone",
+			"codex/parked",
+		]);
+		expect(after.working).toHaveLength(2);
+		expect(readFileSync(join(working, "draft.txt"), "utf8")).toBe(
+			"unsaved work\n"
+		);
 	}, 30_000);
 
 	test("shared lock rejects overlapping mutation and releases itself after failure", () => {

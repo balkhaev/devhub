@@ -181,6 +181,19 @@ export function Sidebar({
 				Прод
 			</button>
 			<button
+				aria-current={selected === "tidy" ? "true" : undefined}
+				className={cx(
+					"side-item",
+					"side-item--home",
+					selected === "tidy" && "side-item--selected"
+				)}
+				data-key="tidy"
+				onClick={open}
+				type="button"
+			>
+				Порядок
+			</button>
+			<button
 				aria-current={selected === "new" ? "true" : undefined}
 				className={cx(
 					"side-item",
