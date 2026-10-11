@@ -1039,6 +1039,15 @@ a.card__service:hover {
 	margin: 0;
 }
 
+.tidy-list {
+	padding-left: 18px;
+	margin: 8px 0 0;
+	font-size: 13px;
+	line-height: 1.6;
+	color: var(--muted);
+	overflow-wrap: anywhere;
+}
+
 .prod-title {
 	display: flex;
 	gap: 8px;

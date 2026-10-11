@@ -1,7 +1,7 @@
 import { appendFile, mkdir } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 
-import { serve } from "bun";
+import { serve, spawn } from "bun";
 
 import { AiAccounts } from "./ai/accounts";
 import { AiApi, oauthCallback } from "./ai/api";
@@ -20,6 +20,7 @@ import { Hub, type HubRuntime, type HubView } from "./hub";
 import { frameable } from "./probes";
 import { Projects } from "./projects";
 import { StageProject } from "./stage";
+import type { MachineTidy } from "./tidy-words";
 
 /**
  * The hub's server, on 127.0.0.1 only: the page, the state of every service (and its changes as server-sent
@@ -44,6 +45,7 @@ const ACTION_WORDS: Record<string, string> = {
 	restart: "перезапустить",
 	start: "запустить",
 	stop: "остановить",
+	tidy: "убрать слитые ветки и записи без папок",
 	up: "поднять",
 };
 const TARGET_WORDS: Record<string, string> = {
@@ -173,6 +175,28 @@ export async function startHub(
 			mode: stage.policy.mode,
 			releaseBranch: stage.policy.releaseBranch,
 		};
+	};
+	/** Git inspection of every checkout takes seconds: it runs beside the hub, not inside its event loop. */
+	const tidy = async (apply: boolean): Promise<MachineTidy> => {
+		const child = spawn(
+			[
+				process.execPath,
+				join(ROOT, "src", "cli.ts"),
+				"tidy",
+				"--json",
+				...(apply ? ["--apply"] : []),
+			],
+			{ stderr: "pipe", stdout: "pipe", windowsHide: true }
+		);
+		const [text, error, code] = await Promise.all([
+			new Response(child.stdout).text(),
+			new Response(child.stderr).text(),
+			child.exited,
+		]);
+		if (code !== 0) {
+			throw new Error(error.trim() || `tidy завершился с кодом ${code}`);
+		}
+		return JSON.parse(text) as MachineTidy;
 	};
 	let ready = false;
 	const port = options.port ?? catalogue.port;
@@ -443,6 +467,10 @@ export async function startHub(
 			},
 			"/api/state": (request) =>
 				local(request) ? json(hub.current) : refused(),
+			"/api/tidy": {
+				GET: (request) => guarded(request, () => tidy(false)),
+				POST: (request) => act(request, () => tidy(true)),
+			},
 			"/auth/callback": (request) => oauthCallback(ai, request, local(request)),
 			"/v1/*": (request, bunServer) => {
 				bunServer.timeout(request, 0);

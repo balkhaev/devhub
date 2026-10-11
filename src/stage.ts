@@ -12,7 +12,7 @@ import {
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { isAbsolute, join, resolve } from "node:path";
+import { isAbsolute, join, parse, resolve } from "node:path";
 
 import { isInsideProject, primaryCheckout, sameSourcePath } from "./checkouts";
 import { canonicalProjectFolder, loadCatalogue } from "./config";
@@ -30,6 +30,30 @@ const TOPIC_SEGMENT = /^[a-z0-9][a-z0-9-]*$/;
 const CODEX_PREFIX = /^codex\//;
 const BRANCH_PREFIX = /^refs\/heads\//;
 const GITDIR_LINE = /^gitdir:\s*(.+?)\s*$/m;
+const DAY_SECONDS = 86_400;
+/** Ignored folders any checkout rebuilds from its lockfile or by running its tools. */
+const REBUILDABLE = new Set([
+	"node_modules",
+	".venv",
+	"venv",
+	"__pycache__",
+	".pytest_cache",
+	".ruff_cache",
+	".mypy_cache",
+	".next",
+	".turbo",
+	".cache",
+	".parcel-cache",
+	".svelte-kit",
+	".nuxt",
+	".vite",
+]);
+const REBUILDABLE_SUFFIXES = [".egg-info", ".tsbuildinfo", ".pyc"];
+const PRIVATE_SAMPLE = 5;
+
+const rebuildable = (segment: string): boolean =>
+	REBUILDABLE.has(segment) ||
+	REBUILDABLE_SUFFIXES.some((suffix) => segment.endsWith(suffix));
 
 interface CheckRecord {
 	checkedAt: string;
@@ -45,6 +69,33 @@ export interface WorktreeRecord {
 	path: string;
 }
 
+/** Everything a project keeps beyond its clean canonical checkout. */
+export interface TidyReport {
+	/** Uncommitted paths in the canonical folder. */
+	canonicalChanges: number;
+	/** Closed branches without commits of their own: `tidyApply` deletes them. */
+	merged: { branch: string; head: string }[];
+	/** Registered worktrees whose folder is gone: `tidyApply` prunes them. */
+	missing: string[];
+	/** Closed branches that still hold commits outside the integration branch. */
+	parked: { ahead: number; branch: string; days: number }[];
+	root: string;
+	stashes: number;
+	/** Folders in the policy's `worktreeRoot` that are not a worktree of this project. */
+	unregistered: string[];
+	working: {
+		ahead: number;
+		behind: number;
+		branch?: string;
+		changes: number;
+		/** Days since the last commit of the checkout. */
+		days: number;
+		/** Outside the policy's `worktreeRoot`. */
+		outside: boolean;
+		path: string;
+	}[];
+}
+
 const HELP = `DevHub: MVP → main + push + выпуск; Прод → stage → проверка → отдельный выпуск
   bun run stage init --project PATH           выделить stage, сохранив локальные правки
   bun run stage create TOPIC --project PATH   временный codex/TOPIC от основной ветки режима
@@ -53,8 +104,10 @@ const HELP = `DevHub: MVP → main + push + выпуск; Прод → stage →
   bun run stage mode mvp|prod --project PATH   выбрать режим и основную ветку
   bun run stage check --project PATH          выполнить проверки из .devhub/worktree.json
   bun run stage status --project PATH         stage, worktree, актуальность проверки
-  bun run stage finish PATH --project PATH    убрать чистый, уже влитый worktree
+  bun run stage finish PATH --project PATH    убрать чистый, уже влитый worktree и его ветку
   bun run stage close PATH --project PATH     закрыть чистый worktree, сохранив его ветку
+  bun run stage tidy [--apply] --project PATH что осталось после задач; --apply убирает слитые
+                                              ветки и записи о worktree без папок
 
 В проекте те же команды доступны через bun/npm run worktree.
 DevHub запускает dev только из основной папки. В Прод push/deploy требуют отдельного выпуска.
@@ -857,17 +910,10 @@ export class StageProject {
 			);
 		}
 		this.assertClean(path);
-		if (
-			gitOutput(path, [
-				"ls-files",
-				"--others",
-				"--ignored",
-				"--exclude-standard",
-				"-z",
-			])
-		) {
+		const kept = this.privateIgnored(path);
+		if (kept.length) {
 			throw new Error(
-				`${path}: приватные ignored-файлы нужно сохранить до закрытия; worktree остаётся рабочим`
+				`${path}: приватные ignored-файлы нужно сохранить до закрытия (${kept.join(", ")}${kept.length === PRIVATE_SAMPLE ? ", …" : ""}); worktree остаётся рабочим`
 			);
 		}
 		if (!(worktree.branch || integrated)) {
@@ -877,10 +923,207 @@ export class StageProject {
 		}
 		// Git verifies registration, locks and cleanliness again; never force removal.
 		gitOutput(this.root, ["worktree", "remove", path]);
-		process.stdout.write(
-			`worktree закрыт; ${worktree.branch ? `ветка ${worktree.branch} сохранена` : "интегрированные коммиты сохранены"}\n`
-		);
+		// An integrated task leaves nothing behind: its commits are in the integration branch.
+		const dropped =
+			integrated && worktree.branch && worktree.head
+				? this.deleteMergedBranch(worktree.branch, worktree.head)
+				: false;
+		let outcome = "интегрированные коммиты сохранены";
+		if (dropped) {
+			outcome = `ветка ${worktree.branch} удалена: её коммиты в ${this.integrationBranch}`;
+		} else if (worktree.branch) {
+			outcome = `ветка ${worktree.branch} сохранена`;
+		}
+		process.stdout.write(`worktree закрыт; ${outcome}\n`);
 		return path;
+	}
+
+	/** Ignored files that are not inside a rebuildable folder; the first few are enough to refuse. */
+	private privateIgnored(folder: string): string[] {
+		const found: string[] = [];
+		const visit = (entry: string) => {
+			if (
+				found.length >= PRIVATE_SAMPLE ||
+				entry.split("/").some(rebuildable)
+			) {
+				return;
+			}
+			if (!entry.endsWith("/")) {
+				found.push(entry);
+				return;
+			}
+			// Git names only the outermost ignored folder; its own layout decides what it holds.
+			for (const item of readdirSync(join(folder, entry), {
+				withFileTypes: true,
+			})) {
+				visit(`${entry}${item.name}${item.isDirectory() ? "/" : ""}`);
+			}
+		};
+		for (const entry of gitOutput(folder, [
+			"ls-files",
+			"--others",
+			"--ignored",
+			"--exclude-standard",
+			// One entry per wholly ignored folder: a dependency tree is not listed file by file.
+			"--directory",
+			"-z",
+		])
+			.split("\0")
+			.filter(Boolean)) {
+			visit(entry);
+		}
+		return found;
+	}
+
+	private protectedBranch(branch: string): boolean {
+		return [
+			this.integrationBranch,
+			this.policy.releaseBranch,
+			this.policy.stageBranch,
+		].includes(branch);
+	}
+
+	/** Compare-and-delete: a branch that moved, is checked out or adds commits is kept. */
+	private deleteMergedBranch(branch: string, head: string): boolean {
+		if (
+			this.protectedBranch(branch) ||
+			this.worktrees().some((item) => item.branch === branch)
+		) {
+			return false;
+		}
+		const contained = spawnSync(
+			"git",
+			[
+				"-C",
+				this.root,
+				"merge-base",
+				"--is-ancestor",
+				head,
+				`refs/heads/${this.integrationBranch}`,
+			],
+			{ windowsHide: true }
+		);
+		if (contained.status !== 0) {
+			return false;
+		}
+		const removed = spawnSync(
+			"git",
+			["-C", this.root, "update-ref", "-d", `refs/heads/${branch}`, head],
+			{ windowsHide: true }
+		);
+		if (removed.status !== 0) {
+			return false;
+		}
+		// The upstream and merge settings of a deleted branch name nothing.
+		gitOutput(
+			this.root,
+			["config", "--remove-section", `branch.${branch}`],
+			true
+		);
+		return true;
+	}
+
+	/** What the project still keeps after its tasks; reads Git only. */
+	tidy(): TidyReport {
+		const integration = `refs/heads/${this.integrationBranch}`;
+		const now = Date.now() / 1000;
+		const days = (seconds: string) =>
+			Math.max(0, Math.floor((now - Number(seconds)) / DAY_SECONDS));
+		const count = (range: string, folder = this.root) =>
+			Number(gitOutput(folder, ["rev-list", "--count", range], true) || 0);
+		const changes = (folder: string) =>
+			gitOutput(folder, ["status", "--porcelain", "--untracked-files=all"])
+				.split("\n")
+				.filter(Boolean).length;
+		const records = this.worktrees().filter(
+			(item) => !sameSourcePath(item.path, this.root)
+		);
+		const present = records.filter((item) => existsSync(item.path));
+		// A registration without a folder still reserves its branch until it is pruned.
+		const held = new Set(records.map((item) => item.branch).filter(Boolean));
+		const merged = new Set(
+			gitOutput(this.root, [
+				"for-each-ref",
+				"refs/heads",
+				`--merged=${integration}`,
+				"--format=%(refname:short)",
+			])
+				.split("\n")
+				.filter(Boolean)
+		);
+		const report: TidyReport = {
+			canonicalChanges: changes(this.root),
+			merged: [],
+			missing: records
+				.filter((item) => !existsSync(item.path))
+				.map((item) => item.path),
+			parked: [],
+			root: this.root,
+			stashes: gitOutput(this.root, ["stash", "list"], true)
+				.split("\n")
+				.filter(Boolean).length,
+			unregistered: (existsSync(this.worktreeRoot)
+				? readdirSync(this.worktreeRoot, { withFileTypes: true })
+				: []
+			)
+				.filter((entry) => entry.isDirectory())
+				.map((entry) => join(this.worktreeRoot, entry.name))
+				// A task named `area/topic` keeps its checkout one level deeper.
+				.filter(
+					(folder) =>
+						!present.some((item) => isInsideProject(folder, item.path))
+				),
+			working: present.map((item) => ({
+				ahead: count(`${integration}..HEAD`, item.path),
+				behind: count(`HEAD..${integration}`, item.path),
+				branch: item.branch,
+				changes: changes(item.path),
+				days: days(gitOutput(item.path, ["log", "-1", "--format=%ct"], true)),
+				outside: !isInsideProject(this.worktreeRoot, item.path),
+				path: item.path,
+			})),
+		};
+		for (const line of gitOutput(this.root, [
+			"for-each-ref",
+			"refs/heads",
+			"--format=%(refname:short)%09%(objectname)%09%(committerdate:unix)",
+		])
+			.split("\n")
+			.filter(Boolean)) {
+			const [branch = "", head = "", committed = "0"] = line.split("\t");
+			if (this.protectedBranch(branch) || held.has(branch)) {
+				continue;
+			}
+			if (merged.has(branch)) {
+				report.merged.push({ branch, head });
+			} else {
+				report.parked.push({
+					ahead: count(`${integration}..refs/heads/${branch}`),
+					branch,
+					days: days(committed),
+				});
+			}
+		}
+		return report;
+	}
+
+	/** Remove only what holds nothing: registrations without a folder and merged closed branches. */
+	tidyApply(): { branches: string[]; pruned: string[] } {
+		const before = this.tidy();
+		// A registration on an unplugged drive is not an abandoned one.
+		const reachable = before.missing.every((path) =>
+			existsSync(parse(resolve(path)).root)
+		);
+		if (before.missing.length && reachable) {
+			gitOutput(this.root, ["worktree", "prune"]);
+		}
+		const after = this.tidy();
+		return {
+			branches: after.merged
+				.filter((item) => this.deleteMergedBranch(item.branch, item.head))
+				.map((item) => item.branch),
+			pruned: before.missing.filter((path) => !after.missing.includes(path)),
+		};
 	}
 
 	/**
@@ -907,6 +1150,7 @@ export class StageProject {
 
 function parseArgs(args: string[]) {
 	const action = args[0] ?? "help";
+	let apply = false;
 	let project: string | undefined;
 	const operands: string[] = [];
 	for (let i = 1; i < args.length; i += 1) {
@@ -917,17 +1161,19 @@ function parseArgs(args: string[]) {
 			if (!project || project.startsWith("--")) {
 				throw new Error("после --project нужен путь или id проекта");
 			}
+		} else if (value === "--apply" && action === "tidy") {
+			apply = true;
 		} else if (value.startsWith("-")) {
 			throw new Error(`неизвестный параметр ${value}`);
 		} else {
 			operands.push(value);
 		}
 	}
-	return { action, operands, project };
+	return { action, apply, operands, project };
 }
 
 export async function main(args = process.argv.slice(2)): Promise<void> {
-	const { action, operands, project } = parseArgs(args);
+	const { action, apply, operands, project } = parseArgs(args);
 	if (["help", "--help", "-h"].includes(action)) {
 		process.stdout.write(HELP);
 		return;
@@ -950,6 +1196,7 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
 			"close",
 			"publish",
 			"mode",
+			"tidy",
 		].includes(action) ||
 		operands.length !== (takesOperand ? 1 : 0)
 	) {
@@ -970,6 +1217,13 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
 	const stage = new StageProject(folder);
 	if (action === "status") {
 		process.stdout.write(`${JSON.stringify(stage.status(), null, 2)}\n`);
+		return;
+	}
+	if (action === "tidy") {
+		const applied = apply ? stage.withLock(() => stage.tidyApply()) : undefined;
+		process.stdout.write(
+			`${JSON.stringify({ ...(applied ? { applied } : {}), ...stage.tidy() }, null, 2)}\n`
+		);
 		return;
 	}
 	const [operand = ""] = operands;

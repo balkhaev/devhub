@@ -56,6 +56,7 @@ test("CLI requires complete project/script routing and refuses unregistered flag
 		])
 	).toEqual({
 		action: "start",
+		apply: false,
 		json: false,
 		lines: 80,
 		logs: false,
@@ -85,6 +86,14 @@ test("CLI requires complete project/script routing and refuses unregistered flag
 		"неизвестный параметр"
 	);
 	expect(() => parseArguments(["start", "--script"])).toThrow("нужно значение");
+	expect(parseArguments(["tidy", "demo", "--apply"])).toMatchObject({
+		action: "tidy",
+		apply: true,
+		targets: ["demo"],
+	});
+	expect(() => parseArguments(["stop", "demo", "--apply"])).toThrow(
+		"только к tidy"
+	);
 });
 
 test("local CLI credential cannot authorize cross-origin browser requests", () => {

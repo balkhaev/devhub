@@ -15,6 +15,7 @@ import { Coolify, type ProdProject } from "./coolify";
 import type { CreateJob } from "./create";
 import { type HubView, samePath } from "./hub";
 import { ensureHub } from "./open";
+import { formatTidy, machineTidy } from "./tidy";
 
 const ROOT = primaryCheckout(resolve(dirname(import.meta.dir)));
 const HELP = `devhub — управление локальной разработкой
@@ -32,6 +33,9 @@ const HELP = `devhub — управление локальной разрабо�
                                         создать проект и подключить его к пульту
   bun run hub prod [project] [--logs] [--lines N] [--json]
                                         что работает в проде (Coolify)
+  bun run hub tidy [project] [--apply] [--json]
+                                        что осталось после задач в code, worktrees и data;
+                                        --apply убирает слитые ветки и записи без папок
 
 Проекты хранят dev-команды в devhub.json. Production запускается собственными start/deploy-командами.
 `;
@@ -57,6 +61,7 @@ export function scriptTargets(
 
 interface Arguments {
 	action: string;
+	apply: boolean;
 	baseDir?: string;
 	description?: string;
 	json: boolean;
@@ -73,6 +78,9 @@ const FOLLOW_MS = 700;
 const CREATE_POLL_MS = 1000;
 
 const FLAGS: Record<string, (parsed: Arguments) => void> = {
+	"--apply": (parsed) => {
+		parsed.apply = true;
+	},
 	"--json": (parsed) => {
 		parsed.json = true;
 	},
@@ -107,6 +115,7 @@ const VALUES: Record<string, (parsed: Arguments, value: string) => void> = {
 export function parseArguments(args: string[]): Arguments {
 	const parsed: Arguments = {
 		action: args[0] ?? "help",
+		apply: false,
 		json: false,
 		lines: DEFAULT_LINES,
 		logs: false,
@@ -144,6 +153,9 @@ function validateRouting(parsed: Arguments): void {
 	}
 	if (parsed.project && parsed.targets.length) {
 		throw new Error("укажите сервисы либо --project/--script");
+	}
+	if (parsed.apply && parsed.action !== "tidy") {
+		throw new Error("--apply относится только к tidy");
 	}
 }
 
@@ -464,6 +476,25 @@ async function attach(catalogue: Catalogue, options: Arguments): Promise<void> {
 	await follow(target, options.lines);
 }
 
+function tidy(catalogue: Catalogue, options: Arguments): Promise<void> {
+	const [project, extra] = options.targets;
+	if (extra) {
+		throw new Error("tidy: укажите один проект или ни одного");
+	}
+	const report = machineTidy(catalogue, {
+		apply: options.apply,
+		project,
+		self: ROOT,
+	});
+	if (project && !(report.projects.length || report.skipped.length)) {
+		throw new Error(`нет проекта ${project}`);
+	}
+	process.stdout.write(
+		options.json ? `${JSON.stringify(report, null, 2)}\n` : formatTidy(report)
+	);
+	return Promise.resolve();
+}
+
 /** Commands beyond the process actions: they do not resolve launch targets. */
 const COMMANDS: Record<
 	string,
@@ -473,6 +504,7 @@ const COMMANDS: Record<
 	create: (_catalogue, options) => create(options),
 	logs,
 	prod,
+	tidy,
 };
 
 export async function main(args = process.argv.slice(2)): Promise<void> {

@@ -10,6 +10,7 @@ import { ProjectPreferencesProvider } from "./project-preferences";
 import { projectRoute } from "./project-ui";
 import { ServicePage } from "./service";
 import { Sidebar } from "./sidebar";
+import { TidyPage } from "./tidy";
 import { cx, isUp } from "./words";
 
 /**
@@ -17,7 +18,7 @@ import { cx, isUp } from "./words";
  * an overview of what runs, Docker and every listening port. It follows the computer live.
  */
 
-const STATIC_ROUTES = new Set(["ai", "new", "prod"]);
+const STATIC_ROUTES = new Set(["ai", "new", "prod", "tidy"]);
 
 function Main({
 	onDeleted,
@@ -36,6 +37,9 @@ function Main({
 	}
 	if (route === "prod") {
 		return <ProdPage projects={view.projects} />;
+	}
+	if (route === "tidy") {
+		return <TidyPage projects={view.projects} />;
 	}
 	if (route?.startsWith("docker/")) {
 		const name = route.slice("docker/".length);
