@@ -1,6 +1,7 @@
 import { expect, test } from "bun:test";
 
-import { parseNetstat } from "../src/probes";
+import { parseNetstat, run } from "../src/probes";
+import { alive } from "../src/processes";
 
 const NETSTAT = `
 Active Connections
@@ -39,4 +40,32 @@ test("netstat in another language is still read by its columns", () => {
   TCP    127.0.0.1:8765         0.0.0.0:0              LISTENING       48924
 `;
 	expect(parseNetstat(russian).get(8765)).toBe(48_924);
+});
+
+test("a program out of time answers at once and takes its helpers with it", async () => {
+	// The helper inherits the program's output and survives it, as docker's compose plugin does.
+	const program = `
+		const helper = require("node:child_process").spawn(
+			process.execPath, ["-e", "setTimeout(() => {}, 60000)"], { detached: true, stdio: "inherit" });
+		console.log(helper.pid);
+		setTimeout(() => {}, 60000);
+	`;
+	const started = Date.now();
+	const result = await run(process.execPath, ["-e", program], 2000);
+	const helper = Number(result.out.trim());
+	try {
+		expect(result.code).toBeNull();
+		expect(Date.now() - started).toBeLessThan(10_000);
+		expect(helper).toBeGreaterThan(0);
+		for (let waited = 0; waited < 5000 && alive(helper); waited += 100) {
+			// biome-ignore lint/performance/noAwaitInLoops: polling until the helper is gone
+			await Bun.sleep(100);
+		}
+		// Elsewhere only the program itself is ended, as before.
+		expect(alive(helper)).toBe(process.platform !== "win32");
+	} finally {
+		if (helper > 0 && alive(helper)) {
+			process.kill(helper);
+		}
+	}
 });

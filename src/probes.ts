@@ -22,6 +22,21 @@ export interface Ran {
 	out: string;
 }
 
+/**
+ * Ends a program that ran out of time together with the helpers it started. A helper (docker's compose plugin)
+ * inherits the program's output and outlives it: ending the program alone leaves the helper running for good.
+ */
+function endTree(pid: number | undefined, endAlone: () => void): void {
+	if (process.platform !== "win32" || pid === undefined) {
+		endAlone();
+		return;
+	}
+	spawn("taskkill", ["/pid", String(pid), "/T", "/F"], {
+		stdio: "ignore",
+		windowsHide: true,
+	}).on("error", endAlone);
+}
+
 /** Runs a program and returns its exit code and what it printed. */
 export function run(
 	command: string,
@@ -32,7 +47,13 @@ export function run(
 		const child = spawn(command, args, { windowsHide: true });
 		let out = "";
 		let err = "";
-		const timer = setTimeout(() => child.kill(), timeoutMs);
+		const timer = setTimeout(() => {
+			endTree(child.pid, () => child.kill());
+			// `close` waits for every holder of the output; a helper that hangs must not hold the caller too.
+			child.stdout.destroy();
+			child.stderr.destroy();
+			done({ code: null, err, out });
+		}, timeoutMs);
 		child.stdout.setEncoding("utf8");
 		child.stderr.setEncoding("utf8");
 		child.stdout.on("data", (chunk: string) => {
