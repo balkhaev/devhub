@@ -1,4 +1,5 @@
 import { expect, test } from "bun:test";
+import { sleep } from "bun";
 
 import { parseNetstat, run } from "../src/probes";
 import { alive } from "../src/processes";
@@ -59,7 +60,7 @@ test("a program out of time answers at once and takes its helpers with it", asyn
 		expect(helper).toBeGreaterThan(0);
 		for (let waited = 0; waited < 5000 && alive(helper); waited += 100) {
 			// biome-ignore lint/performance/noAwaitInLoops: polling until the helper is gone
-			await Bun.sleep(100);
+			await sleep(100);
 		}
 		// Elsewhere only the program itself is ended, as before.
 		expect(alive(helper)).toBe(process.platform !== "win32");
