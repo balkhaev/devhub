@@ -94,7 +94,7 @@ export function registerCreationFolder(file: string, folder: string): void {
 			sameSourcePath(
 				resolve(
 					dirname(file),
-					entry.replaceAll(/\$\{code\}/g, () => configuration.code ?? "D:/code")
+					entry.replaceAll(/\$\{code\}/g, () => configuration.code ?? "C:/code")
 				),
 				resolve(folder)
 			)
@@ -235,7 +235,7 @@ function workflowPolicy(name: string, checks: string[]) {
 		remote: null,
 		stageBranch: "stage",
 		version: 1,
-		worktreeRoot: `D:/worktrees/${name}`,
+		worktreeRoot: `C:/worktrees/${name}`,
 	};
 }
 

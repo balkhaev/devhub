@@ -1,7 +1,7 @@
 # Offline Pester tests: every registry/task mutation is mocked.
 . (Join-Path $PSScriptRoot 'adopt-windows-startup.ps1')
 
-function New-StartupFixtureTask([string]$Script, [string]$CodeRoot = 'D:\code') {
+function New-StartupFixtureTask([string]$Script, [string]$CodeRoot = 'C:\code') {
     $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($Script))
     return [pscustomobject]@{
         Actions = @([pscustomobject]@{
@@ -20,7 +20,7 @@ Describe 'Apply backups and recovery' {
         $script:devhubStartupRoot = Join-Path $TestDrive ([Guid]::NewGuid().ToString('N') + '\devhub')
         New-Item -ItemType Directory -Path (Join-Path $script:devhubStartupRoot 'src') -Force | Out-Null
         Set-Content -LiteralPath (Join-Path $script:devhubStartupRoot 'src\cli.ts') -Value '// fixture'
-        Mock Get-DevHubStartupRegistry { [pscustomobject]@{ Exists = $true; Value = 'D:\code\inference\.venv\Scripts\pythonw.exe -m inference.tray'; Kind = 'String' } }
+        Mock Get-DevHubStartupRegistry { [pscustomobject]@{ Exists = $true; Value = 'C:\code\inference\.venv\Scripts\pythonw.exe -m inference.tray'; Kind = 'String' } }
         Mock Get-ScheduledTask {
             $codeDirectory = Split-Path -Parent $script:devhubStartupRoot
             New-StartupFixtureTask (Get-DevHubPredictLegacyScript $codeDirectory) $codeDirectory
@@ -57,7 +57,7 @@ Describe 'Apply backups and recovery' {
         Mock Set-ScheduledTask { throw 'fixture scheduler failure' }
         { Invoke-DevHubStartupMigration } | Should Throw
         Assert-MockCalled Set-ItemProperty -Scope It -Times 2 -Exactly
-        Assert-MockCalled Set-ItemProperty -Scope It -Times 1 -Exactly -ParameterFilter { $Value -eq 'D:\code\inference\.venv\Scripts\pythonw.exe -m inference.tray' }
+        Assert-MockCalled Set-ItemProperty -Scope It -Times 1 -Exactly -ParameterFilter { $Value -eq 'C:\code\inference\.venv\Scripts\pythonw.exe -m inference.tray' }
     }
 
     It 'does not overwrite a newer registry value during restore' {
@@ -71,22 +71,22 @@ Describe 'Apply backups and recovery' {
 
 Describe 'Known Windows startup classification' {
     It 'recognizes the queue tray and rejects chained commands' {
-        $known = 'D:\code\inference\.venv\Scripts\pythonw.exe -m inference.tray --data-dir C:\Users\fixture\AppData\Local\MediaPipes'
-        (Test-DevHubInferenceStartup $known 'D:\code\devhub') | Should Be 'legacy'
-        (Test-DevHubInferenceStartup ($known + ' & other.exe') 'D:\code\devhub') | Should Be 'unrecognized'
+        $known = 'C:\code\inference\.venv\Scripts\pythonw.exe -m inference.tray --data-dir C:\Users\fixture\AppData\Local\MediaPipes'
+        (Test-DevHubInferenceStartup $known 'C:\code\devhub') | Should Be 'legacy'
+        (Test-DevHubInferenceStartup ($known + ' & other.exe') 'C:\code\devhub') | Should Be 'unrecognized'
     }
 
     It 'recognizes the exact paper runtime supervisor' {
-        $task = New-StartupFixtureTask (Get-DevHubPredictLegacyScript 'D:\code')
-        (Test-DevHubPredictStartup $task 'D:\code' 'D:\code\devhub') | Should Be 'legacy'
+        $task = New-StartupFixtureTask (Get-DevHubPredictLegacyScript 'C:\code')
+        (Test-DevHubPredictStartup $task 'C:\code' 'C:\code\devhub') | Should Be 'legacy'
     }
 
     It 'rejects a changed encoded script and another working directory' {
-        $task = New-StartupFixtureTask ((Get-DevHubPredictLegacyScript 'D:\code') + "`nWrite-Host 'other action'")
-        (Test-DevHubPredictStartup $task 'D:\code' 'D:\code\devhub') | Should Be 'unrecognized'
-        $task = New-StartupFixtureTask (Get-DevHubPredictLegacyScript 'D:\code')
+        $task = New-StartupFixtureTask ((Get-DevHubPredictLegacyScript 'C:\code') + "`nWrite-Host 'other action'")
+        (Test-DevHubPredictStartup $task 'C:\code' 'C:\code\devhub') | Should Be 'unrecognized'
+        $task = New-StartupFixtureTask (Get-DevHubPredictLegacyScript 'C:\code')
         $task.Actions[0].WorkingDirectory = 'D:\elsewhere'
-        (Test-DevHubPredictStartup $task 'D:\code' 'D:\code\devhub') | Should Be 'unrecognized'
+        (Test-DevHubPredictStartup $task 'C:\code' 'C:\code\devhub') | Should Be 'unrecognized'
     }
 
     It 'quotes paths literally and rejects executable service fragments' {
@@ -94,18 +94,18 @@ Describe 'Known Windows startup classification' {
         $wrapper | Should Match "a''b"
         $wrapper | Should Match "\-\-project 'D:\\space root\\inference' \-\-script dev"
         $wrapper | Should Not Match "start 'inference/queue'"
-        { Get-DevHubStartupWrapper 'bun.exe' 'D:\code\devhub' 'inference/queue;other' } | Should Throw
+        { Get-DevHubStartupWrapper 'bun.exe' 'C:\code\devhub' 'inference/queue;other' } | Should Throw
     }
 
     It 'starts the complete Inference default group from its canonical project' {
-        $wrapper = Get-DevHubStartupWrapper 'bun.exe' 'D:\code\devhub' 'inference/queue'
-        $wrapper | Should Match "start \-\-project 'D:\\code\\inference' \-\-script dev"
+        $wrapper = Get-DevHubStartupWrapper 'bun.exe' 'C:\code\devhub' 'inference/queue'
+        $wrapper | Should Match "start \-\-project 'C:\\code\\inference' \-\-script dev"
         $wrapper | Should Not Match '\-\-accept'
         $wrapper | Should Not Match 'inference\.tray'
     }
 
     It 'preserves service routing for other startup targets' {
-        $wrapper = Get-DevHubStartupWrapper 'bun.exe' 'D:\code\devhub' 'predict/runtime'
+        $wrapper = Get-DevHubStartupWrapper 'bun.exe' 'C:\code\devhub' 'predict/runtime'
         $wrapper | Should Match "start 'predict/runtime'"
         $wrapper | Should Not Match '\-\-project'
     }
@@ -123,9 +123,9 @@ Describe 'Startup migration write boundaries' {
         $script:Apply = $false
         $script:Restore = $null
         $script:InferenceTrayWorkersPreserved = $false
-        $script:devhubStartupRoot = 'D:\code\devhub'
-        Mock Get-DevHubStartupRegistry { [pscustomobject]@{ Exists = $true; Value = 'D:\code\inference\.venv\Scripts\pythonw.exe -m inference.tray'; Kind = 'String' } }
-        Mock Get-ScheduledTask { New-StartupFixtureTask (Get-DevHubPredictLegacyScript 'D:\code') }
+        $script:devhubStartupRoot = 'C:\code\devhub'
+        Mock Get-DevHubStartupRegistry { [pscustomobject]@{ Exists = $true; Value = 'C:\code\inference\.venv\Scripts\pythonw.exe -m inference.tray'; Kind = 'String' } }
+        Mock Get-ScheduledTask { New-StartupFixtureTask (Get-DevHubPredictLegacyScript 'C:\code') }
         Mock Set-ItemProperty {}
         Mock New-ItemProperty {}
         Mock Set-ScheduledTask {}

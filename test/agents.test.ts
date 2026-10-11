@@ -49,7 +49,7 @@ test("dev servers started around DevHub are recognised; builds, tests and DevHub
 		"bun --watch test",
 		"turbo run build",
 		"uv run uvicorn app.main:app --port 8000",
-		"bun D:/code/devhub/src/cli.ts start altay/site",
+		"bun C:/code/devhub/src/cli.ts start altay/site",
 		"node .devhub/launch.cjs dev",
 	]) {
 		expect([command, directDevServer(command)]).toEqual([command, null]);
@@ -76,7 +76,7 @@ test("the guard refuses direct dev servers only inside DevHub projects", async (
 				},
 				{
 					name: "web",
-					runtimeArgs: ["D:/code/devhub/src/cli.ts", "attach", "demo/web"],
+					runtimeArgs: ["C:/code/devhub/src/cli.ts", "attach", "demo/web"],
 					runtimeExecutable: "bun",
 				},
 				{ name: "open", url: "http://localhost:3001" },
@@ -87,9 +87,9 @@ test("the guard refuses direct dev servers only inside DevHub projects", async (
 	expect(
 		guardReason(
 			{ cwd: nested, tool_input: { command: "next dev" }, tool_name: "Bash" },
-			"D:/code/devhub"
+			"C:/code/devhub"
 		)
-	).toContain("bun D:/code/devhub/src/cli.ts start");
+	).toContain("bun C:/code/devhub/src/cli.ts start");
 	expect(
 		guardReason(
 			{
@@ -97,13 +97,13 @@ test("the guard refuses direct dev servers only inside DevHub projects", async (
 				tool_input: { command: "next build" },
 				tool_name: "PowerShell",
 			},
-			"D:/code/devhub"
+			"C:/code/devhub"
 		)
 	).toBeNull();
 	expect(
 		guardReason(
 			{ cwd: outside, tool_input: { command: "next dev" }, tool_name: "Bash" },
-			"D:/code/devhub"
+			"C:/code/devhub"
 		)
 	).toBeNull();
 	const preview = (name: string) =>
@@ -113,7 +113,7 @@ test("the guard refuses direct dev servers only inside DevHub projects", async (
 				tool_input: { name },
 				tool_name: "mcp__Claude_Browser__preview_start",
 			},
-			"D:/code/devhub"
+			"C:/code/devhub"
 		);
 	expect(preview("site")).toContain("outside DevHub");
 	expect(preview("web")).toBeNull();
@@ -122,7 +122,7 @@ test("the guard refuses direct dev servers only inside DevHub projects", async (
 });
 
 test("launch configurations attach to DevHub for every service with a port", () => {
-	const config = claudeLaunchConfig("D:\\code\\devhub", {
+	const config = claudeLaunchConfig("C:\\code\\devhub", {
 		id: "demo",
 		services: [
 			{ id: "server", port: 3020 },
@@ -135,7 +135,7 @@ test("launch configurations attach to DevHub for every service with a port", () 
 		"web",
 	]);
 	expect(config.configurations[0]?.runtimeArgs).toEqual([
-		"D:/code/devhub/src/cli.ts",
+		"C:/code/devhub/src/cli.ts",
 		"attach",
 		"demo/server",
 	]);
@@ -155,8 +155,8 @@ test("launch configurations attach to DevHub for every service with a port", () 
 });
 
 test("the DevHub block replaces itself and keeps the rest of the instructions", () => {
-	const block = devServerBlock("D:\\code\\devhub");
-	expect(block).toContain("bun D:/code/devhub/src/cli.ts start");
+	const block = devServerBlock("C:\\code\\devhub");
+	expect(block).toContain("bun C:/code/devhub/src/cli.ts start");
 	expect(replaceMarkedBlock("", block)).toBe(`${block}\n`);
 	const withFrontmatter = "---\ntitle: x\n---\n# Project\r\n";
 	const once = replaceMarkedBlock("# Project\n\nRules.\n", block);

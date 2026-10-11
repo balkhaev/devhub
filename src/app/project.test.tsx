@@ -32,7 +32,7 @@ function service(id: string, changes: Partial<ServiceView> = {}): ServiceView {
 		status: "stopped",
 		ui: [{ label: "Приложение", url: "http://127.0.0.1:5000/" }],
 		warn: null,
-		workdir: "D:/code/sample",
+		workdir: "C:/code/sample",
 		...changes,
 	};
 }
@@ -50,7 +50,7 @@ function project(changes: Partial<ProjectView> = {}): ProjectView {
 		mode: "prod",
 		modeEditable: true,
 		name: "Sample",
-		path: "D:/code/sample",
+		path: "C:/code/sample",
 		releaseBranch: "main",
 		services: [service("web")],
 		stageBranch: "stage",
@@ -101,7 +101,7 @@ test("a project without services still shows its primary folder and deletion con
 			project={project({ devServices: [], services: [] })}
 		/>
 	);
-	expect(markup).toContain("D:/code/sample");
+	expect(markup).toContain("C:/code/sample");
 	expect(markup).toContain("stage");
 	expect(markup).toContain("Удалить проект…");
 	expect(markup).toContain("Dev-сервисы ещё не настроены");
@@ -177,8 +177,8 @@ const plan: DeletionPlan = {
 	id: "sample",
 	name: "Sample",
 	paths: [
-		{ kind: "project", path: "D:/code/sample" },
-		{ kind: "worktree", path: "D:/code/.worktrees/sample/task" },
+		{ kind: "project", path: "C:/code/sample" },
+		{ kind: "worktree", path: "C:/code/.worktrees/sample/task" },
 		{ kind: "alias", path: "D:/old/sample" },
 	],
 	token: "private-review-token",

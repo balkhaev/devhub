@@ -1,8 +1,8 @@
 {
   "aliases": {
-    "C:/Users/user/Documents/ChatGPT/mediapipes": "D:/code/mediapipes"
+    "C:/Users/user/Documents/ChatGPT/mediapipes": "C:/code/mediapipes"
   },
-  "code": "D:/code",
+  "code": "C:/code",
   "coolify": {
     "url": "https://deploy.balkhaev.com",
     "tokenEnv": "COOLIFY_ACCESS_TOKEN"
@@ -11,7 +11,7 @@
   "exclude": [
     "C:\\Users\\user\\Documents\\ChatGPT\\gameradar-postgres-only-20260908",
     "C:\\Users\\user\\Documents\\ChatGPT\\vibecoder",
-    "D:\\code\\balkhaev"
+    "C:\\code\\balkhaev"
   ],
   "port": 4700,
   "projects": []

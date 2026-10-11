@@ -3,6 +3,6 @@
   "releaseBranch": "main",
   "stageBranch": "stage",
   "version": 1,
-  "worktreeRoot": "D:/worktrees/devhub",
+  "worktreeRoot": "C:/worktrees/devhub",
   "mode": "mvp"
 }

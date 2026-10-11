@@ -53,7 +53,7 @@ export interface OwnerView {
 	command: string;
 	/** The Docker Compose project that publishes the port, when Docker holds it. */
 	docker: string | null;
-	/** Who it is, in words: «Docker, проект gameradar», «python.exe (PID 4120) из D:\code\predict». */
+	/** Who it is, in words: «Docker, проект gameradar», «python.exe (PID 4120) из C:\code\predict». */
 	label: string;
 	name: string;
 	pid: number;

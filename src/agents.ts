@@ -12,7 +12,7 @@ const FRONTMATTER = /^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/;
 
 const slash = (path: string): string => path.replaceAll("\\", "/");
 
-/** Instructions every agent reads: global agent files, `D:/code/AGENTS.md` and each project's AGENTS.md. */
+/** Instructions every agent reads: global agent files, `C:/code/AGENTS.md` and each project's AGENTS.md. */
 export function devServerBlock(hubRoot: string): string {
 	const hub = slash(hubRoot);
 	const cli = `bun ${hub}/src/cli.ts`;

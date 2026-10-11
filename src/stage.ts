@@ -23,7 +23,6 @@ import {
 	withProjectModeText,
 	workflowPolicySchema,
 } from "./workflow-policy";
-import { archiveWorktree } from "./worktree-archive";
 
 const ROOT = primaryCheckout(resolve(import.meta.dir, ".."));
 const POLICY = join(".devhub", "worktree.json");
@@ -55,7 +54,7 @@ const HELP = `DevHub: MVP → main + push + выпуск; Прод → stage →
   bun run stage check --project PATH          выполнить проверки из .devhub/worktree.json
   bun run stage status --project PATH         stage, worktree, актуальность проверки
   bun run stage finish PATH --project PATH    убрать чистый, уже влитый worktree
-  bun run stage archive PATH --project PATH   сохранить незавершённую задачу и убрать checkout
+  bun run stage close PATH --project PATH     закрыть чистый worktree, сохранив его ветку
 
 В проекте те же команды доступны через bun/npm run worktree.
 DevHub запускает dev только из основной папки. В Прод push/deploy требуют отдельного выпуска.
@@ -324,7 +323,7 @@ export class StageProject {
 	): void {
 		const keep = (reason: string) =>
 			new Error(
-				`${folder}: ${reason}; прерванный create не очищен — сохраните работу (archive, если worktree зарегистрирован) или выберите другое имя задачи`
+				`${folder}: ${reason}; прерванный create остаётся рабочим — сохраните правки или выберите другое имя задачи`
 			);
 		if (registered && registered.branch !== branch) {
 			throw new Error(`путь worktree недоступен: ${folder}`);
@@ -835,18 +834,15 @@ export class StageProject {
 			worktree.head,
 			`refs/heads/${this.integrationBranch}`,
 		]);
-		const archived = archiveWorktree({
-			allowedRoot: this.worktreeRoot,
-			archiveRoot: resolve(this.worktreeRoot, "../../archives/devhub"),
-			project: this.root,
-			worktree: path,
-		});
-		process.stdout.write(`worktree сохранён и удалён: ${archived}\n`);
-		return archived;
+		return this.closeWorktree(path, true);
 	}
 
-	/** Preserve a failed or unfinished task without integrating or publishing it. */
-	archive(folder: string): string {
+	/** Close a committed task without deleting its branch or producing an archive. */
+	close(folder: string): string {
+		return this.closeWorktree(folder, false);
+	}
+
+	private closeWorktree(folder: string, integrated: boolean): string {
 		this.assertStage();
 		const path = resolve(folder);
 		const worktree = this.worktrees().find((item) =>
@@ -857,17 +853,34 @@ export class StageProject {
 			sameSourcePath(path, this.worktreeRoot)
 		) {
 			throw new Error(
-				`${path}: архивирование допустимо только для worktree внутри ${this.worktreeRoot}`
+				`${path}: закрытие допустимо только для worktree внутри ${this.worktreeRoot}`
 			);
 		}
-		const archived = archiveWorktree({
-			allowedRoot: this.worktreeRoot,
-			archiveRoot: resolve(this.worktreeRoot, "../../archives/devhub"),
-			project: this.root,
-			worktree: path,
-		});
-		process.stdout.write(`незавершённый worktree сохранён: ${archived}\n`);
-		return archived;
+		this.assertClean(path);
+		if (
+			gitOutput(path, [
+				"ls-files",
+				"--others",
+				"--ignored",
+				"--exclude-standard",
+				"-z",
+			])
+		) {
+			throw new Error(
+				`${path}: приватные ignored-файлы нужно сохранить до закрытия; worktree остаётся рабочим`
+			);
+		}
+		if (!(worktree.branch || integrated)) {
+			throw new Error(
+				`${path}: сначала сохраните HEAD в ветке; worktree остаётся рабочим`
+			);
+		}
+		// Git verifies registration, locks and cleanliness again; never force removal.
+		gitOutput(this.root, ["worktree", "remove", path]);
+		process.stdout.write(
+			`worktree закрыт; ${worktree.branch ? `ветка ${worktree.branch} сохранена` : "интегрированные коммиты сохранены"}\n`
+		);
+		return path;
 	}
 
 	/**
@@ -923,7 +936,7 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
 		"create",
 		"integrate",
 		"finish",
-		"archive",
+		"close",
 		"mode",
 	].includes(action);
 	if (
@@ -934,7 +947,7 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
 			"check",
 			"status",
 			"finish",
-			"archive",
+			"close",
 			"publish",
 			"mode",
 		].includes(action) ||
@@ -971,8 +984,8 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
 			stage.check();
 		} else if (action === "finish") {
 			stage.finish(operand);
-		} else if (action === "archive") {
-			stage.archive(operand);
+		} else if (action === "close") {
+			stage.close(operand);
 		} else if (action === "publish") {
 			stage.publish();
 		} else if (action === "mode") {

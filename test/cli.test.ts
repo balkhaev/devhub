@@ -50,7 +50,7 @@ test("CLI requires complete project/script routing and refuses unregistered flag
 		parseArguments([
 			"start",
 			"--project",
-			"D:/code/demo",
+			"C:/code/demo",
 			"--script",
 			"apps/web:dev",
 		])
@@ -59,7 +59,7 @@ test("CLI requires complete project/script routing and refuses unregistered flag
 		json: false,
 		lines: 80,
 		logs: false,
-		project: "D:/code/demo",
+		project: "C:/code/demo",
 		script: "apps/web:dev",
 		targets: [],
 		web: true,

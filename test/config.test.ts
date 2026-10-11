@@ -11,7 +11,7 @@ import {
 } from "../src/config";
 
 const catalogue = (projects: unknown[]): Catalogue =>
-	catalogueSchema.parse({ code: "D:/code", projects });
+	catalogueSchema.parse({ code: "C:/code", projects });
 
 test("the hub's own services.json loads without duplicate service keys", async () => {
 	const loaded = await loadCatalogue(
@@ -36,9 +36,9 @@ test("paths use the code folder, and a service runs in its project's folder or o
 			},
 		])
 	);
-	expect(studio?.project.path).toBe("D:/code/girls");
-	expect(studio?.workdir).toBe(join("D:/code/girls", ""));
-	expect(worker?.workdir).toBe(join("D:/code/girls", "apps/server"));
+	expect(studio?.project.path).toBe("C:/code/girls");
+	expect(studio?.workdir).toBe(join("C:/code/girls", ""));
+	expect(worker?.workdir).toBe(join("C:/code/girls", "apps/server"));
 	expect(worker?.key).toBe("girls/worker");
 });
 
@@ -48,7 +48,7 @@ test("pages are on the service's own port unless a full address is given", () =>
 			{
 				id: "mp",
 				name: "MediaPipes",
-				path: "D:/code/mediapipes",
+				path: "C:/code/mediapipes",
 				services: [{ id: "api", name: "API", port: 8088 }],
 			},
 		])
@@ -68,7 +68,7 @@ test("repeated services and needs that name nothing are found", () => {
 				compose: { file: "docker-compose.yml", project: "montage" },
 				id: "montage",
 				name: "Montage",
-				path: "D:/code/montage",
+				path: "C:/code/montage",
 				services: [
 					{ id: "server", name: "Server", needs: ["docker:montage"] },
 					{ id: "server", name: "Server again" },

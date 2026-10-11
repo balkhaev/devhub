@@ -76,7 +76,7 @@ export const catalogueSchema = z.strictObject({
 	/** Machine-owned redirects for older standalone copies of a project. */
 	aliases: z.record(z.string(), z.string().min(1)).default({}),
 	/** Where projects are, substituted for `${code}`. */
-	code: z.string().default("D:/code"),
+	code: z.string().default("C:/code"),
 	/** The Coolify instance that runs these projects in production, read-only. */
 	coolify: coolifyConfigSchema.optional(),
 	/** Folders whose immediate project directories contain devhub.json. */

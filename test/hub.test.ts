@@ -17,14 +17,14 @@ test("the checkout is the folder before the tools a server runs from", () => {
 	).toBe("C:\\Users\\user\\Documents\\ChatGPT\\mediapipes");
 	expect(
 		checkoutOf([
-			"bun D:/code/montage/.claude/worktrees/3d-scene/apps/cli/src/main.ts studio",
+			"bun C:/code/montage/.claude/worktrees/3d-scene/apps/cli/src/main.ts studio",
 		])
-	).toBe("D:\\code\\montage\\.claude\\worktrees\\3d-scene");
+	).toBe("C:\\code\\montage\\.claude\\worktrees\\3d-scene");
 	expect(
 		checkoutOf([
-			'"C:\\Program Files\\nodejs\\node.exe" D:\\code\\altay\\node_modules\\vite\\bin\\vite.js',
+			'"C:\\Program Files\\nodejs\\node.exe" C:\\code\\altay\\node_modules\\vite\\bin\\vite.js',
 		])
-	).toBe("D:\\code\\altay");
+	).toBe("C:\\code\\altay");
 });
 
 test("the first command line that names a checkout wins, parents after children", () => {
@@ -32,16 +32,16 @@ test("the first command line that names a checkout wins, parents after children"
 	expect(
 		checkoutOf([
 			"python.exe -m predict.runtime --port 8080",
-			"D:\\code\\predict\\.venv-laya\\Scripts\\python.exe -m predict.laya_local",
-			"D:\\code\\other\\src\\x.py",
+			"C:\\code\\predict\\.venv-laya\\Scripts\\python.exe -m predict.laya_local",
+			"C:\\code\\other\\src\\x.py",
 		])
-	).toBe("D:\\code\\predict");
+	).toBe("C:\\code\\predict");
 	expect(checkoutOf(["python.exe -m predict.runtime --port 8080"])).toBeNull();
 });
 
 test("paths compare regardless of slashes, case and a trailing slash", () => {
-	expect(samePath("D:/code/montage", "d:\\code\\montage\\")).toBe(true);
-	expect(samePath("D:/code/montage", "D:/code/modeler")).toBe(false);
+	expect(samePath("C:/code/montage", "c:\\code\\montage\\")).toBe(true);
+	expect(samePath("C:/code/montage", "C:/code/modeler")).toBe(false);
 });
 
 const container = (
@@ -95,13 +95,13 @@ test("without tool folders the checkout is the project folder under the code fol
 	expect(
 		checkoutOf(
 			[
-				"C:/Users/user/AppData/Local/Programs/Python/Python313/python.exe -m http.server 8777 --directory D:/code/montage-scene-composer",
+				"C:/Users/user/AppData/Local/Programs/Python/Python313/python.exe -m http.server 8777 --directory C:/code/montage-scene-composer",
 			],
-			"D:/code"
+			"C:/code"
 		)
-	).toBe("D:\\code\\montage-scene-composer");
+	).toBe("C:\\code\\montage-scene-composer");
 	expect(
-		checkoutOf(["C:/Python313/python.exe -m http.server 8777"], "D:/code")
+		checkoutOf(["C:/Python313/python.exe -m http.server 8777"], "C:/code")
 	).toBeNull();
 });
 
@@ -123,7 +123,7 @@ test("the port list keeps dev servers and Docker, not every program that listens
 		show(3000, owner("com.docker.backend.exe", { docker: "gameradar" }))
 	).toBe(true);
 	expect(show(8194, owner("python.exe"), "inference/comfyui")).toBe(true);
-	expect(show(5000, owner("helper.exe", { checkout: "D:\\code\\tool" }))).toBe(
+	expect(show(5000, owner("helper.exe", { checkout: "C:\\code\\tool" }))).toBe(
 		true
 	);
 	expect(show(6463, owner("Discord.exe"))).toBe(false);

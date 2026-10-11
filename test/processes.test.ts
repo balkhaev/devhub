@@ -18,12 +18,12 @@ afterAll(() => rmSync(root, { force: true, recursive: true }));
 function serviceWith(extra: Record<string, unknown>): Service {
 	const [service] = servicesOf(
 		catalogueSchema.parse({
-			code: "D:/code",
+			code: "C:/code",
 			projects: [
 				{
 					id: "altay",
 					name: "Алтай",
-					path: "D:/code/altay",
+					path: "C:/code/altay",
 					services: [{ id: "site", name: "Сайт", ...extra }],
 				},
 			],
@@ -46,7 +46,7 @@ test("the batch file runs the command in its folder, with its environment, into 
 	);
 	const lines = batch.split("\r\n");
 	expect(lines).toContain("chcp 65001 > nul");
-	expect(lines).toContain(`cd /d "${join("D:/code/altay", "")}"`);
+	expect(lines).toContain(`cd /d "${join("C:/code/altay", "")}"`);
 	expect(lines).toContain('set "PORT=3107"');
 	// A percent sign is doubled, or the batch file would read it as a variable.
 	expect(lines).toContain('set "RATE=100%%"');
@@ -83,11 +83,11 @@ test("development processes receive the hub identity and cannot override its dev
 		}),
 		"log",
 		"exit",
-		"D:/code/devhub",
+		"C:/code/devhub",
 		"http://127.0.0.1:4712"
 	);
 	expect(batch).toContain('set "DEVHUB_FRAME_ORIGIN=http://127.0.0.1:4712"');
-	expect(batch).toContain('set "DEVHUB_ROOT=D:/code/devhub"');
+	expect(batch).toContain('set "DEVHUB_ROOT=C:/code/devhub"');
 	expect(batch).toContain('set "DEVHUB_SERVICE=altay/site"');
 	expect(batch).toContain('set "NODE_ENV=development"');
 });
@@ -101,10 +101,10 @@ test("workspace binaries resolve from the service folder and project ancestors b
 		}),
 		"log",
 		"exit",
-		"D:/code/devhub"
+		"C:/code/devhub"
 	);
-	const serviceBin = join("D:/code/altay/apps/web", "node_modules", ".bin");
-	const rootBin = join("D:/code/altay", "node_modules", ".bin");
+	const serviceBin = join("C:/code/altay/apps/web", "node_modules", ".bin");
+	const rootBin = join("C:/code/altay", "node_modules", ".bin");
 	expect(batch).toContain(serviceBin);
 	expect(batch).toContain(rootBin);
 	expect(batch.indexOf(serviceBin)).toBeLessThan(batch.indexOf(rootBin));

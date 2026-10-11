@@ -102,7 +102,7 @@ afterEach(() => {
 describe("canonical staging with real disposable Git repositories", () => {
 	test("mode changes preserve existing JSON arrays and repository formatting", () => {
 		const text =
-			'{\r\n  "checks": ["bun run check", "bun run test"],\r\n  "releaseBranch": "main",\r\n  "stageBranch": "stage",\r\n  "version": 1,\r\n  "worktreeRoot": "D:/worktrees/project",\r\n  "mode": "mvp"\r\n}\r\n';
+			'{\r\n  "checks": ["bun run check", "bun run test"],\r\n  "releaseBranch": "main",\r\n  "stageBranch": "stage",\r\n  "version": 1,\r\n  "worktreeRoot": "C:/worktrees/project",\r\n  "mode": "mvp"\r\n}\r\n';
 		expect(withProjectModeText(text, "prod")).toBe(
 			text.replace('"mode": "mvp"', '"mode": "prod"')
 		);
@@ -509,22 +509,31 @@ describe("canonical staging with real disposable Git repositories", () => {
 		);
 	}, 30_000);
 
-	test("finish preserves ignored private data and removes only a clean integrated task", () => {
+	test("finish closes a clean integrated task and retains its branch without archives", () => {
 		const { project } = fixture();
 		project.init();
 		const tree = project.create("done");
-		commitSource(tree, "finished task");
+		const head = commitSource(tree, "finished task");
 		project.integrate("codex/done");
-		const ignored = join(tree, "ignored");
-		mkdirSync(ignored);
-		const privateFile = join(ignored, "local-state.txt");
-		writeFileSync(privateFile, "private fixture state\n");
-		const archive = project.finish(tree);
-		expect(
-			readFileSync(join(archive, "files", "ignored", "local-state.txt"), "utf8")
-		).toBe("private fixture state\n");
+		expect(project.finish(tree)).toBe(tree);
+		expect(git(project.root, "rev-parse", "codex/done")).toBe(head);
+		expect(git(project.root, "for-each-ref", "refs/archive")).toBe("");
 		expect(existsSync(tree)).toBe(false);
 		expect(project.worktrees()).toHaveLength(1);
+	}, 30_000);
+
+	test("finish keeps private ignored data in the working checkout", () => {
+		const { project } = fixture();
+		project.init();
+		const tree = project.create("private");
+		commitSource(tree, "finished task");
+		project.integrate("codex/private");
+		mkdirSync(join(tree, "ignored"));
+		const privateFile = join(tree, "ignored", "local-state.txt");
+		writeFileSync(privateFile, "private fixture state\n");
+		expect(() => project.finish(tree)).toThrow("приватные ignored-файлы");
+		expect(readFileSync(privateFile, "utf8")).toBe("private fixture state\n");
+		expect(project.worktrees()).toHaveLength(2);
 	}, 30_000);
 
 	test("finish preserves an unmerged clean task and unrelated registered worktree", () => {
@@ -541,68 +550,49 @@ describe("canonical staging with real disposable Git repositories", () => {
 		expect(existsSync(outside)).toBe(true);
 	}, 30_000);
 
-	test("archive preserves an unfinished task without integrating or publishing it", () => {
+	test("close retains an unmerged branch without integrating or publishing it", () => {
 		const { folder, project } = fixture({ mode: "mvp", remote: null });
 		project.init();
 		const main = git(folder, "rev-parse", "HEAD");
-		const tree = project.create("blocked");
-		const task = commitSource(tree, "unique unfinished commit");
-		writeFileSync(join(tree, "source.txt"), "staged task edit\n");
-		git(tree, "add", "source.txt");
-		writeFileSync(join(tree, "source.txt"), "unstaged task edit\n");
-		writeFileSync(join(tree, "draft.txt"), "untracked task work\n");
-		mkdirSync(join(tree, "ignored"));
-		writeFileSync(join(tree, "ignored", "private.txt"), "private task state\n");
-		writeFileSync(join(folder, "source.txt"), "foreign canonical work\n");
-		git(folder, "add", "source.txt");
-		writeFileSync(join(folder, "failure.flag"), "checks cannot pass\n");
-		const canonicalIndex = git(folder, "diff", "--cached", "--binary");
-		const archive = project.archive(tree);
-		const metadata = JSON.parse(
-			readFileSync(join(archive, "archive.json"), "utf8")
-		) as { archiveRef: string; head: string; state: string };
-		expect(metadata.state).toBe("archived");
-		expect(metadata.head).toBe(task);
-		expect(git(folder, "rev-parse", metadata.archiveRef)).toBe(task);
+		const tree = project.create("closed");
+		const task = commitSource(tree, "committed task");
+		project.close(tree);
+		expect(git(folder, "rev-parse", "codex/closed")).toBe(task);
 		expect(git(folder, "rev-parse", "main")).toBe(main);
-		expect(git(folder, "diff", "--cached", "--binary")).toBe(canonicalIndex);
-		expect(readFileSync(join(folder, "source.txt"), "utf8")).toBe(
-			"foreign canonical work\n"
-		);
-		expect(readFileSync(join(archive, "files", "source.txt"), "utf8")).toBe(
-			"unstaged task edit\n"
-		);
-		expect(readFileSync(join(archive, "files", "draft.txt"), "utf8")).toBe(
-			"untracked task work\n"
-		);
-		expect(
-			readFileSync(join(archive, "files", "ignored", "private.txt"), "utf8")
-		).toBe("private task state\n");
-		expect(readFileSync(join(archive, "staged.patch"), "utf8")).toContain(
-			"+staged task edit"
-		);
-		expect(readFileSync(join(archive, "unstaged.patch"), "utf8")).toContain(
-			"+unstaged task edit"
-		);
-		expect(existsSync(join(archive, "index.bin"))).toBe(true);
+		expect(git(folder, "for-each-ref", "refs/archive")).toBe("");
 		expect(existsSync(tree)).toBe(false);
 		expect(project.worktrees()).toHaveLength(1);
 	}, 30_000);
 
-	test("archive rejects the canonical checkout and worktrees outside its policy", () => {
+	test("close refuses unsaved files, locks and detached HEADs", () => {
+		const { folder, project } = fixture({ mode: "mvp", remote: null });
+		project.init();
+		const tree = project.create("working");
+		writeFileSync(join(tree, "draft.txt"), "unsaved work\n");
+		expect(() => project.close(tree)).toThrow();
+		expect(readFileSync(join(tree, "draft.txt"), "utf8")).toBe(
+			"unsaved work\n"
+		);
+		git(tree, "add", "draft.txt");
+		git(tree, "commit", "-m", "Preserve task work");
+		git(folder, "worktree", "lock", tree);
+		expect(() => project.close(tree)).toThrow();
+		expect(existsSync(tree)).toBe(true);
+		git(folder, "worktree", "unlock", tree);
+		git(tree, "switch", "--detach");
+		expect(() => project.close(tree)).toThrow("сохраните HEAD в ветке");
+		expect(existsSync(tree)).toBe(true);
+	}, 30_000);
+
+	test("close rejects canonical checkout and worktrees outside the policy", () => {
 		const { base, folder, project } = fixture({ mode: "mvp", remote: null });
 		project.init();
 		const outside = join(base, "outside-managed-directory");
 		git(folder, "worktree", "add", "-b", "codex/outside", outside, "main");
-		expect(() => project.archive(folder)).toThrow(
-			"архивирование допустимо только"
-		);
-		expect(() => project.archive(outside)).toThrow(
-			"архивирование допустимо только"
-		);
+		expect(() => project.close(folder)).toThrow("закрытие допустимо только");
+		expect(() => project.close(outside)).toThrow("закрытие допустимо только");
 		expect(existsSync(folder)).toBe(true);
 		expect(existsSync(outside)).toBe(true);
-		expect(project.worktrees()).toHaveLength(2);
 	}, 30_000);
 
 	test("shared lock rejects overlapping mutation and releases itself after failure", () => {
@@ -720,7 +710,7 @@ describe("recovery after an interrupted create", () => {
 		writeFileSync(join(edited, "source.txt"), "changed\n");
 		rmSync(adminOf(edited), { force: true, recursive: true });
 		expect(() => project.create("edited")).toThrow(
-			"прерванный create не очищен"
+			"прерванный create остаётся рабочим"
 		);
 		expect(readFileSync(join(edited, "notes.txt"), "utf8")).toBe("keep me\n");
 		expect(git(folder, "rev-parse", "--verify", "codex/edited")).toBeTruthy();

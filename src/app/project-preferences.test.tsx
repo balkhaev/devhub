@@ -78,7 +78,7 @@ function service(
 		status,
 		ui: [{ label: "Приложение", url: `http://127.0.0.1:5000/${projectId}` }],
 		warn: null,
-		workdir: `D:/code/${projectId}`,
+		workdir: `C:/code/${projectId}`,
 	};
 }
 
@@ -95,7 +95,7 @@ function project(id: string, status?: ServiceView["status"]): ProjectView {
 		mode: "prod",
 		modeEditable: true,
 		name: id,
-		path: `D:/code/${id}`,
+		path: `C:/code/${id}`,
 		releaseBranch: "main",
 		services: [service(id, status)],
 		stageBranch: "stage",
@@ -309,7 +309,7 @@ test("collapsed cards keep navigation, state and frontend while hiding details i
 	expect(card).not.toContain("Detailed description");
 	// Keep stateful controls mounted in the hidden region so a pending request survives collapse.
 	for (const hidden of [
-		"D:/code/alpha",
+		"C:/code/alpha",
 		"Запустить dev",
 		"Удалить проект…",
 		'href="#/alpha/web"',
@@ -343,7 +343,7 @@ test("collapsed cards keep navigation, state and frontend while hiding details i
 	expect(compact).not.toContain('data-key="alpha/web"');
 	store.toggleCollapse("overview", "alpha");
 	expect(render(store, <Overview onDeleted={noop} view={data} />)).toContain(
-		"D:/code/alpha"
+		"C:/code/alpha"
 	);
 });
 

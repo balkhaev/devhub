@@ -196,7 +196,7 @@ test("new workflow bootstrap defaults to MVP with explicit pending checks; exist
 		checks: [],
 		mode: "mvp",
 		releaseBranch: "main",
-		worktreeRoot: "D:/worktrees/new-project",
+		worktreeRoot: "C:/worktrees/new-project",
 	});
 	const agents = readFileSync(join(fresh, "AGENTS.md"), "utf8");
 	installProjectWorkflow(fresh);
@@ -204,22 +204,22 @@ test("new workflow bootstrap defaults to MVP with explicit pending checks; exist
 });
 
 test("owner marker replacement preserves surrounding instructions and never invents parent filesystem writes", () => {
-	const block = ownerProjectPolicyBlock("D:/code/project");
+	const block = ownerProjectPolicyBlock("C:/code/project");
 	const before = `Specific intro\n${block}\nSpecific footer\n`;
 	const after = replaceOwnerPolicyBlock(
 		before,
-		ownerProjectPolicyBlock("D:/code/renamed")
+		ownerProjectPolicyBlock("C:/code/renamed")
 	);
 	expect(after.startsWith("Specific intro\n")).toBe(true);
 	expect(after.endsWith("\nSpecific footer\n")).toBe(true);
-	expect(after).toContain("D:/code/renamed/.devhub/worktree.json");
+	expect(after).toContain("C:/code/renamed/.devhub/worktree.json");
 	expect(() => replaceOwnerPolicyBlock(`${block}\n${block}`, block)).toThrow(
 		"несколько owner policy"
 	);
 	expect(() =>
 		replaceOwnerPolicyBlock("<!-- BEGIN:DEVHUB:WORKTREE-POLICY -->", block)
 	).toThrow("незавершённый");
-	expect(ownerParentPolicyBlock()).toContain("D:/worktrees");
+	expect(ownerParentPolicyBlock()).toContain("C:/worktrees");
 	expect(ownerParentPolicyBlock()).toContain("MVP");
 	expect(ownerParentPolicyBlock()).toContain("Prod");
 });
@@ -232,6 +232,6 @@ test("the compatibility CLI rejects unknown legacy arguments and refuses a paren
 		"неизвестный параметр legacy-inventory.json"
 	);
 	await expect(
-		main(["--apply", "--parent-proposal", "D:/code/AGENTS.md"])
+		main(["--apply", "--parent-proposal", "C:/code/AGENTS.md"])
 	).rejects.toThrow("отдельным файлом");
 });
