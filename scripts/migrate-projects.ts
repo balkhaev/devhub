@@ -142,7 +142,7 @@ export function installProjectWorkflow(root: string): {
 				releaseBranch: "main",
 				stageBranch: "stage",
 				version: 1,
-				worktreeRoot: `C:/worktrees/${basename(root)}`,
+				worktreeRoot: `F:/worktrees/${basename(root)}`,
 			};
 	const policy = workflowPolicySchema.parse(proposed);
 	const agents = join(root, "AGENTS.md");
@@ -1043,7 +1043,7 @@ function scanProjects(
 					resolve((project.path ?? "").replaceAll(CODE_TOKEN, catalogue.code))
 				).toLowerCase() === slash(root).toLowerCase()
 		);
-		if (!seed && slash(scanRoot) !== "C:/code") {
+		if (!seed && slash(scanRoot) !== "F:/code") {
 			seed = {
 				id: `legacy-${slug(basename(root))}`,
 				name: `${basename(root)} (legacy checkout)`,
@@ -1068,7 +1068,7 @@ function main(): void {
 	);
 	const roots = requestedRoots.length
 		? requestedRoots
-		: ["C:/code", "C:/Users/user/Documents/ChatGPT"];
+		: ["F:/code", "C:/Users/user/Documents/ChatGPT"];
 	const catalogue = readJson<{
 		aliases?: Record<string, string>;
 		code: string;

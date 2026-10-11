@@ -66,17 +66,17 @@ test("statuses and repositories read the way Coolify and Git write them", () => 
 
 test("resources go to projects by link, then repository, then Coolify project name", () => {
 	const projects = [
-		{ id: "altay", name: "Алтай", path: "C:/code/altay" },
-		{ id: "luvclub", name: "Luv Club", path: "C:/code/girls" },
-		{ id: "soclogin", name: "Soclogin", path: "C:/code/soclogin" },
-		{ id: "zemstroy", name: "Земстрой CRM", path: "C:/code/zemstroy-crm" },
-		{ id: "montage", name: "Montage", path: "C:/code/montage" },
-		{ id: "balkhaev-com", name: "balkhaev.com", path: "C:/code/balkhaev.com" },
+		{ id: "altay", name: "Алтай", path: "F:/code/altay" },
+		{ id: "luvclub", name: "Luv Club", path: "F:/code/girls" },
+		{ id: "soclogin", name: "Soclogin", path: "F:/code/soclogin" },
+		{ id: "zemstroy", name: "Земстрой CRM", path: "F:/code/zemstroy-crm" },
+		{ id: "montage", name: "Montage", path: "F:/code/montage" },
+		{ id: "balkhaev-com", name: "balkhaev.com", path: "F:/code/balkhaev.com" },
 	];
 	const repositories: Record<string, string> = {
-		"C:/code/girls": "balkhaev/girls",
-		"C:/code/soclogin": "balkhaev/soclogin",
-		"C:/code/zemstroy-crm": "balkhaev/zemcrm",
+		"F:/code/girls": "balkhaev/girls",
+		"F:/code/soclogin": "balkhaev/soclogin",
+		"F:/code/zemstroy-crm": "balkhaev/zemcrm",
 	};
 	const result = assignProduction(
 		projects,
@@ -189,7 +189,7 @@ function fakeCoolify(requests: string[]) {
 
 const catalogue = (coolify?: Catalogue["coolify"]): Catalogue => ({
 	aliases: {},
-	code: "C:/code",
+	code: "F:/code",
 	coolify,
 	discover: [],
 	exclude: [],

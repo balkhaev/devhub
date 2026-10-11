@@ -12,12 +12,12 @@ import {
 
 const LS = JSON.stringify([
 	{
-		ConfigFiles: "C:\\code\\gameradar\\docker-compose.yml",
+		ConfigFiles: "F:\\code\\gameradar\\docker-compose.yml",
 		Name: "gameradar",
 		Status: "exited(1), running(3)",
 	},
 	{
-		ConfigFiles: "C:\\code\\delopusk\\docker-compose.yml",
+		ConfigFiles: "F:\\code\\delopusk\\docker-compose.yml",
 		Name: "delopusk",
 		Status: "running(1)",
 	},
@@ -63,7 +63,7 @@ const PS = [
 test("compose projects come with their own containers, health and exit codes", () => {
 	const [gameradar, delopusk] = parseDocker(LS, PS);
 	expect(gameradar?.name).toBe("gameradar");
-	expect(gameradar?.file).toBe("C:\\code\\gameradar\\docker-compose.yml");
+	expect(gameradar?.file).toBe("F:\\code\\gameradar\\docker-compose.yml");
 	expect(gameradar?.containers.map((container) => container.service)).toEqual([
 		"gameradar",
 		"postgres",
@@ -120,13 +120,13 @@ test("the catalogue adds what it needs from each project and the projects Docker
 	const docker = parseDocker(LS, PS);
 	const merged = withCatalogue(docker, [
 		{
-			file: "C:\\code\\gameradar\\docker-compose.yml",
+			file: "F:\\code\\gameradar\\docker-compose.yml",
 			name: "gameradar",
 			project: "gameradar",
 			wanted: [],
 		},
 		{
-			file: "C:\\code\\montage\\docker-compose.yml",
+			file: "F:\\code\\montage\\docker-compose.yml",
 			name: "montage",
 			project: "montage",
 			wanted: ["postgres"],
@@ -139,7 +139,7 @@ test("the catalogue adds what it needs from each project and the projects Docker
 	expect(montage.containers).toEqual([]);
 	expect(montage.ready).toBe(false);
 	expect(montage.wanted).toEqual(["postgres"]);
-	expect(montage.file).toBe("C:\\code\\montage\\docker-compose.yml");
+	expect(montage.file).toBe("F:\\code\\montage\\docker-compose.yml");
 });
 
 test("Docker's refusals are said in words, with the port it could not take", () => {
@@ -176,20 +176,20 @@ test("Docker's refusals are said in words, with the port it could not take", () 
 
 	const other = dockerError("montage", {
 		code: 1,
-		err: "some line\nenv file C:\\code\\montage\\apps\\server\\.env not found\n",
+		err: "some line\nenv file F:\\code\\montage\\apps\\server\\.env not found\n",
 		out: "",
 	});
 	expect(other.message).toBe(
-		"Docker montage не справился: env file C:\\code\\montage\\apps\\server\\.env not found"
+		"Docker montage не справился: env file F:\\code\\montage\\apps\\server\\.env not found"
 	);
 });
 
 test("configured dev compose files override Docker's remembered production file and start only dependencies", () => {
 	const [configured] = withCatalogue(parseDocker(LS, PS), [
 		{
-			file: "C:/code/gameradar/docker-compose.yml",
+			file: "F:/code/gameradar/docker-compose.yml",
 			name: "gameradar",
-			overrides: ["C:/code/gameradar/docker-compose.dev.yml"],
+			overrides: ["F:/code/gameradar/docker-compose.dev.yml"],
 			project: "gameradar",
 			wanted: ["postgres", "redis"],
 		},
@@ -202,9 +202,9 @@ test("configured dev compose files override Docker's remembered production file 
 		"-p",
 		"gameradar",
 		"-f",
-		"C:/code/gameradar/docker-compose.yml",
+		"F:/code/gameradar/docker-compose.yml",
 		"-f",
-		"C:/code/gameradar/docker-compose.dev.yml",
+		"F:/code/gameradar/docker-compose.dev.yml",
 		"up",
 		"-d",
 		"postgres",

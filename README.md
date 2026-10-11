@@ -55,7 +55,7 @@ flowchart LR
 
 В проекте доступны `bun run worktree create <task>`, `integrate <ref>`, `check`, `status`,
 `publish`, `mode mvp|prod` и `finish <полный путь>`.
-Общий CLI: `bun C:/code/devhub/src/stage.ts <команда> --project <путь|id>`.
+Общий CLI: `bun F:/code/devhub/src/stage.ts <команда> --project <путь|id>`.
 Режим, проверки, release-ветка и место временных папок находятся в `.devhub/worktree.json`.
 
 В MVP интеграция собственных изменений задачи идёт сразу в `main`; после финальных проверок
@@ -69,7 +69,7 @@ CLI пушит в настроенный remote и выполняет извес
 правки и перед push проверяет как основную папку, так и чистый HEAD `main` в worktree.
 Отметка проверки аннулируется при смене
 режима, исходников или локального env; провал проверок блокирует публикацию.
-Обычные worktree расположены в `C:/worktrees/<project>/<task>`, вне папок проектов `C:/code`.
+Обычные worktree расположены в `F:/worktrees/<project>/<task>`, вне папок проектов `F:/code`.
 Агент убирает рабочую папку после задачи, сохраняя незавершённую работу и приватные файлы
 в recovery-архив при необходимости; Codex-managed папки архивируются через приложение.
 Имеющиеся локальные правки интегратор не включает в чужой commit и не публикует автоматически.
@@ -80,7 +80,7 @@ CLI пушит в настроенный remote и выполняет извес
 
 ## Терминал
 
-Из `C:/code/devhub`:
+Из `F:/code/devhub`:
 
 ```text
 bun run hub list
@@ -124,7 +124,7 @@ bun run hub prod altay --logs
 окончания активных задач. Production-задачи и отдельные production-воркеры сохраняют свой запуск.
 Прежний повторный запуск Predict Paper через 30 секунд перенесён в управляемый launcher:
 `restart: "always"`, `restartDelayMs: 30000`. Для остальных сервисов перезапуск по умолчанию ручной.
-Сервис теперь `predict/runtime`; исходники запускаются из `C:/code/predict`, прежний каталог
+Сервис теперь `predict/runtime`; исходники запускаются из `F:/code/predict`, прежний каталог
 данных задаётся явно. DevHub запускает конечный `predict.runtime`, а подготовка через
 `predict.local up` остаётся самостоятельным entrypoint приложения.
 
@@ -252,10 +252,10 @@ Gameradar использует `docker-compose.dev.yml`, чтобы открыт
 ## Агенты работают через пульт
 
 Claude Code, Codex и другие агенты запускают dev-серверы только через DevHub:
-`bun C:/code/devhub/src/cli.ts start|stop|restart|status|logs|attach`. `bun run agents` показывает план,
+`bun F:/code/devhub/src/cli.ts start|stop|restart|status|logs|attach`. `bun run agents` показывает план,
 `bun run agents --write` применяет его:
 
-- блок `DEVHUB:DEV-SERVER` в `C:/code/AGENTS.md`, `~/.claude/CLAUDE.md` и `~/.codex/AGENTS.md` —
+- блок `DEVHUB:DEV-SERVER` в `F:/code/AGENTS.md`, `~/.claude/CLAUDE.md` и `~/.codex/AGENTS.md` —
   правила и команды пульта; остальной текст файлов сохраняется;
 - hook `PreToolUse` в `~/.claude/settings.json` (`src/agent-guard.ts`): внутри проекта с `devhub.json`
   он отклоняет `next dev`, `vite`, `bun --hot`, `node --watch`, `turbo dev`, `uvicorn --reload`, `expo start`

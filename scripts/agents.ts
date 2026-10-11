@@ -13,7 +13,7 @@ import { loadCatalogue } from "../src/config";
 
 /**
  * Makes coding agents use DevHub as their development server. Dry-run by default; `--write` applies:
- * - the DevHub block in `C:/code/AGENTS.md`, `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md`;
+ * - the DevHub block in `F:/code/AGENTS.md`, `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md`;
  * - the Claude Code PreToolUse guard in `~/.claude/settings.json`;
  * - with `--projects`, the block in every project's AGENTS.md and a `.claude/launch.json` that attaches to DevHub
  *   (an existing configuration that spawns servers itself is kept in `.devhub/original-claude-launch.json`).

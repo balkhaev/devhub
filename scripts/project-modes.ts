@@ -61,7 +61,7 @@ function fingerprint(
 export function planMvpMode(
 	id: string,
 	folder: string,
-	worktreeBase = "C:/worktrees"
+	worktreeBase = "F:/worktrees"
 ): ProjectModePlan {
 	const root = primaryCheckout(folder);
 	const policyFile = join(root, ".devhub", "worktree.json");
@@ -237,7 +237,7 @@ export function applyMvpMode(reviewed: ProjectModePlan): ProjectModePlan {
 export function catalogueModePlans(
 	catalogue: Catalogue,
 	hubRoot: string,
-	worktreeBase = "C:/worktrees"
+	worktreeBase = "F:/worktrees"
 ): ProjectModePlan[] {
 	const projects = [
 		...catalogue.projects.map((project) => ({
@@ -262,7 +262,7 @@ export function catalogueModePlans(
 
 function parseArgs(args: string[]) {
 	let apply = false;
-	let worktreeBase = "C:/worktrees";
+	let worktreeBase = "F:/worktrees";
 	let parentProposal: string | null = null;
 	for (let index = 0; index < args.length; index += 1) {
 		const arg = args[index];
@@ -299,7 +299,7 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
 	const { apply, parentProposal, worktreeBase } = parseArgs(args);
 	const catalogue = await loadCatalogue(join(hubRoot, "services.json"));
 	if (isInsideProject(catalogue.code, worktreeBase)) {
-		throw new Error("worktree root должен находиться вне C:/code");
+		throw new Error("worktree root должен находиться вне F:/code");
 	}
 	const plans = catalogueModePlans(catalogue, hubRoot, worktreeBase);
 	const results = plans.map((plan) => {

@@ -13,7 +13,7 @@
 Сравнение 227 package-файлов подтвердило сохранение 400 production-команд и остальных полей.
 Повтор миграции не меняет файлы. Правила и команды: [WORKTREES.md](WORKTREES.md).
 
-MediaPipes: основной `C:/code/mediapipes` на `stage`, HEAD
+MediaPipes: основной `F:/code/mediapipes` на `stage`, HEAD
 `5960e308c4db62c9556a6a7782dd1af15e5caffb`. Включены 13 уникальных свежих коммитов
 `codex/asop-bf16-film` от 2 октября и сохранены локальные H3/provider правки основного проекта
 и H3-студия из Documents. API, generation и Zemstroy worker переведены под DevHub.
@@ -47,10 +47,10 @@ DevHub: 68 Bun tests, TypeScript/Ultracite и 12 Pester tests прошли. По
 
 ## Первоначальная миграция dev-entrypoint
 
-На первом шаге подключены 32 рабочих каталога из `C:/code` и `C:/Users/user/Documents/ChatGPT`: 122 сервиса,
+На первом шаге подключены 32 рабочих каталога из `F:/code` и `C:/Users/user/Documents/ChatGPT`: 122 сервиса,
 184 package-entrypoint и 17 локальных PowerShell/shell launcher. Контракты находятся в `devhub.json`
 каждого каталога; машинные настройки — в `services.json`. Общие инструкции запуска записаны
-в `C:/code/AGENTS.md`. Архивные снимки, резервные копии и подчинённые GPU-инструменты не являются
+в `F:/code/AGENTS.md`. Архивные снимки, резервные копии и подчинённые GPU-инструменты не являются
 отдельными проектами в каталоге.
 
 Production-entrypoint приложений сохранены самостоятельными. Добавлены `start` для balkhaev.com

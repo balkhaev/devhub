@@ -26,7 +26,7 @@ $source = Join-Path $root 'tray\Tray.cs'
 
 $name = 'Пульт'
 
-# Development wrappers outside C:\code find this hub through the per-user registration.
+# Development wrappers outside F:\code find this hub through the per-user registration.
 $devhubBun = (Get-Command bun -ErrorAction Stop).Source
 & $devhubBun (Join-Path $root 'scripts\install-client.ts')
 if ($LASTEXITCODE -ne 0) { throw 'Не удалось зарегистрировать devhub для dev-команд проектов.' }

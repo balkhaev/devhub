@@ -1,6 +1,6 @@
 # MVP, Прод и временные worktree
 
-У каждого проекта одна основная папка в `C:/code`. DevHub запускает dev-сервисы
+У каждого проекта одна основная папка в `F:/code`. DevHub запускает dev-сервисы
 только из неё или её пакетов. В `.devhub/worktree.json` указан режим проекта:
 
 | Режим | Основная ветка и dev | Выпуск |
@@ -30,9 +30,9 @@ Production entrypoint не импортирует адаптеры из `.devhub
    включать в свой commit или release.
 2. Если нужна изоляция, создать временный worktree от ветки текущего режима:
    `bun run worktree create orders-filter`. Обычная рабочая папка будет
-   `C:/worktrees/<project>/orders-filter`, ветка — `codex/orders-filter`.
+   `F:/worktrees/<project>/orders-filter`, ветка — `codex/orders-filter`.
    Подходящий worktree этой задачи переиспользовать. В Python-проекте команда:
-   `bun C:/code/devhub/src/stage.ts create orders-filter --project C:/code/project`.
+   `bun F:/code/devhub/src/stage.ts create orders-filter --project F:/code/project`.
 3. В worktree изменить и закоммитить файлы задачи. Его dev-команда обращается к
    основной папке и показывает уже интегрированный код; dev-сервер из worktree
    не запускать и вторым приложением в каталог не добавлять.
@@ -98,7 +98,7 @@ untracked или ignored-файлов. Иначе команда называе�
 
 `devhub.json` описывает dev-команды, порты и зависимости. `.devhub/worktree.json`
 содержит `version: 1`, `mode: "mvp" | "prod"`, `stageBranch: "stage"`,
-`releaseBranch: "main"`, `checks` и `worktreeRoot: "C:/worktrees/<project>"`.
+`releaseBranch: "main"`, `checks` и `worktreeRoot: "F:/worktrees/<project>"`.
 `remote` по умолчанию равен `origin`; явный `remote: null` оставляет проект
 локальным: проверки, изменения в локальном `main` и очистка worktree проходят
 без push и облачного деплоя. Так настроены Analytics и Brains.
@@ -110,7 +110,7 @@ production-команды. `checks` должны проверять, не исп
 и самого DevHub в MVP. `--apply` меняет только политику, каноническую ветку и
 владелецкий блок в `AGENTS.md`; остальные файлы сохраняет. Незавершённый worktree
 на `main` и разошедшаяся история выводятся как блокеры. Скрипт не коммитит чужую
-работу, не пушит и не деплоит проекты. Родительский блок для `C:/code/AGENTS.md`
+работу, не пушит и не деплоит проекты. Родительский блок для `F:/code/AGENTS.md`
 доступен как генерируемый proposal из `ownerParentPolicyBlock()`.
 
 Обёртки `launch.cjs` и `worktree.cjs` находят DevHub через `DEVHUB_ROOT` или

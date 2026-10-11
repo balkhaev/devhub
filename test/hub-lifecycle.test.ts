@@ -223,7 +223,7 @@ async function detachedFixture(
 ) {
 	const parentCommand =
 		options.parentCommand ??
-		"C:/code/inference/.venv/Scripts/python.exe -m inference.cli --config C:/code/inference/inference.toml serve";
+		"F:/code/inference/.venv/Scripts/python.exe -m inference.cli --config F:/code/inference/inference.toml serve";
 	const listenerCommand =
 		options.listenerCommand ??
 		"C:/runtime/python.exe -m inference.cli --config C:/inference.toml serve";
@@ -258,11 +258,11 @@ async function detachedFixture(
 				),
 		},
 		{},
-		"C:/code/inference"
+		"F:/code/inference"
 	);
 	result.processes.entries.set("app/api", {
 		command: QUEUE_COMMAND,
-		cwd: "C:/code/inference",
+		cwd: "F:/code/inference",
 		exit: null,
 		log: "test.log",
 		pid: process.pid,
@@ -280,7 +280,7 @@ test("opted-in canonical detached queue satisfies readiness without adopting its
 	expect(queue?.status).toBe("running");
 	expect(queue?.pid).toBe(process.pid);
 	expect(queue?.owner?.pid).toBe(DETACHED_PID);
-	expect(queue?.owner?.checkout).toBe("C:\\code\\inference");
+	expect(queue?.owner?.checkout).toBe("F:\\code\\inference");
 	await hub.startService("app/web");
 	expect(processes.launches).toEqual(["app/web"]);
 	expect(processes.get("app/api")?.pid).toBe(process.pid);
@@ -290,7 +290,7 @@ test("opted-in canonical detached queue satisfies readiness without adopting its
 test.each([
 	["default strict ownership", { service: { detachedListener: undefined } }],
 	["explicit disabled contract", { service: { detachedListener: false } }],
-	["foreign checkout", { parentCommand: "C:/code/other/.venv/python.exe" }],
+	["foreign checkout", { parentCommand: "F:/code/other/.venv/python.exe" }],
 	["unknown checkout", { parentCommand: "C:/runtime/python.exe" }],
 	["failed health", { healthy: false }],
 	["missing health", { service: { health: undefined } }],
