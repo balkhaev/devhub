@@ -12,7 +12,7 @@ const FRONTMATTER = /^---\r?\n[\s\S]*?\r?\n---(?:\r?\n|$)/;
 
 const slash = (path: string): string => path.replaceAll("\\", "/");
 
-/** Instructions every agent reads: global agent files, `F:/code/AGENTS.md` and each project's AGENTS.md. */
+/** Instructions every agent reads, kept in the machine-wide files: global agent files and the AGENTS.md above every checkout. */
 export function devServerBlock(hubRoot: string): string {
 	const hub = slash(hubRoot);
 	const cli = `bun ${hub}/src/cli.ts`;
@@ -56,6 +56,37 @@ export function replaceMarkedBlock(
 	}
 	const frontmatter = FRONTMATTER.exec(before)?.[0] ?? "";
 	return `${frontmatter}${replacement}${line}${line}${before.slice(frontmatter.length)}`;
+}
+
+const blockPattern = (marker: string): RegExp =>
+	new RegExp(
+		`<!-- BEGIN:${marker} -->[\\s\\S]*?<!-- END:${marker} -->(?:\\r?\\n){0,2}`,
+		"g"
+	);
+
+/** The marked block of instructions, or null when they do not have exactly one. */
+export function markedBlock(text: string, marker: string): string | null {
+	const matches = [...text.matchAll(blockPattern(marker))];
+	return matches.length === 1 ? (matches[0]?.[0].trimEnd() ?? null) : null;
+}
+
+/** Drop a marked block with the blank line after it; the rest stays byte-for-byte. */
+export function removeMarkedBlock(before: string, marker: string): string {
+	return before.replace(blockPattern(marker), "");
+}
+
+const DRIVE = /\b[a-z]:(?=[\\/])/gi;
+const BLANK_LINES = /\n{2,}/g;
+
+/**
+ * Instructions without what DevHub writes into them: its marked blocks, line endings and the drive of local
+ * paths. Two versions that are equal here differ only by DevHub's own rewrites.
+ */
+export function withoutDevhubRewrites(text: string): string {
+	return removeMarkedBlock(text.replaceAll("\r\n", "\n"), "DEVHUB:[A-Z-]+")
+		.replace(DRIVE, "X:")
+		.replace(BLANK_LINES, "\n")
+		.trim();
 }
 
 interface LaunchService {

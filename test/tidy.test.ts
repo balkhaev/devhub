@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 
 import type { Catalogue } from "../src/config";
+import { StageProject } from "../src/stage";
 import { formatTidy, machineTidy } from "../src/tidy";
 
 const fixtures: string[] = [];
@@ -121,4 +122,20 @@ test("one report names leftovers of every project and of the shared data folder"
 	expect(formatTidy(machineTidy(catalogue, { project: "demo" }))).toBe(
 		"чисто: demo\n"
 	);
+}, 30_000);
+
+test("a project in the middle of another stage command is reported, not cleaned", () => {
+	const { catalogue, demo } = machine();
+	git(demo, "branch", "codex/merged");
+	const release = new StageProject(demo).acquireLock();
+	try {
+		const report = machineTidy(catalogue, { apply: true });
+		expect(report.busy).toEqual(["demo"]);
+		expect(report.projects[0]?.merged).toHaveLength(1);
+		expect(formatTidy(report)).toContain("заняты другой задачей");
+	} finally {
+		release();
+	}
+	expect(machineTidy(catalogue, { apply: true }).busy).toEqual([]);
+	expect(git(demo, "for-each-ref", "refs/heads/codex")).toBe("");
 }, 30_000);

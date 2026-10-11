@@ -10,8 +10,16 @@ import {
 	devServerBlock,
 	directDevServer,
 	guardReason,
+	markedBlock,
+	removeMarkedBlock,
 	replaceMarkedBlock,
+	withoutDevhubRewrites,
 } from "../src/agents";
+import {
+	ownerParentPolicyBlock,
+	ownerProjectPolicyBlock,
+	WORKFLOW_POLICY_MARKER,
+} from "../src/workflow-instructions";
 
 const roots: string[] = [];
 afterAll(async () => {
@@ -178,4 +186,34 @@ test("the DevHub block replaces itself and keeps the rest of the instructions", 
 	expect(() =>
 		replaceMarkedBlock(`<!-- BEGIN:${DEV_SERVER_MARKER} -->\nhalf`, block)
 	).toThrow("незавершённый");
+});
+
+test("a repository points at the rules; their text lives in the machine-wide files", () => {
+	const pointer = ownerProjectPolicyBlock("F:\\code\\demo");
+	expect(pointer).toContain("F:/code/demo/.devhub/worktree.json");
+	expect(pointer).toContain("F:/code/AGENTS.md");
+	expect(pointer).not.toContain("Leave nothing behind");
+	expect(ownerParentPolicyBlock()).toContain("Leave nothing behind");
+
+	const dev = devServerBlock("F:/code/devhub");
+	const shared =
+		"<!-- BEGIN:INFERENCE:QUEUE-PAUSE -->\n## Queue\n\nRule.\n<!-- END:INFERENCE:QUEUE-PAUSE -->";
+	const copy = `${dev}\n\n${ownerParentPolicyBlock()}\n\n## Project\n\nOwn rule.\n\n${shared}\n`;
+	expect(markedBlock(copy, "INFERENCE:QUEUE-PAUSE")).toBe(shared);
+	expect(markedBlock(copy, "MISSING")).toBeNull();
+	const moved = replaceMarkedBlock(
+		removeMarkedBlock(copy, DEV_SERVER_MARKER),
+		pointer,
+		WORKFLOW_POLICY_MARKER
+	);
+	expect(moved).toBe(`${pointer}\n\n## Project\n\nOwn rule.\n\n${shared}\n`);
+});
+
+test("DevHub's own rewrites of instructions are told apart from someone's edits", () => {
+	const head = `${devServerBlock("C:/code/devhub")}\r\n\r\n${ownerParentPolicyBlock()}\r\n\r\n## Project\r\n\r\nRun \`C:/code/demo/tool.exe\`.\r\n`;
+	const rewritten = `${ownerProjectPolicyBlock("F:/code/demo")}\n\n## Project\n\nRun \`F:/code/demo/tool.exe\`.\n`;
+	expect(withoutDevhubRewrites(rewritten)).toBe(withoutDevhubRewrites(head));
+	expect(withoutDevhubRewrites(rewritten.replace("Run", "Never run"))).not.toBe(
+		withoutDevhubRewrites(head)
+	);
 });
