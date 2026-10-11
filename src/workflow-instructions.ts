@@ -13,18 +13,20 @@ const rules = `- Read the canonical \`.devhub/worktree.json\` before every task.
 
 Production \`build\`, \`start\`, \`deploy\` and container entrypoints remain standalone. This mode-aware owner policy supersedes earlier all-stage, direct-main and worktree lifecycle rules where they conflict.`;
 
+/**
+ * A repository only points at the rules: their text is kept once, in the machine-wide instruction files,
+ * so changing a rule edits no repository and no worktree.
+ */
 export function ownerProjectPolicyBlock(primary: string): string {
 	const folder = primary.replaceAll("\\", "/");
 	return `<!-- BEGIN:${WORKFLOW_POLICY_MARKER} -->
-## DevHub project modes and temporary worktrees — owner policy, 2026-10-11
+## DevHub workflow — owner policy
 
-The canonical checkout is \`${folder}\`. Read its [workflow policy](${folder}/.devhub/worktree.json) and the [shared workflow](F:/code/devhub/WORKTREES.md) before changing repository state. The policy selects MVP (canonical \`main\`, immediate checked publication) or Prod (canonical \`stage\`, controlled release).
-
-${rules}
+The canonical checkout is \`${folder}\`; its mode, checks and worktree folder are in [.devhub/worktree.json](${folder}/.devhub/worktree.json). The owner's rules for this machine (dev servers only through DevHub, project modes, temporary worktrees, leaving nothing behind) are kept once, in \`F:/code/AGENTS.md\`; \`F:/worktrees/AGENTS.md\` and the global agent instructions carry the same text. Read them before changing repository state.
 <!-- END:${WORKFLOW_POLICY_MARKER} -->`;
 }
 
-/** Generated proposal for collection AGENTS.md; callers choose whether to apply it. */
+/** The full rules, for the machine-wide instruction files above every checkout. */
 export function ownerParentPolicyBlock(): string {
 	return `<!-- BEGIN:${WORKFLOW_POLICY_MARKER} -->
 ## DevHub project modes and temporary worktrees — owner policy, 2026-10-11

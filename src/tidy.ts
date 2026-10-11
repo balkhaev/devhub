@@ -4,7 +4,12 @@ import { basename, join, resolve } from "node:path";
 import { sameSourcePath } from "./checkouts";
 import type { Catalogue } from "./config";
 import { StageProject } from "./stage";
-import { type MachineTidy, projectLines, removable } from "./tidy-words";
+import {
+	type MachineTidy,
+	type ProjectTidy,
+	projectLines,
+	removable,
+} from "./tidy-words";
 
 const DATA = "F:/AI";
 const TRASH = /^_trash/i;
@@ -48,6 +53,7 @@ export function machineTidy(
 		projects.push({ folder: resolve(self), id: basename(resolve(self)) });
 	}
 	const report: MachineTidy = {
+		busy: [],
 		// One project's report leaves the shared folder to the machine-wide one.
 		data: dataLeftovers(
 			catalogue,
@@ -66,9 +72,15 @@ export function machineTidy(
 			continue;
 		}
 		const stage = new StageProject(folder);
-		const applied = options.apply
-			? stage.withLock(() => stage.tidyApply())
-			: undefined;
+		let applied: ProjectTidy["applied"];
+		if (options.apply) {
+			try {
+				applied = stage.withLock(() => stage.tidyApply());
+			} catch {
+				// One project in the middle of an integration must not stop the cleanup of the others.
+				report.busy.push(id);
+			}
+		}
 		report.projects.push({
 			...stage.tidy(),
 			...(applied ? { applied } : {}),
@@ -100,6 +112,11 @@ export function formatTidy(report: MachineTidy): string {
 		if (report.data.trash.length) {
 			text.push(`  ждёт удаления: ${report.data.trash.join(", ")}`);
 		}
+	}
+	if (report.busy.length) {
+		text.push(
+			`заняты другой задачей, уборка не выполнена: ${report.busy.join(", ")}`
+		);
 	}
 	if (report.projects.some((project) => removable(project) > 0)) {
 		text.push("слитые ветки и записи без папок убирает tidy --apply");

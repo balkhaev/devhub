@@ -230,8 +230,10 @@ test("a Python project is written, registered and committed through the runner",
 	expect(policy).toMatchObject({ mode: "mvp", remote: null });
 	expect(policy.checks).toContain("uv run pytest -q");
 	const agents = await readFile(join(root, "AGENTS.md"), "utf8");
-	expect(agents).toContain(`BEGIN:${DEV_SERVER_MARKER}`);
+	// A pointer to the machine-wide rules, not a copy of them.
 	expect(agents).toContain(`BEGIN:${WORKFLOW_POLICY_MARKER}`);
+	expect(agents).toContain("F:/code/AGENTS.md");
+	expect(agents).not.toContain(`BEGIN:${DEV_SERVER_MARKER}`);
 	const launch = await readJson<{
 		configurations: { runtimeArgs: string[] }[];
 	}>(join(root, ".claude", "launch.json"));

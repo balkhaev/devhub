@@ -4,11 +4,7 @@ import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { spawn } from "bun";
 
-import {
-	claudeLaunchConfig,
-	devServerBlock,
-	replaceMarkedBlock,
-} from "./agents";
+import { claudeLaunchConfig } from "./agents";
 import { sameSourcePath } from "./checkouts";
 import type { Catalogue } from "./config";
 import {
@@ -292,12 +288,12 @@ async function installDevhub(
 		join(root, ".claude", "launch.json"),
 		serialize(claudeLaunchConfig(hubRoot, project))
 	);
+	// The rules themselves are in the machine-wide instructions; the project only points at them.
 	const agents = join(root, "AGENTS.md");
 	const before = await readFile(agents, "utf8").catch(() => "");
-	const withDev = replaceMarkedBlock(before, devServerBlock(hubRoot));
 	await writeFile(
 		agents,
-		replaceOwnerPolicyBlock(withDev, ownerProjectPolicyBlock(root))
+		replaceOwnerPolicyBlock(before, ownerProjectPolicyBlock(root))
 	);
 }
 

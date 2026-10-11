@@ -138,6 +138,12 @@ export function TidyPage({ projects }: { projects: ProjectView[] }) {
 					Чисто: {clean.map((entry) => entry.project.id).join(", ")}
 				</p>
 			) : null}
+			{report?.busy.length ? (
+				<p className="note">
+					Заняты другой задачей, уборка не выполнена: {report.busy.join(", ")}.
+					Повторите позже.
+				</p>
+			) : null}
 			{report?.skipped.length ? (
 				<p className="muted">
 					Без политики worktree: {report.skipped.join(", ")}

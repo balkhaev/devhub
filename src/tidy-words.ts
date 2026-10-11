@@ -11,6 +11,8 @@ export interface ProjectTidy extends TidyReport {
 }
 
 export interface MachineTidy {
+	/** Projects another stage command held while `--apply` ran: reported as they are, cleaned next time. */
+	busy: string[];
 	/** The shared data folder: what belongs to no project and what waits for deletion. */
 	data: { root: string; trash: string[]; unowned: string[] };
 	projects: ProjectTidy[];
