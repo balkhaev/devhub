@@ -1,0 +1,28 @@
+# Install on 49.13.216.63 in /data/coolify/proxy/dynamic/.
+# Explicit hosts only: this must not capture unrelated balkhaev.com services.
+http:
+  routers:
+    delopusk-mirrors-https:
+      rule: Host(`crm.balkhaev.com`) || Host(`api.crm.balkhaev.com`) || Host(`ggpick.balkhaev.com`) || Host(`altay-mirror.balkhaev.com`)
+      entryPoints: [https]
+      priority: 60000
+      service: delopusk-mirrors
+      tls:
+        certResolver: letsencrypt
+    delopusk-mirrors-http:
+      rule: Host(`crm.balkhaev.com`) || Host(`api.crm.balkhaev.com`) || Host(`ggpick.balkhaev.com`) || Host(`altay-mirror.balkhaev.com`)
+      entryPoints: [http]
+      priority: 60000
+      service: noop@internal
+      middlewares: [delopusk-mirrors-https]
+  middlewares:
+    delopusk-mirrors-https:
+      redirectScheme:
+        scheme: https
+        permanent: true
+  services:
+    delopusk-mirrors:
+      loadBalancer:
+        passHostHeader: true
+        servers:
+          - url: http://delopusk-resource-mirrors:8080
