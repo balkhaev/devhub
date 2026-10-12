@@ -282,28 +282,6 @@ test("a managed service whose port a foreign process holds is busy, however heal
 	expect(processes.stops).toEqual([]);
 });
 
-test("a legacy detachedListener key is accepted and changes nothing", async () => {
-	const { hub, ports, processes } = await fixture([
-		configService("queue", {
-			detachedListener: true,
-			health: "/health",
-			port: 8765,
-		}),
-	]);
-	processes.entries.set("app/queue", {
-		command: "run-queue",
-		cwd: ".",
-		exit: null,
-		log: "test.log",
-		pid: process.pid,
-		startedAt: Date.now(),
-		stopping: false,
-	});
-	ports.set(8765, LISTENER_PID);
-	await hub.refresh(true);
-	expect(hub.current.projects[0]?.services[0]?.status).toBe("busy");
-});
-
 test("autostart brings up marked services after what they need and skips the ones the hub already runs", async () => {
 	const { hub, ports, processes } = await fixture([
 		configService("manual"),

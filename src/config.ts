@@ -42,8 +42,6 @@ const serviceSchema = z.strictObject({
 	/** Folder the command runs in, relative to the project; the project's own folder by default. */
 	cwd: z.string().optional(),
 	description: z.string().optional(),
-	/** A legacy key that no longer does anything: accepted until every manifest drops it. */
-	detachedListener: z.boolean().optional(),
 	env: z.record(z.string(), z.string()).default({}),
 	/** A path or URL that answers 2xx when the service is ready. */
 	health: z.string().optional(),
