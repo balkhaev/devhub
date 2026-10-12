@@ -5,6 +5,7 @@ import {
 	mkdirSync,
 	mkdtempSync,
 	rmSync,
+	utimesSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -151,7 +152,10 @@ test("one report names leftovers of every project and of the shared data folder"
 	);
 }, 30_000);
 
-test("an emptied folder that processes hold names them and waits for --kill", () => {
+test("an emptied folder names its holders and says when it goes by itself", () => {
+	const MINUTE = 60_000;
+	const HOUR = 60 * MINUTE;
+	const now = Date.UTC(2026, 9, 12, 12);
 	const project: ProjectTidy = {
 		applied: {
 			branches: [],
@@ -161,13 +165,19 @@ test("an emptied folder that processes hold names them and waits for --kill", ()
 		},
 		canonicalChanges: 0,
 		emptied: [
-			{ holders: [], path: "F:/worktrees/demo/free" },
+			{ holders: [], path: "F:/worktrees/demo/free", used: now - 10 * MINUTE },
 			{
 				holders: [
 					{ name: "claude.exe", pid: 4242 },
 					{ name: "pwsh.exe", pid: 4243 },
 				],
 				path: "F:/worktrees/demo/held",
+				used: now - 3 * HOUR,
+			},
+			{
+				holders: [{ name: "claude.exe", pid: 5151 }],
+				path: "F:/worktrees/demo/forgotten",
+				used: now - 30 * HOUR,
 			},
 		],
 		id: "demo",
@@ -179,26 +189,63 @@ test("an emptied folder that processes hold names them and waits for --kill", ()
 		unregistered: [],
 		working: [],
 	};
-	expect(removable(project)).toBe(1);
-	expect(held(project)).toBe(1);
-	expect(projectLines(project)).toEqual([
+	// The free folder and the one nobody used for a day go without asking; the one in use waits for --kill.
+	expect(removable(project, now)).toBe(2);
+	expect(held(project, now)).toBe(1);
+	expect(projectLines(project, now)).toEqual([
 		"убрано пустых папок: 1",
 		"завершены процессы, державшие папки: node.exe (PID 77)",
-		"пустая папка без worktree: F:/worktrees/demo/free",
-		"пустая папка без worktree: F:/worktrees/demo/held · держат: claude.exe (PID 4242), pwsh.exe (PID 4243)",
+		"пустая папка без worktree: F:/worktrees/demo/free · использовалась только что, автоудаление через 24 ч",
+		"пустая папка без worktree: F:/worktrees/demo/held · держат: claude.exe (PID 4242), pwsh.exe (PID 4243) · не использовалась 3 ч, автоудаление через 21 ч",
+		"пустая папка без worktree: F:/worktrees/demo/forgotten · держат: claude.exe (PID 5151) · не использовалась 30 ч, ждёт автоудаления",
 	]);
+	// A day later nothing waits for --kill any more.
+	expect(held(project, now + 24 * HOUR)).toBe(0);
 	const report: MachineTidy = {
 		busy: [],
 		data: { root: "F:/AI", trash: [], unowned: [] },
-		projects: [project],
+		projects: [
+			{
+				...project,
+				emptied: project.emptied.map((folder) => ({
+					...folder,
+					used: Date.now(),
+				})),
+			},
+		],
 		skipped: [],
 	};
 	const text = formatTidy(report);
 	expect(text).toContain("пустые папки убирает tidy --apply\n");
+	expect(text).toContain("уходят сами через сутки без использования");
 	expect(text).toContain(
 		"убирает tidy --apply --kill: он завершает эти процессы"
 	);
 });
+
+test("the automatic sweep takes only folders nobody used for a day", () => {
+	const { catalogue, demo } = machine();
+	git(demo, "branch", "codex/merged");
+	const root = join(dirname(dirname(demo)), "worktrees", "demo");
+	const forgotten = join(root, "forgotten");
+	const recent = join(root, "recent");
+	mkdirSync(forgotten, { recursive: true });
+	mkdirSync(recent);
+	const longAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
+	utimesSync(forgotten, longAgo, longAgo);
+
+	const swept = machineTidy(catalogue, { idle: true });
+	expect(swept.projects[0]?.applied).toEqual({
+		branches: [],
+		ended: [],
+		folders: [forgotten],
+		pruned: [],
+	});
+	expect(existsSync(forgotten)).toBe(false);
+	// Used today; and a branch is never the sweep's business.
+	expect(existsSync(recent)).toBe(true);
+	expect(git(demo, "for-each-ref", "refs/heads/codex")).not.toBe("");
+}, 60_000);
 
 test("a project in the middle of another stage command is reported, not cleaned", () => {
 	const { catalogue, demo } = machine();

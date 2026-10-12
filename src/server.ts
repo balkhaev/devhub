@@ -22,7 +22,7 @@ import { frameable } from "./probes";
 import { Projects } from "./projects";
 import { Queue } from "./queue";
 import { StageProject } from "./stage";
-import type { MachineTidy } from "./tidy-words";
+import { holderWords, type MachineTidy } from "./tidy-words";
 
 /**
  * The hub's server, on 127.0.0.1 only: the page, the state of every service (and its changes as server-sent
@@ -36,6 +36,8 @@ const ROOT = resolve(dirname(import.meta.dir));
 const LOCAL_URL = /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])[:/]/;
 const LOG_POLL_MS = 700;
 const PING_MS = 15_000;
+/** How often the hub removes leftover folders nobody used for a day. */
+const IDLE_SWEEP_MS = 60 * 60 * 1000;
 const encoder = new TextEncoder();
 
 const json = (value: unknown, status = 200) => Response.json(value, { status });
@@ -151,6 +153,8 @@ export async function startHub(
 		coolify?: Coolify;
 		creator?: ProjectCreator;
 		dev?: boolean;
+		/** How often leftover folders nobody used for a day are removed; never when it is not given. */
+		idleSweepMs?: number;
 		port?: number;
 		queue?: Queue;
 		root?: string;
@@ -207,15 +211,14 @@ export async function startHub(
 		};
 	};
 	/** Git inspection of every checkout takes seconds: it runs beside the hub, not inside its event loop. */
-	const tidy = async (apply: boolean, kill = false): Promise<MachineTidy> => {
+	const tidy = async (...flags: string[]): Promise<MachineTidy> => {
 		const child = spawn(
 			[
 				process.execPath,
 				join(ROOT, "src", "cli.ts"),
 				"tidy",
 				"--json",
-				...(apply ? ["--apply"] : []),
-				...(apply && kill ? ["--kill"] : []),
+				...flags,
 			],
 			{ stderr: "pipe", stdout: "pipe", windowsHide: true }
 		);
@@ -515,14 +518,14 @@ export async function startHub(
 			"/api/state": (request) =>
 				local(request) ? json(hub.current) : refused(),
 			"/api/tidy": {
-				GET: (request) => guarded(request, () => tidy(false)),
+				GET: (request) => guarded(request, () => tidy()),
 				POST: (request) =>
 					act(request, async () => {
 						// The page asks to end the processes that hold emptied folders with `{ kill: true }`.
 						const body = (await request.json().catch(() => null)) as {
 							kill?: unknown;
 						} | null;
-						return tidy(true, body?.kill === true);
+						return tidy("--apply", ...(body?.kill === true ? ["--kill"] : []));
 					}),
 			},
 			"/auth/callback": (request) => oauthCallback(ai, request, local(request)),
@@ -564,9 +567,32 @@ export async function startHub(
 			})
 			.catch(() => undefined);
 	}
+	/** Leftover folders nobody used for a day go by themselves; what went is written to the journal. */
+	const sweepIdle = async () => {
+		try {
+			const report = await tidy("--idle");
+			for (const project of report.projects) {
+				if (project.applied?.folders.length) {
+					const ended = project.applied.ended.length
+						? `; завершены процессы: ${holderWords(project.applied.ended)}`
+						: "";
+					journal(
+						`автоуборка ${project.id} — убраны пустые папки: ${project.applied.folders.join(", ")}${ended}`,
+						root
+					);
+				}
+			}
+		} catch (error) {
+			journal(`автоуборка — не вышло: ${(error as Error).message}`, root);
+		}
+	};
+	const sweeping = options.idleSweepMs
+		? setInterval(sweepIdle, options.idleSweepMs)
+		: undefined;
 	return {
 		hub,
 		stop: () => {
+			clearInterval(sweeping);
 			ai.stop();
 			hub.stop();
 			server.stop(true);
@@ -590,6 +616,7 @@ if (import.meta.main) {
 		const at = argv.indexOf("--port");
 		const hub = await startHub({
 			dev: argv.includes("--dev"),
+			idleSweepMs: IDLE_SWEEP_MS,
 			port: at >= 0 ? Number(argv[at + 1]) : undefined,
 		});
 		const { projects } = hub.hub.current;
