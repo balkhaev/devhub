@@ -2,6 +2,9 @@
 // Пока пульт работает, в меню есть и общая очередь GPU/CPU: её состояние, «Стоп», «Пауза», «Продолжить»
 // и исполнители. Эти пункты пульт присылает готовыми (GET api/queue/tray), значок их только рисует
 // и отправляет нажатия обратно в пульт: об очереди он сам ничего не знает.
+// Пульт поднимает именно значок, в сеансе самого человека: клиент командной строки, заставший пульт молчащим,
+// просит об этом событием Local\DevhubTray.Start. Запущенный изнутри приложения-агента (у его процессов своя
+// копия %LOCALAPPDATA%), значок сам перезапускается через рабочий стол.
 // Собирается компилятором C# из .NET Framework 4, который есть в каждой Windows (scripts/install-windows.ps1),
 // поэтому написан на C# 5: другого этот компилятор не знает.
 
@@ -41,6 +44,8 @@ namespace Devhub
         /// Without arguments: the tray, and the page once the hub answers. <c>--background</c>: the tray alone (at
         /// sign-in). A second copy passes its wish to the running one: open the page, <c>--close</c> the tray
         /// (the hub keeps running), <c>--stop</c> the tray and the hub. <c>--write-icon file.ico</c> draws the icon.
+        /// A copy started from inside a packaged app starts itself again through the desktop shell (which adds
+        /// <c>--outside</c>) and ends: the tray, the hub and the servers never live in that app's view.
         /// </summary>
         [STAThread]
         private static int Main(string[] args)
@@ -54,7 +59,8 @@ namespace Devhub
             bool close = Array.IndexOf(args, "--close") >= 0;
             bool stop = Array.IndexOf(args, "--stop") >= 0;
             bool first;
-            using (var mutex = new Mutex(true, MutexName, out first))
+            var mutex = new Mutex(true, MutexName, out first);
+            try
             {
                 if (!first)
                 {
@@ -76,6 +82,13 @@ namespace Devhub
                 {
                     // Nothing runs in the tray: nothing to close.
                     return 0;
+                }
+                string owner = AppView.Owner();
+                if (owner != null)
+                {
+                    // The copy the shell starts must find no tray yet: the name is let go first.
+                    mutex.Dispose();
+                    return Leave(owner, background, Array.IndexOf(args, "--outside") >= 0);
                 }
                 if (Environment.OSVersion.Version.Major >= 6)
                 {
@@ -99,16 +112,131 @@ namespace Devhub
                     Application.Run(tray);
                 }
             }
+            finally
+            {
+                mutex.Dispose();
+            }
             return 0;
+        }
+
+        /// <summary>
+        /// This copy works in an app's private view: the same program is started through the desktop shell, where
+        /// it sees the real folders, and this one ends. A copy the shell itself started is not passed on again.
+        /// </summary>
+        private static int Leave(string owner, bool background, bool outside)
+        {
+            string why = "запущенная через него программа оказалась там же";
+            if (!outside)
+            {
+                try
+                {
+                    AppView.StartOutside(
+                        Application.ExecutablePath,
+                        background ? "--background --outside" : "--outside",
+                        Path.GetDirectoryName(Application.ExecutablePath));
+                    return 0;
+                }
+                catch (Exception error)
+                {
+                    why = error.Message;
+                }
+            }
+            MessageBox.Show(
+                "Значок запущен из приложения " + owner + ": пульт и серверы проектов получили бы от него отдельную копию "
+                    + "%LOCALAPPDATA%. Запустить его через рабочий стол не удалось (" + why + "). "
+                    + "Запустите «Пульт» ярлыком на рабочем столе.",
+                "Пульт",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+            return 1;
         }
     }
 
-    /// <summary>Named events through which a second copy of the program asks the running one to act.</summary>
+    /// <summary>
+    /// Whose %LOCALAPPDATA% this process works in. A packaged desktop app (Claude, Codex) gives every process started
+    /// from it, however deep, a private copy laid over the real folder: a new file lands in
+    /// Packages\&lt;package&gt;\LocalCache\Local, and a file already there hides the real one. Windows names no
+    /// package for such a process, so the folder itself is asked (the same check as src\app-view.ts).
+    /// </summary>
+    internal static class AppView
+    {
+        private static readonly Guid ShellWindows = new Guid("9BA05972-F6A8-11CF-A442-00A0C90A8F39");
+
+        /// <summary>The package whose private copy this process works in; null when it sees the real folder.</summary>
+        public static string Owner()
+        {
+            string local = Environment.GetEnvironmentVariable("LOCALAPPDATA");
+            if (string.IsNullOrEmpty(local))
+            {
+                return null;
+            }
+            string name = "devhub-view-" + Process.GetCurrentProcess().Id + "-"
+                + Guid.NewGuid().ToString("N").Substring(0, 12) + ".probe";
+            string probe = Path.Combine(local, name);
+            try
+            {
+                new FileStream(probe, FileMode.CreateNew).Dispose();
+            }
+            catch (Exception)
+            {
+                // Nothing can be created here, so nothing of this process can land in a private copy either.
+                return null;
+            }
+            try
+            {
+                foreach (string package in Directory.GetDirectories(Path.Combine(local, "Packages")))
+                {
+                    if (File.Exists(Path.Combine(package, "LocalCache", "Local", name)))
+                    {
+                        return Path.GetFileName(package);
+                    }
+                }
+            }
+            catch (Exception)
+            {
+                // No packaged apps at all.
+            }
+            finally
+            {
+                try
+                {
+                    File.Delete(probe);
+                }
+                catch (Exception)
+                {
+                    // An empty file is left behind.
+                }
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// Starts a program through the desktop shell: the desktop's window is found among the shell's windows
+        /// (SWC_DESKTOP = 8) as a scriptable object (SWFO_NEEDDISPATCH = 1), and its ShellExecute runs in Explorer's
+        /// own process. The program is Explorer's child and keeps nothing of the caller's view.
+        /// </summary>
+        public static void StartOutside(string file, string arguments, string directory)
+        {
+            dynamic windows = Activator.CreateInstance(Type.GetTypeFromCLSID(ShellWindows));
+            object location = 0;
+            object root = null;
+            int hwnd;
+            dynamic desktop = windows.FindWindowSW(ref location, ref root, 8, out hwnd, 1);
+            desktop.Document.Application.ShellExecute(file, arguments, directory, "open", 1);
+        }
+    }
+
+    /// <summary>
+    /// Named events through which another program asks the running tray to act: a second copy of this one (open,
+    /// close, stop), and the hub's command-line client, which sets <see cref="Start"/> when it finds the hub silent
+    /// (src\open.ts).
+    /// </summary>
     internal sealed class Signals : IDisposable
     {
         public const string Open = "Local\\DevhubTray.Open";
         public const string Close = "Local\\DevhubTray.Close";
         public const string Stop = "Local\\DevhubTray.Stop";
+        public const string Start = "Local\\DevhubTray.Start";
 
         public readonly EventWaitHandle[] Handles;
 
@@ -119,6 +247,7 @@ namespace Devhub
                 new EventWaitHandle(false, EventResetMode.AutoReset, Open),
                 new EventWaitHandle(false, EventResetMode.AutoReset, Close),
                 new EventWaitHandle(false, EventResetMode.AutoReset, Stop),
+                new EventWaitHandle(false, EventResetMode.AutoReset, Start),
             };
         }
 
@@ -937,9 +1066,13 @@ namespace Devhub
                     {
                         Post(CloseTray);
                     }
-                    else
+                    else if (which == 2)
                     {
                         Post(Exit);
+                    }
+                    else
+                    {
+                        Post(StartRequested);
                     }
                 }
             }
@@ -1172,6 +1305,15 @@ namespace Devhub
                 return;
             }
             openWhenUp = true;
+            StartRequested();
+        }
+
+        /// <summary>
+        /// The hub is wanted now: by a click here, or by a command-line client that found it silent. Started from
+        /// here it runs in the person's own session, whatever app that client was itself started from.
+        /// </summary>
+        private void StartRequested()
+        {
             if (!keepRunning)
             {
                 keepRunning = true;

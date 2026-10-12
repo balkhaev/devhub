@@ -7,6 +7,7 @@ import { AiAccounts } from "./ai/accounts";
 import { AiApi, oauthCallback } from "./ai/api";
 import { AiInference } from "./ai/inference";
 import page from "./app/index.html";
+import { appViewOwner, appViewRefusal } from "./app-view";
 import { primaryCheckout, sameSourcePath } from "./checkouts";
 import { authenticatedClient, clientToken } from "./client";
 import { type Catalogue, loadCatalogue } from "./config";
@@ -569,6 +570,14 @@ export async function startHub(
 if (import.meta.main) {
 	const primary = primaryCheckout(ROOT);
 	if (sameSourcePath(ROOT, primary)) {
+		// Every service would inherit an app's private %LOCALAPPDATA% from a hub started inside that app.
+		const owner = appViewOwner();
+		if (owner) {
+			process.stderr.write(
+				`${new Date().toLocaleString("ru-RU")} · ${appViewRefusal(owner)}\n`
+			);
+			process.exit(1);
+		}
 		const argv = process.argv.slice(2);
 		const at = argv.indexOf("--port");
 		const hub = await startHub({

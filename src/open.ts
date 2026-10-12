@@ -1,19 +1,46 @@
 import { spawn } from "node:child_process";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
+import { appViewOwner } from "./app-view";
 import { primaryCheckout } from "./checkouts";
 import { loadCatalogue } from "./config";
-import { launchHidden } from "./processes";
+import { capture } from "./probes";
+import { launchHidden, launchOutside } from "./processes";
 
 /**
  * Opens the hub in the browser, first starting it in the background, hidden, when it does not answer yet (its
  * output goes to `.logs/hub.log`). This is what `Пульт.cmd` runs: one double click, no terminal to keep open.
  * With `--no-browser` it only makes sure the hub runs.
+ *
+ * On Windows it matters who starts the hub: it and every service it starts keep the starter's view of
+ * `%LOCALAPPDATA%`, and a process of an agent's desktop app has a private one (`app-view.ts`). So the tray is asked
+ * first: it runs in the person's own session and starts the hub there. Without a tray the hub is started from
+ * here, through the desktop shell when this process lives in an app's view, so that the hub does not.
  */
 
 const ROOT = primaryCheckout(resolve(dirname(import.meta.dir)));
-const WAIT_MS = 30_000;
-const POLL_MS = 500;
+/** The tray's named event that means «start the hub now» (`Signals.Start` in `tray/Tray.cs`). */
+export const TRAY_START_EVENT = "Local\\DevhubTray.Start";
+const SIGNAL_MS = 20_000;
+
+/** How long to wait for the hub: between two asks, after starting it from here, and after the tray was asked. */
+export interface Patience {
+	pollMs: number;
+	startMs: number;
+	trayMs: number;
+}
+
+const PATIENCE: Patience = { pollMs: 500, startMs: 30_000, trayMs: 15_000 };
+
+/** The three things bringing the hub up consists of. */
+export interface HubStarter {
+	/** Whether the hub answers now. */
+	answers: () => Promise<boolean>;
+	/** Asks the running tray to start the hub; false when there is no tray to ask. */
+	askTray: () => Promise<boolean>;
+	/** Starts the hub hidden, on its own, so it outlives this script. */
+	start: () => Promise<void>;
+}
 
 const sleep = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
 
@@ -27,6 +54,28 @@ export async function answers(url: string): Promise<boolean> {
 	} catch {
 		return false;
 	}
+}
+
+/** The PowerShell that sets the tray's event; it prints whether a tray that knows the event runs. */
+export function traySignalScript(): string {
+	return [
+		`try { $signal = [System.Threading.EventWaitHandle]::OpenExisting('${TRAY_START_EVENT}')`,
+		"[void]$signal.Set()",
+		"$signal.Dispose()",
+		"'asked' } catch { 'absent' }",
+	].join("; ");
+}
+
+async function askTray(): Promise<boolean> {
+	if (process.platform !== "win32") {
+		return false;
+	}
+	const out = await capture(
+		"powershell",
+		["-NoProfile", "-NonInteractive", "-Command", traySignalScript()],
+		SIGNAL_MS
+	);
+	return out.trim() === "asked";
 }
 
 /** Starts the hub hidden, on its own, so it outlives this script. */
@@ -53,7 +102,19 @@ async function startHiddenHub(): Promise<void> {
 			"",
 		].join("\r\n")
 	);
-	await launchHidden(batch);
+	const owner = appViewOwner();
+	if (!owner) {
+		await launchHidden(batch);
+		return;
+	}
+	try {
+		await launchOutside(batch);
+	} catch (error) {
+		throw new Error(
+			`Не удалось запустить пульт вне приложения ${owner} (${(error as Error).message}). Запустите его значком в трее или ярлыком «Пульт» на рабочем столе.`,
+			{ cause: error }
+		);
+	}
 }
 
 function openBrowser(url: string): void {
@@ -69,28 +130,55 @@ function openBrowser(url: string): void {
 	spawn(opener, [url], { detached: true, stdio: "ignore" }).unref();
 }
 
-/** Whether the hub answers before the deadline, asking again every half second. */
-async function waitFor(url: string, deadline: number): Promise<boolean> {
-	if (await answers(url)) {
+/** Whether the hub answers before the deadline, asking again after every pause. */
+async function waitFor(
+	starter: HubStarter,
+	deadline: number,
+	pollMs: number
+): Promise<boolean> {
+	if (await starter.answers()) {
 		return true;
 	}
 	if (Date.now() > deadline) {
 		return false;
 	}
-	await sleep(POLL_MS);
-	return waitFor(url, deadline);
+	await sleep(pollMs);
+	return waitFor(starter, deadline, pollMs);
+}
+
+/**
+ * Makes the hub answer: nothing to do when it already does; else the tray is asked and given its time; when there
+ * is no tray, or its hub did not come up, the hub is started from here. Returns whether it answers in the end.
+ */
+export async function bringUp(
+	starter: HubStarter,
+	patience: Patience = PATIENCE
+): Promise<boolean> {
+	if (await starter.answers()) {
+		return true;
+	}
+	if (
+		(await starter.askTray()) &&
+		(await waitFor(starter, Date.now() + patience.trayMs, patience.pollMs))
+	) {
+		return true;
+	}
+	await starter.start();
+	return waitFor(starter, Date.now() + patience.startMs, patience.pollMs);
 }
 
 export async function ensureHub(): Promise<string> {
 	const catalogue = await loadCatalogue(join(ROOT, "services.json"));
 	const address = `http://127.0.0.1:${catalogue.port}/`;
-	if (!(await answers(address))) {
-		await startHiddenHub();
-		if (!(await waitFor(address, Date.now() + WAIT_MS))) {
-			throw new Error(
-				`Пульт не ответил: смотрите ${join(ROOT, ".logs", "hub.log")}`
-			);
-		}
+	const up = await bringUp({
+		answers: () => answers(address),
+		askTray,
+		start: startHiddenHub,
+	});
+	if (!up) {
+		throw new Error(
+			`Пульт не ответил: смотрите ${join(ROOT, ".logs", "hub.log")}`
+		);
 	}
 	return address;
 }

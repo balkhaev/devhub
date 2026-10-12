@@ -10,6 +10,7 @@ import {
 	detachedCommand,
 	logFileOf,
 	Processes,
+	shellLaunchScript,
 } from "../src/processes";
 
 const root = mkdtempSync(join(tmpdir(), "devhub-"));
@@ -122,6 +123,18 @@ test("Windows launcher normalizes executable paths while preserving argument URL
 	expect(batch).toContain(
 		"call .venv\\Scripts\\python.exe -m app --url https://example.com/api"
 	);
+});
+
+test("the desktop shell is asked to run the batch file hidden, in its folder", () => {
+	const script = shellLaunchScript("D:\\dev's hub\\.state\\run\\hub.cmd");
+	// An apostrophe is doubled, or it would end the PowerShell string.
+	expect(script).toContain(
+		".ShellExecute('D:\\dev''s hub\\.state\\run\\hub.cmd', '', 'D:\\dev''s hub\\.state\\run', 'open', 0)"
+	);
+	// A failure is said in words: it never passes for a start.
+	expect(
+		script.endsWith("'started' } catch { 'failed: ' + $_.Exception.Message }")
+	).toBe(true);
 });
 
 test("restart policies preserve the launcher owner and back off after each child exit", () => {
