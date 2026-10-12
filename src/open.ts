@@ -23,36 +23,49 @@ const ROOT = primaryCheckout(resolve(dirname(import.meta.dir)));
 export const TRAY_START_EVENT = "Local\\DevhubTray.Start";
 const SIGNAL_MS = 20_000;
 
-/** How long to wait for the hub: between two asks, after starting it from here, and after the tray was asked. */
+/**
+ * What the hub's address says. Its server is up within seconds, yet the hub is ready only once it has taken stock
+ * of the computer, which takes half a minute with many services: until then it is `starting`.
+ */
+export type HubState = "ready" | "silent" | "starting";
+
+/**
+ * How long to wait for the hub: between two asks, for a starting hub to become ready, and for the tray's hub to
+ * show up after the tray was asked.
+ */
 export interface Patience {
 	pollMs: number;
-	startMs: number;
+	readyMs: number;
 	trayMs: number;
 }
 
-const PATIENCE: Patience = { pollMs: 500, startMs: 30_000, trayMs: 15_000 };
+const PATIENCE: Patience = { pollMs: 500, readyMs: 90_000, trayMs: 15_000 };
 
 /** The three things bringing the hub up consists of. */
 export interface HubStarter {
-	/** Whether the hub answers now. */
-	answers: () => Promise<boolean>;
 	/** Asks the running tray to start the hub; false when there is no tray to ask. */
 	askTray: () => Promise<boolean>;
 	/** Starts the hub hidden, on its own, so it outlives this script. */
 	start: () => Promise<void>;
+	/** What the hub's address says now. */
+	state: () => Promise<HubState>;
 }
 
 const sleep = (ms: number) => new Promise<void>((done) => setTimeout(done, ms));
 
-export async function answers(url: string): Promise<boolean> {
+export async function hubState(url: string): Promise<HubState> {
 	try {
 		const response = await fetch(`${url}api/health`, {
 			signal: AbortSignal.timeout(1500),
 		});
 		await response.body?.cancel();
-		return response.ok;
+		if (response.ok) {
+			return "ready";
+		}
+		// The hub's own word for «still starting»; anything else on this port is not the hub.
+		return response.status === 503 ? "starting" : "silent";
 	} catch {
-		return false;
+		return "silent";
 	}
 }
 
@@ -130,50 +143,64 @@ function openBrowser(url: string): void {
 	spawn(opener, [url], { detached: true, stdio: "ignore" }).unref();
 }
 
-/** Whether the hub answers before the deadline, asking again after every pause. */
+/** Whether the hub gets to the wanted state before the deadline, asking again after every pause. */
 async function waitFor(
 	starter: HubStarter,
+	wanted: (state: HubState) => boolean,
 	deadline: number,
 	pollMs: number
 ): Promise<boolean> {
-	if (await starter.answers()) {
+	if (wanted(await starter.state())) {
 		return true;
 	}
 	if (Date.now() > deadline) {
 		return false;
 	}
 	await sleep(pollMs);
-	return waitFor(starter, deadline, pollMs);
+	return waitFor(starter, wanted, deadline, pollMs);
 }
 
 /**
- * Makes the hub answer: nothing to do when it already does; else the tray is asked and given its time; when there
- * is no tray, or its hub did not come up, the hub is started from here. Returns whether it answers in the end.
+ * Makes the hub ready. A silent one is started: the tray is asked and given time to show its hub; when there is no
+ * tray, or its hub did not show up, the hub is started from here. A hub that is starting, whoever started it, is
+ * only waited for: a second copy would lose the port to it. Returns whether the hub is ready in the end.
  */
 export async function bringUp(
 	starter: HubStarter,
 	patience: Patience = PATIENCE
 ): Promise<boolean> {
-	if (await starter.answers()) {
+	const found = await starter.state();
+	if (found === "ready") {
 		return true;
 	}
-	if (
-		(await starter.askTray()) &&
-		(await waitFor(starter, Date.now() + patience.trayMs, patience.pollMs))
-	) {
-		return true;
+	if (found === "silent") {
+		const shown =
+			(await starter.askTray()) &&
+			(await waitFor(
+				starter,
+				(state) => state !== "silent",
+				Date.now() + patience.trayMs,
+				patience.pollMs
+			));
+		if (!shown) {
+			await starter.start();
+		}
 	}
-	await starter.start();
-	return waitFor(starter, Date.now() + patience.startMs, patience.pollMs);
+	return waitFor(
+		starter,
+		(state) => state === "ready",
+		Date.now() + patience.readyMs,
+		patience.pollMs
+	);
 }
 
 export async function ensureHub(): Promise<string> {
 	const catalogue = await loadCatalogue(join(ROOT, "services.json"));
 	const address = `http://127.0.0.1:${catalogue.port}/`;
 	const up = await bringUp({
-		answers: () => answers(address),
 		askTray,
 		start: startHiddenHub,
+		state: () => hubState(address),
 	});
 	if (!up) {
 		throw new Error(
