@@ -57,6 +57,7 @@ test("CLI requires complete project/script routing and refuses unregistered flag
 	).toEqual({
 		action: "start",
 		apply: false,
+		idle: false,
 		json: false,
 		kill: false,
 		lines: 80,
@@ -99,6 +100,14 @@ test("CLI requires complete project/script routing and refuses unregistered flag
 		apply: true,
 		kill: true,
 	});
+	expect(parseArguments(["tidy", "--idle", "--json"])).toMatchObject({
+		apply: false,
+		idle: true,
+	});
+	expect(() => parseArguments(["tidy", "--apply", "--idle"])).toThrow(
+		"не сочетается с --apply"
+	);
+	expect(() => parseArguments(["status", "--idle"])).toThrow("только к tidy");
 	// Ending processes is never a side effect of a report.
 	expect(() => parseArguments(["tidy", "demo", "--kill"])).toThrow(
 		"только к tidy --apply"

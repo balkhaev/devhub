@@ -33,10 +33,12 @@ const HELP = `devhub — управление локальной разрабо�
                                         создать проект и подключить его к пульту
   bun run hub prod [project] [--logs] [--lines N] [--json]
                                         что работает в проде (Coolify)
-  bun run hub tidy [project] [--apply [--kill]] [--json]
+  bun run hub tidy [project] [--apply [--kill] | --idle] [--json]
                                         что осталось после задач в code, worktrees и data;
                                         --apply убирает слитые ветки, записи без папок и пустые
-                                        папки; --kill завершает процессы, которые держат такую папку
+                                        папки; --kill завершает процессы, которые держат такую папку;
+                                        --idle убирает только пустые папки, которыми не пользовались
+                                        сутки, вместе с их процессами (это же раз в час делает пульт)
 
 Проекты хранят dev-команды в devhub.json. Production запускается собственными start/deploy-командами.
 `;
@@ -65,6 +67,7 @@ interface Arguments {
 	apply: boolean;
 	baseDir?: string;
 	description?: string;
+	idle: boolean;
 	json: boolean;
 	kill: boolean;
 	lines: number;
@@ -82,6 +85,9 @@ const CREATE_POLL_MS = 1000;
 const FLAGS: Record<string, (parsed: Arguments) => void> = {
 	"--apply": (parsed) => {
 		parsed.apply = true;
+	},
+	"--idle": (parsed) => {
+		parsed.idle = true;
 	},
 	"--json": (parsed) => {
 		parsed.json = true;
@@ -121,6 +127,7 @@ export function parseArguments(args: string[]): Arguments {
 	const parsed: Arguments = {
 		action: args[0] ?? "help",
 		apply: false,
+		idle: false,
 		json: false,
 		kill: false,
 		lines: DEFAULT_LINES,
@@ -165,6 +172,9 @@ function validateRouting(parsed: Arguments): void {
 	}
 	if (parsed.kill && !(parsed.apply && parsed.action === "tidy")) {
 		throw new Error("--kill относится только к tidy --apply");
+	}
+	if (parsed.idle && (parsed.apply || parsed.action !== "tidy")) {
+		throw new Error("--idle относится только к tidy и не сочетается с --apply");
 	}
 }
 
@@ -492,6 +502,7 @@ function tidy(catalogue: Catalogue, options: Arguments): Promise<void> {
 	}
 	const report = machineTidy(catalogue, {
 		apply: options.apply,
+		idle: options.idle,
 		kill: options.kill,
 		project,
 		self: ROOT,

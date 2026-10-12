@@ -208,7 +208,10 @@ function within(folder: string, path: string | null): boolean {
 }
 
 /** Processes that work in the folder, run a program from it or keep one of the asked files open. */
-export function holdersOf(folder: string, survey: ProcessSurvey): Holder[] {
+export function holderRows(
+	folder: string,
+	survey: ProcessSurvey
+): ProcessRow[] {
 	const users = new Set(survey.fileUsers);
 	return survey.processes
 		.filter(
@@ -218,9 +221,11 @@ export function holdersOf(folder: string, survey: ProcessSurvey): Holder[] {
 					within(folder, row.exe) ||
 					users.has(row.pid))
 		)
-		.map((row) => ({ name: row.name, pid: row.pid }))
 		.sort((left, right) => left.pid - right.pid);
 }
+
+export const holdersOf = (folder: string, survey: ProcessSurvey): Holder[] =>
+	holderRows(folder, survey).map((row) => ({ name: row.name, pid: row.pid }));
 
 /** This process and the processes it was started from: the session a command runs in. */
 export function ownChain(
