@@ -793,6 +793,82 @@ test("native requests reject unknown fields and unsupported Codex controls befor
 	expect(calls).toBe(0);
 });
 
+test("a native Claude turn takes a long conversation with pictures while the other native method keeps 1 MB", async () => {
+	// About 3 MB of pictures over 300 messages: a scene directed for an hour, sent whole on every turn.
+	const picture = "A".repeat(20_000);
+	const conversation = Array.from({ length: 300 }, (_, index) => ({
+		content: [
+			{
+				source: { data: picture, media_type: "image/jpeg", type: "base64" },
+				type: "image",
+			},
+			{ text: `frame ${index}`, type: "text" },
+		],
+		role: index % 2 === 0 ? ("user" as const) : ("assistant" as const),
+	})).slice(0, 299);
+	let forwarded = 0;
+	const claude = adapter(
+		(url, init) => {
+			expect(url).toBe("https://api.anthropic.com/v1/messages");
+			forwarded = JSON.parse(String(init.body)).messages.length;
+			return packets(frame({ type: "message_stop" }, "message_stop"), 64);
+		},
+		{ ...base, authMode: "claude", provider: "claude" }
+	);
+	const reply = await claude.gateway(
+		"/v1/messages",
+		{ messages: conversation, model: "claude-test", stream: true },
+		base.id,
+		signal()
+	);
+	expect(await reply.text()).toContain("event: message_stop");
+	expect(forwarded).toBe(299);
+	let calls = 0;
+	const codex = adapter(() => {
+		calls += 1;
+		return packets(completed());
+	});
+	await expect(
+		codex.gateway(
+			"/v1/responses",
+			{
+				input: [{ content: "x".repeat(1_100_000), role: "user" }],
+				model: input.model,
+			},
+			base.id,
+			signal()
+		)
+	).rejects.toMatchObject({ status: 413 });
+	expect(calls).toBe(0);
+});
+
+test("a native Claude turn beyond the Messages API's own 32 MB is refused before upstream", async () => {
+	let calls = 0;
+	const claude = adapter(
+		() => {
+			calls += 1;
+			return Response.json({});
+		},
+		{ ...base, authMode: "claude", provider: "claude" }
+	);
+	const block = { text: "x".repeat(250_000), type: "text" };
+	await expect(
+		claude.gateway(
+			"/v1/messages",
+			{
+				messages: Array.from({ length: 140 }, () => ({
+					content: [block],
+					role: "user" as const,
+				})),
+				model: "claude-test",
+			},
+			base.id,
+			signal()
+		)
+	).rejects.toMatchObject({ status: 413 });
+	expect(calls).toBe(0);
+});
+
 test("chat input budget counts UTF-8 bytes", async () => {
 	let calls = 0;
 	const ai = adapter(() => {

@@ -159,9 +159,17 @@ function invalid(message: string): never {
 	throw new AiError(message, 400);
 }
 
-export function boundedRequest(value: unknown): void {
-	if (Buffer.byteLength(JSON.stringify(value), "utf8") > 1_048_576) {
-		throw new AiError("AI-запрос превышает допустимый размер 1 МБ.", 413);
+export const MAX_REQUEST_BYTES = 1_048_576;
+
+export function boundedRequest(
+	value: unknown,
+	limit = MAX_REQUEST_BYTES
+): void {
+	if (Buffer.byteLength(JSON.stringify(value), "utf8") > limit) {
+		throw new AiError(
+			`AI-запрос превышает допустимый размер ${limit / MAX_REQUEST_BYTES} МБ.`,
+			413
+		);
 	}
 }
 

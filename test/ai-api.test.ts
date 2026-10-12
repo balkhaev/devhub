@@ -203,6 +203,20 @@ test("AI JSON boundaries reject wrong content type, malformed JSON and oversized
 			method: "POST",
 		});
 		expect(oversized.status).toBe(413);
+		// Only the native Claude turn may be larger: its body is read whole, and what refuses it is its route.
+		const turn = (path: string, model: string) =>
+			hub.request(path, {
+				body: JSON.stringify({
+					messages: [{ content: [{ text: "x".repeat(2_100_000) }] }],
+					model,
+				}),
+				headers: hub.machine,
+				method: "POST",
+			});
+		expect((await turn("/v1/messages", "claude/claude-test")).status).not.toBe(
+			413
+		);
+		expect((await turn("/v1/responses", "codex/gpt-fixture")).status).toBe(413);
 		expect(hub.calls).toEqual([]);
 		expect(await hub.ai.list()).toHaveLength(1);
 	} finally {

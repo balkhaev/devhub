@@ -10,6 +10,7 @@ import {
 	boundedRequest,
 	completionBody,
 	completionSchema,
+	MAX_REQUEST_BYTES,
 } from "./completions";
 import { parseSseJson, readSse, type SseFrame } from "./stream";
 import {
@@ -51,6 +52,13 @@ export const AI_PROVIDERS: AiProviderView[] = [
 ];
 
 const MAX_TEXT = 262_144;
+/**
+ * A native Claude turn carries its whole conversation, pictures included, and may think and write for many minutes.
+ * The Messages API itself takes requests up to 32 MB, so a long multimodal conversation gets that room here too.
+ */
+export const MAX_CLAUDE_BYTES = 33_554_432;
+const MAX_CLAUDE_MESSAGES = 10_000;
+const CLAUDE_TURN_MS = 1_200_000;
 const modelSchema = z
 	.string()
 	.min(1)
@@ -148,7 +156,7 @@ const anthropicSchema = z
 					.strict()
 			)
 			.min(1)
-			.max(100),
+			.max(MAX_CLAUDE_MESSAGES),
 		metadata: z.unknown().optional(),
 		model: modelSchema,
 		output_config: z.unknown().optional(),
@@ -346,8 +354,11 @@ function object(value: unknown): Record<string, unknown> {
 		: {};
 }
 
-function boundedNativeBody(value: Record<string, unknown>): void {
-	boundedRequest(value);
+function boundedNativeBody(
+	value: Record<string, unknown>,
+	limit = MAX_REQUEST_BYTES
+): void {
+	boundedRequest(value, limit);
 }
 
 function selectFields(
@@ -1191,9 +1202,17 @@ export class AiInference {
 		accountId: string,
 		signal: AbortSignal | undefined,
 		body?: BodyFactory,
-		options?: { credential?: AiCredential; modelsCursor?: string }
+		options?: {
+			credential?: AiCredential;
+			/** The deadline of the whole answer, when the default three minutes are too few. */
+			duration?: number;
+			modelsCursor?: string;
+		}
 	): Promise<PreparedRequest> {
-		const context = createContext(signal, body ? 180_000 : 30_000);
+		const context = createContext(
+			signal,
+			options?.duration ?? (body ? 180_000 : 30_000)
+		);
 		try {
 			let credential =
 				options?.credential ?? (await this.requestCredential(accountId));
@@ -1343,7 +1362,8 @@ export class AiInference {
 			path === "/v1/responses"
 				? validate(responsesSchema, body)
 				: validate(anthropicSchema, body);
-		boundedNativeBody(parsed);
+		const claude = path === "/v1/messages";
+		boundedNativeBody(parsed, claude ? MAX_CLAUDE_BYTES : MAX_REQUEST_BYTES);
 		const credential = await this.requestCredential(accountId);
 		if ((path === "/v1/messages") !== (credential.provider === "claude")) {
 			throw new AiError(
@@ -1367,14 +1387,18 @@ export class AiInference {
 			);
 		}
 		const wantsStream = parsed.stream === true;
-		const prepared = await this.request(accountId, signal, (current) =>
-			path === "/v1/responses"
-				? adaptResponses(selectFields(parsed, responseFields), current)
-				: {
-						...selectFields(parsed, anthropicFields),
-						max_tokens: object(parsed).max_tokens ?? 4096,
-						stream: wantsStream,
-					}
+		const prepared = await this.request(
+			accountId,
+			signal,
+			(current) =>
+				path === "/v1/responses"
+					? adaptResponses(selectFields(parsed, responseFields), current)
+					: {
+							...selectFields(parsed, anthropicFields),
+							max_tokens: object(parsed).max_tokens ?? 4096,
+							stream: wantsStream,
+						},
+			claude ? { duration: CLAUDE_TURN_MS } : undefined
 		);
 		if (!wantsStream && prepared.credential.authMode === "claude") {
 			try {
