@@ -83,6 +83,7 @@ test("names, ports and env files are checked and edited conservatively", async (
 				path: root,
 				services: [
 					{
+						autostart: false,
 						env: {},
 						host: "127.0.0.1",
 						id: "web",

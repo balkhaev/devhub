@@ -12,7 +12,7 @@
 | Luv Club | Платформа AI-компаньонов: API с WebSocket, воркер очередей, сайт и админка | server, worker, web, admin | 3000, 3001, 3002, 3005, 3003 |
 | Harness | Среда агента программирования: десктоп и сервер | desktop | 8787 |
 | hub | cloak-browser, companion-chat, companion-payments, openmontage, personas, render, server, worker, web | cloak-browser, companion-chat, companion-payments, openmontage, personas, render, server, web | 3007, 3013, 3012, 3002, 3003, 3008, 3000, 3001 |
-| Inference | Общая очередь GPU и CPU этой машины (RTX 5080): через неё идёт любая работа видеокарты | queue | 8765, 8194 |
+| Inference | Общая очередь GPU и CPU этой машины (RTX 5080): через неё идёт любая работа видеокарты | queue, executors | 8765, 8766, 8194 |
 | MediaPipes | H3 и Qwen: генерация изображений и видео; API провайдеров и outbound worker | api, generation, zemstroy-worker | 8089, 8088 |
 | Modeler | Фабрика Blender: персонажи, кадры, превиз; API заказов /v1, которым пользуется Montage | server, web | 3000, 3001 |
 | Montage | Фильмы как данные, сцены в 3D и сервис кадров для других проектов | remix, server, videoparse, web | 4747, 3000, 8020, 8010, 3001 |

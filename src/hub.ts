@@ -35,7 +35,8 @@ import { type ProjectMode, workflowPolicySchema } from "./workflow-policy";
  * from the hub is given to the service it really is: the Docker project that publishes it, the checkout its process
  * runs from, or, failing both, the one service whose health page answers. The others on that port are "busy". The
  * hub starts services after what they need (other services, Docker projects), refuses a port another process holds,
- * and stops what it started — or, when asked explicitly, what runs a service elsewhere.
+ * and stops what it started — or, when asked explicitly, what runs a service elsewhere. Services marked `autostart`
+ * it starts by itself when it begins.
  */
 
 export type ServiceStatus =
@@ -140,9 +141,6 @@ const PORT_FREE_MS = 15_000;
 const NO_PORT_WARMUP_MS = 500;
 const START_POLL_MS = 500;
 const ANCESTORS = 4;
-const INFERENCE_TRAY = /(?:^|\s)-m\s+inference\.tray(?:\s|$)/;
-const INFERENCE_SERVER = /(?:^|\s)-m\s+inference\.cli(?:\s|$)/;
-const SERVE_ARGUMENT = /(?:^|\s)serve(?:\s|$)/;
 const WINDOWS_PATH = /[A-Za-z]:[\\/][^"'\s]+/g;
 /** Folders inside a checkout its servers run from: environments (.venv, .venv-laya), dependencies, sources. */
 const CHECKOUT_END =
@@ -730,12 +728,9 @@ export class Hub {
 		const ok = this.health.get(service.key)?.ok ?? false;
 		if (listening && !this.ownsPort(service, managed)) {
 			const pid = this.ports.get(service.port ?? 0);
-			const claim = this.claims.get(service.key);
 			return {
 				owner: pid === undefined ? null : this.owner(pid, service.port),
-				status: this.detachedListenerReady(service, managed, claim)
-					? "running"
-					: "busy",
+				status: "busy",
 			};
 		}
 		if (!service.port || (listening && ok)) {
@@ -744,54 +739,6 @@ export class Hub {
 		const warming =
 			Date.now() - managed.startedAt < this.runtime.startupTimeoutMs;
 		return { owner: null, status: warming ? "starting" : "unhealthy" };
-	}
-
-	/** Readiness only: detached listeners are never adopted into process ownership. */
-	private detachedListenerReady(
-		service: Service,
-		managed: Managed,
-		claim: Claim | undefined
-	): boolean {
-		if (
-			!service.detachedListener ||
-			managed.stopping ||
-			managed.exit ||
-			!alive(managed.pid) ||
-			!samePath(managed.cwd, service.workdir) ||
-			!claim?.holds ||
-			!claim.owner.checkout ||
-			!samePath(claim.owner.checkout, service.project.path)
-		) {
-			return false;
-		}
-		const health = this.health.get(service.key);
-		if (
-			!health?.ok ||
-			health.pid !== this.ports.get(service.port ?? 0) ||
-			this.services.filter((candidate) => candidate.port === service.port)
-				.length !== 1 ||
-			managed.command !== service.command ||
-			!INFERENCE_TRAY.test(managed.command) ||
-			!INFERENCE_SERVER.test(claim.owner.command) ||
-			!SERVE_ARGUMENT.test(claim.owner.command)
-		) {
-			return false;
-		}
-		const url = healthUrl(service);
-		if (!url) {
-			return false;
-		}
-		try {
-			const endpoint = new URL(url);
-			return (
-				endpoint.protocol === "http:" &&
-				endpoint.hostname === service.host &&
-				endpoint.port === String(service.port) &&
-				endpoint.pathname === "/health"
-			);
-		} catch {
-			return false;
-		}
 	}
 
 	private statusOf(service: Service): {
@@ -1207,6 +1154,36 @@ export class Hub {
 			if (view?.managed && view.status === "running") {
 				continue;
 			}
+			try {
+				// biome-ignore lint/performance/noAwaitInLoops: one after another, so what they need comes up first
+				await this.startService(key);
+			} catch (error) {
+				errors.push(
+					`${this.service(key)?.name ?? key}: ${(error as Error).message}`
+				);
+			}
+		}
+		return errors;
+	}
+
+	/** Services marked to run whenever the hub does that it does not run yet, in catalogue order. */
+	autostartPending(): string[] {
+		return this.services
+			.filter((service) => service.autostart && service.command)
+			.filter((service) => {
+				const view = this.viewOf(service.key);
+				return !(view?.managed && view.status === "running");
+			})
+			.map((service) => service.key);
+	}
+
+	/**
+	 * Starts what is marked to run whenever the hub does, each after what it needs; returns what could not start.
+	 * A port someone else holds is a failure to report, never a process to take over or end.
+	 */
+	async startAutostart(): Promise<string[]> {
+		const errors: string[] = [];
+		for (const key of this.autostartPending()) {
 			try {
 				// biome-ignore lint/performance/noAwaitInLoops: one after another, so what they need comes up first
 				await this.startService(key);

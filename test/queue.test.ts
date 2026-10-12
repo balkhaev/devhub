@@ -1,0 +1,557 @@
+import { expect, test } from "bun:test";
+import { resolve } from "node:path";
+
+import { type Catalogue, catalogueSchema } from "../src/config";
+import {
+	Queue,
+	type QueueView,
+	queueView,
+	type TrayItem,
+	trayMenu,
+} from "../src/queue";
+
+const PROJECT = "F:/fixture/inference";
+const TOKEN_FILE = resolve(PROJECT, "runtime/api-token");
+const HUB = "http://127.0.0.1:4700";
+const SERVICES = { executors: "inference/executors", queue: "inference/queue" };
+
+const catalogue = (services: unknown[]): Catalogue =>
+	catalogueSchema.parse({
+		projects: [{ id: "inference", name: "Inference", path: PROJECT, services }],
+	});
+
+const queueService = (extra: Record<string, unknown> = {}) => ({
+	id: "queue",
+	name: "Queue",
+	port: 8765,
+	queue: { role: "queue", tokenFile: "runtime/api-token" },
+	...extra,
+});
+const executorsService = {
+	id: "executors",
+	name: "Executors",
+	port: 8766,
+	queue: { role: "executors", tokenFile: "runtime/api-token" },
+};
+
+const status = (changes: Record<string, unknown> = {}) => ({
+	active_count: 0,
+	active_jobs: [],
+	gpu: {
+		free_mb: 12_000,
+		name: "RTX 5080",
+		temperature: 61,
+		total_mb: 16_000,
+		utilization: 12.4,
+	},
+	host: { available_mb: 40_000, cpu_utilization: 7.5, total_mb: 64_000 },
+	paused: false,
+	queued_count: 0,
+	stopped: false,
+	waiting_for: [],
+	...changes,
+});
+
+const modeler = (changes: Record<string, unknown> = {}) => ({
+	accept_on_start: {
+		enabled: true,
+		text: "Modeler: принимать заказы при запуске",
+	},
+	accepting: false,
+	attached: true,
+	busy: false,
+	commands: [
+		{
+			enabled: true,
+			id: "enable",
+			short: "Принимать",
+			text: "Modeler: принимать заказы",
+		},
+		{
+			enabled: false,
+			id: "pause",
+			short: "Пауза",
+			text: "Modeler: пауза после текущего заказа",
+		},
+		{ enabled: false, id: "stop", short: "Стоп", text: "Modeler: остановить" },
+	],
+	connected: true,
+	error: "",
+	id: "modeler",
+	label: "На паузе · приём выключен",
+	name: "Modeler",
+	note: "Последний заказ выполнен",
+	paired: true,
+	site: "https://modeler.example.test",
+	...changes,
+});
+
+/** A queue whose two services answer from a table of `METHOD path` → response. */
+function fixture(
+	answers: Record<string, () => Response>,
+	options: { services?: unknown[]; token?: string | null } = {}
+) {
+	const calls: {
+		authorization: string | null;
+		body: string | null;
+		method: string;
+		url: string;
+	}[] = [];
+	const reads: string[] = [];
+	const queue = new Queue(
+		() => catalogue(options.services ?? [queueService(), executorsService]),
+		{
+			fetch: (url, init) => {
+				const method = init.method ?? "GET";
+				calls.push({
+					authorization: new Headers(init.headers).get("authorization"),
+					body: typeof init.body === "string" ? init.body : null,
+					method,
+					url,
+				});
+				const answer =
+					answers[`${method} ${new URL(url).port}${new URL(url).pathname}`];
+				return answer
+					? Promise.resolve(answer())
+					: Promise.reject(new Error("connection refused"));
+			},
+			freshMs: 0,
+			readFile: (path) => {
+				reads.push(path);
+				return options.token === null
+					? Promise.reject(new Error("ENOENT"))
+					: Promise.resolve(`${options.token ?? "secret-token"}\n`);
+			},
+		}
+	);
+	return { calls, queue, reads };
+}
+
+const texts = (items: TrayItem[]): string[] =>
+	items.map((entry) => ("separator" in entry ? "—" : entry.text));
+const item = (items: TrayItem[], text: string) => {
+	const found = items.find((entry) => "text" in entry && entry.text === text);
+	if (!(found && "text" in found)) {
+		throw new Error(`no menu item ${text}`);
+	}
+	return found;
+};
+
+test("only a job's id, name, resource and start leave the hub, and a private job is never named", () => {
+	const view = queueView(
+		SERVICES,
+		status({
+			active_count: 2,
+			active_jobs: [
+				{
+					command: ["blender", "--secret-scene"],
+					error: "private failure",
+					id: "job-1",
+					name: "Render shot 12",
+					result: { path: "C:/private/out.png" },
+					spec: { command: "blender", resource: "gpu", workflow: { a: 1 } },
+					started: 1_760_000_000.4,
+				},
+				{
+					id: "job-2",
+					name: "A private prompt that must not be shown",
+					private: true,
+					spec: { resource: "cpu" },
+				},
+				{ name: "no id" },
+				"not a job",
+			],
+			queued_count: 3,
+			waiting_for: ["Видеопамять занята: нужно 9 ГБ", "", 7],
+		}),
+		null
+	);
+	expect(view.jobs).toEqual([
+		{
+			id: "job-1",
+			name: "Render shot 12",
+			private: false,
+			resource: "gpu",
+			startedAt: 1_760_000_000_400,
+		},
+		{
+			id: "job-2",
+			name: "Анонимное задание",
+			private: true,
+			resource: "cpu",
+			startedAt: null,
+		},
+	]);
+	const sent = JSON.stringify(view);
+	for (const secret of [
+		"blender",
+		"private failure",
+		"private prompt",
+		"workflow",
+		"out.png",
+	]) {
+		expect(sent).not.toContain(secret);
+	}
+	expect(view).toMatchObject({
+		executors: null,
+		executorsService: "inference/executors",
+		gpu: {
+			name: "RTX 5080",
+			temperature: 61,
+			totalMb: 16_000,
+			usedMb: 4000,
+			utilization: 12.4,
+		},
+		host: { availableMb: 40_000, cpu: 7.5, totalMb: 64_000 },
+		label: "Выполняется: 2 · GPU 12%",
+		panel: "#/inference/queue",
+		queued: 3,
+		running: 2,
+		service: "inference/queue",
+		state: "working",
+		waitingFor: ["Видеопамять занята: нужно 9 ГБ"],
+	});
+});
+
+test("the queue's state is said in words; the owner's stop wins over a pause and silence is offline", () => {
+	const of = (answer: unknown): Pick<QueueView, "label" | "state"> => {
+		const { label, state } = queueView(SERVICES, answer, null);
+		return { label, state };
+	};
+	expect(of(status())).toEqual({
+		label: "Общая очередь готова · GPU 12%",
+		state: "ready",
+	});
+	expect(of(status({ gpu: null, paused: true }))).toEqual({
+		label: "Очередь на паузе",
+		state: "paused",
+	});
+	expect(of(status({ paused: true, stopped: true }))).toEqual({
+		label: "Очередь остановлена · GPU 12%",
+		state: "stopped",
+	});
+	// The count is the queue's own; without it, or with a smaller one, the listed jobs are counted.
+	expect(of(status({ active_count: 3 }))).toEqual({
+		label: "Выполняется: 3 · GPU 12%",
+		state: "working",
+	});
+	expect(
+		of(
+			status({ active_count: undefined, active_jobs: [{ id: "a", name: "a" }] })
+		)
+	).toEqual({ label: "Выполняется: 1 · GPU 12%", state: "working" });
+	expect(of(null)).toEqual({ label: "Нет связи с очередью", state: "offline" });
+	expect(of("<html>")).toEqual({
+		label: "Нет связи с очередью",
+		state: "offline",
+	});
+	// An older running queue says less: what is missing is unknown, not zero.
+	const old = queueView(SERVICES, { paused: false, stopped: false }, null);
+	expect(old).toMatchObject({
+		gpu: null,
+		host: null,
+		jobs: [],
+		label: "Общая очередь готова",
+		queued: null,
+		state: "ready",
+		waitingFor: [],
+	});
+});
+
+test("the tray menu keeps the owner's wording and offers only what the queue's state allows", () => {
+	const menu = (answer: unknown) =>
+		trayMenu(queueView(SERVICES, answer, null), HUB);
+	const ready = menu(status());
+	expect(texts(ready.items)).toEqual([
+		"Общая очередь готова · GPU 12%",
+		"Открыть общую очередь",
+		"Стоп общей очереди",
+		"Пауза общей очереди",
+		"Продолжить общую очередь",
+	]);
+	expect(ready.tip).toBe("очередь: готова · GPU 12%");
+	expect(ready.items[0]).toEqual({
+		enabled: false,
+		text: "Общая очередь готова · GPU 12%",
+	});
+	expect(ready.items[1]).toEqual({
+		enabled: true,
+		open: "http://127.0.0.1:4700/#/inference/queue",
+		text: "Открыть общую очередь",
+	});
+	const enabled = (answer: unknown) =>
+		menu(answer)
+			.items.slice(2)
+			.map((entry) => "enabled" in entry && entry.enabled);
+	expect(ready.items.slice(2)).toEqual([
+		{ enabled: true, post: "/api/queue/stop", text: "Стоп общей очереди" },
+		{ enabled: true, post: "/api/queue/pause", text: "Пауза общей очереди" },
+		{
+			enabled: false,
+			post: "/api/queue/continue",
+			text: "Продолжить общую очередь",
+		},
+	]);
+	expect(enabled(status({ paused: true }))).toEqual([true, false, true]);
+	expect(enabled(status({ stopped: true }))).toEqual([false, false, true]);
+	expect(enabled(null)).toEqual([false, false, false]);
+
+	const working = menu(
+		status({ active_count: 2, gpu: { ...status().gpu, utilization: 87 } })
+	);
+	expect(texts(working.items)[0]).toBe(
+		"Общая очередь · Выполняется: 2 · GPU 87%"
+	);
+	expect(working.tip).toBe("очередь: выполняется 2 · GPU 87%");
+	expect(texts(menu(status({ gpu: null, paused: true })).items)[0]).toBe(
+		"Очередь на паузе"
+	);
+	expect(menu(status({ gpu: null, stopped: true })).tip).toBe(
+		"очередь: остановлена"
+	);
+	const offline = menu(null);
+	expect(texts(offline.items)[0]).toBe("Нет связи с очередью");
+	expect(offline.tip).toBe("очередь: нет связи");
+	expect(trayMenu(null, HUB)).toEqual({ items: [], tip: "" });
+});
+
+test("paired executors get their own block of the tray menu, with their commands and a switch", () => {
+	const view = queueView(SERVICES, status(), [
+		modeler(),
+		modeler({ id: "unpaired", name: "Unpaired", paired: false }),
+		modeler({
+			accept_on_start: {
+				enabled: false,
+				text: "Montage: принимать заказы при запуске",
+			},
+			commands: [],
+			id: "montage",
+			label: "Принимает заказы",
+			name: "Montage",
+			note: "",
+		}),
+		modeler({ id: "../escape" }),
+	]);
+	expect(view.executors?.map((executor) => executor.id)).toEqual([
+		"modeler",
+		"unpaired",
+		"montage",
+	]);
+	const { items } = trayMenu(view, HUB);
+	expect(texts(items).slice(5)).toEqual([
+		"—",
+		"Modeler · На паузе · приём выключен",
+		"Последний заказ выполнен",
+		"Modeler: принимать заказы",
+		"Modeler: пауза после текущего заказа",
+		"Modeler: остановить",
+		"Modeler: принимать заказы при запуске",
+		"—",
+		"Montage · Принимает заказы",
+		"Montage: принимать заказы при запуске",
+	]);
+	expect(item(items, "Modeler · На паузе · приём выключен").enabled).toBe(
+		false
+	);
+	expect(item(items, "Последний заказ выполнен").enabled).toBe(false);
+	expect(item(items, "Modeler: принимать заказы")).toEqual({
+		enabled: true,
+		post: "/api/queue/executors/modeler/enable",
+		text: "Modeler: принимать заказы",
+	});
+	expect(item(items, "Modeler: остановить")).toEqual({
+		enabled: false,
+		post: "/api/queue/executors/modeler/stop",
+		text: "Modeler: остановить",
+	});
+	// The switch sends whatever changes it.
+	expect(item(items, "Modeler: принимать заказы при запуске")).toEqual({
+		checked: true,
+		enabled: true,
+		post: "/api/queue/executors/modeler/accept-off",
+		text: "Modeler: принимать заказы при запуске",
+	});
+	expect(item(items, "Montage: принимать заказы при запуске")).toEqual({
+		checked: false,
+		enabled: true,
+		post: "/api/queue/executors/montage/accept-on",
+		text: "Montage: принимать заказы при запуске",
+	});
+	expect(
+		texts(trayMenu(queueView(SERVICES, status(), null), HUB).items)
+	).toHaveLength(5);
+	expect(
+		texts(
+			trayMenu(queueView(SERVICES, status(), [modeler({ paired: false })]), HUB)
+				.items
+		)
+	).toHaveLength(5);
+});
+
+test("the hub reads both services with the project's token, and only on this computer", async () => {
+	const { calls, queue, reads } = fixture({
+		"GET 8765/api/status": () => Response.json(status({ queued_count: 4 })),
+		"GET 8766/api/executors": () => Response.json([modeler()]),
+	});
+	const view = await queue.view();
+	expect(view).toMatchObject({
+		executorsService: "inference/executors",
+		queued: 4,
+		service: "inference/queue",
+		state: "ready",
+	});
+	expect(view?.executors?.[0]).toMatchObject({
+		acceptOnStart: { enabled: true },
+		id: "modeler",
+		paired: true,
+	});
+	expect(calls.map((call) => `${call.method} ${call.url}`).sort()).toEqual([
+		"GET http://127.0.0.1:8765/api/status",
+		"GET http://127.0.0.1:8766/api/executors",
+	]);
+	expect(
+		calls.every((call) => call.authorization === "Bearer secret-token")
+	).toBe(true);
+	expect(new Set(reads)).toEqual(new Set([TOKEN_FILE]));
+	expect((await queue.tray(HUB)).items.length).toBeGreaterThan(5);
+
+	const remote = fixture(
+		{ "GET 8765/api/status": () => Response.json(status()) },
+		{ services: [queueService({ host: "queue.example.test" })] }
+	);
+	expect((await remote.queue.view())?.state).toBe("offline");
+	expect(remote.calls).toEqual([]);
+	await expect(remote.queue.act("pause")).rejects.toThrow("на этом компьютере");
+	expect(remote.calls).toEqual([]);
+});
+
+test("a queue that is not declared is absent; one that is silent, tokenless or broken is offline", async () => {
+	const absent = fixture({}, { services: [{ id: "web", name: "Web" }] });
+	expect(await absent.queue.view()).toBeNull();
+	expect(await absent.queue.tray(HUB)).toEqual({ items: [], tip: "" });
+	await expect(absent.queue.act("stop")).rejects.toThrow("не подключена");
+	await expect(absent.queue.executor("modeler", "enable")).rejects.toThrow(
+		"не подключены"
+	);
+
+	const silent = fixture({});
+	expect(await silent.queue.view()).toMatchObject({
+		executors: null,
+		state: "offline",
+	});
+	await expect(silent.queue.act("pause")).rejects.toThrow(
+		"inference/queue не отвечает"
+	);
+
+	const tokenless = fixture(
+		{ "GET 8765/api/status": () => Response.json(status()) },
+		{ token: null }
+	);
+	expect((await tokenless.queue.view())?.state).toBe("offline");
+	expect(tokenless.calls).toEqual([]);
+	await expect(tokenless.queue.act("pause")).rejects.toThrow("нет токена");
+
+	const broken = fixture({
+		"GET 8765/api/status": () => new Response("<html>", { status: 502 }),
+		"GET 8766/api/executors": () => Response.json({ detail: "not a list" }),
+	});
+	expect(await broken.queue.view()).toMatchObject({
+		executors: null,
+		state: "offline",
+	});
+
+	// The queue runs and its executors' host does not: the queue is shown without them.
+	const alone = fixture(
+		{ "GET 8765/api/status": () => Response.json(status()) },
+		{ services: [queueService()] }
+	);
+	expect(await alone.queue.view()).toMatchObject({
+		executors: null,
+		executorsService: null,
+		state: "ready",
+	});
+	expect(alone.calls).toHaveLength(1);
+});
+
+test("commands go to the queue's own addresses, and its refusal is the error shown", async () => {
+	const ok = () => Response.json({ ok: true });
+	const { calls, queue } = fixture({
+		"POST 8765/api/pause": ok,
+		"POST 8765/api/queue/continue": ok,
+		"POST 8765/api/queue/stop": () =>
+			Response.json({ detail: "Очередь уже остановлена" }, { status: 409 }),
+		"POST 8765/api/resume": () =>
+			Response.json({ detail: [{ msg: "not text" }] }, { status: 422 }),
+		"POST 8766/api/executors/modeler/accept-on-start": ok,
+		"POST 8766/api/executors/modeler/enable": ok,
+		"POST 8766/api/executors/modeler/pause": () =>
+			Response.json({ detail: "Исполнитель не подключён" }, { status: 409 }),
+	});
+	await queue.act("pause");
+	await queue.act("continue");
+	await expect(queue.act("stop")).rejects.toThrow("Очередь уже остановлена");
+	await expect(queue.act("resume")).rejects.toThrow(
+		"inference/queue ответил HTTP 422"
+	);
+	await expect(queue.act("restart")).rejects.toThrow(
+		"неизвестное действие restart"
+	);
+	await queue.executor("modeler", "enable");
+	await queue.executor("modeler", "accept-on");
+	await queue.executor("modeler", "accept-off");
+	await expect(queue.executor("modeler", "pause")).rejects.toThrow(
+		"Исполнитель не подключён"
+	);
+	await expect(queue.executor("modeler", "delete")).rejects.toThrow(
+		"неизвестное действие delete"
+	);
+	await expect(queue.executor("../status", "enable")).rejects.toThrow(
+		"нет исполнителя"
+	);
+	expect(
+		calls.map(
+			(call) => `${call.method} ${call.url.slice("http://127.0.0.1:".length)}`
+		)
+	).toEqual([
+		"POST 8765/api/pause",
+		"POST 8765/api/queue/continue",
+		"POST 8765/api/queue/stop",
+		"POST 8765/api/resume",
+		"POST 8766/api/executors/modeler/enable",
+		"POST 8766/api/executors/modeler/accept-on-start",
+		"POST 8766/api/executors/modeler/accept-on-start",
+		"POST 8766/api/executors/modeler/pause",
+	]);
+	expect(calls.map((call) => call.body)).toEqual([
+		null,
+		null,
+		null,
+		null,
+		null,
+		'{"enabled":true}',
+		'{"enabled":false}',
+		null,
+	]);
+	expect(
+		calls.every((call) => call.authorization === "Bearer secret-token")
+	).toBe(true);
+});
+
+test("the page and the tray asking together share one reading, and a command ends it", async () => {
+	let readings = 0;
+	const queue = new Queue(() => catalogue([queueService()]), {
+		fetch: (_url, init) => {
+			if (init.method === "GET") {
+				readings += 1;
+			}
+			return Promise.resolve(Response.json(status()));
+		},
+		freshMs: 60_000,
+		readFile: () => Promise.resolve("secret-token"),
+	});
+	await Promise.all([queue.view(), queue.tray(HUB), queue.view()]);
+	expect(readings).toBe(1);
+	await queue.act("pause");
+	await queue.view();
+	expect(readings).toBe(2);
+});
