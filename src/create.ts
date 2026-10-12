@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { spawn } from "bun";
 
@@ -15,11 +15,15 @@ import {
 /**
  * New projects, created by their own generators and registered with DevHub in the same step: a Better-T-Stack
  * monorepo (Next.js, Hono, tRPC, Better Auth, Drizzle with Postgres in Docker, Dockerfiles for production) or a
- * clean Python project managed by uv. Each one gets free dev ports, `devhub.json`, the dev launcher, an MVP
+ * clean Python project managed by uv, or a Phaser 2D game. Each one gets free dev ports, `devhub.json`, the dev launcher, an MVP
  * workflow policy without a remote, agent instructions and a first commit on `main`.
  */
 
-export type Template = "bts" | "python";
+export type Template = "bts" | "python" | "game2d";
+
+export function isTemplate(value: unknown): value is Template {
+	return value === "bts" || value === "python" || value === "game2d";
+}
 
 export interface CreateRequest {
 	/** Absolute parent folder; defaults to the catalogue's code folder. */
@@ -420,6 +424,73 @@ export async function setChecks(root: string, checks: string[]): Promise<void> {
 	);
 }
 
+/** A local, versioned game starter; creation never depends on an interactive generator. */
+export async function writeGame2d(
+	root: string,
+	hubRoot: string,
+	name: string,
+	port: number,
+	description?: string
+): Promise<void> {
+	const copy = async (source: string, target: string): Promise<void> => {
+		await mkdir(target, { recursive: true });
+		const entries = await readdir(source, { withFileTypes: true });
+		await Promise.all(
+			entries.map(async (entry) => {
+				if (["node_modules", "dist", ".git"].includes(entry.name)) {
+					return;
+				}
+				const from = join(source, entry.name);
+				const to = join(target, entry.name);
+				if (entry.isDirectory()) {
+					await copy(from, to);
+				} else if (entry.isFile()) {
+					const content = await readFile(from, "utf8");
+					await writeFile(to, content.replaceAll("__PROJECT_NAME__", name));
+				}
+			})
+		);
+	};
+	await copy(join(hubRoot, "templates", "game2d"), root);
+	await editJson<Package & { description?: string; name: string }>(
+		join(root, "package.json"),
+		(pkg) => {
+			pkg.name = name;
+			if (description) {
+				pkg.description = description;
+			}
+			pkg.scripts ??= {};
+			pkg.scripts.dev = "node .devhub/launch.cjs dev";
+			pkg.scripts.worktree = "node .devhub/worktree.cjs";
+		}
+	);
+	const command = `bun x --no-install vite --host 127.0.0.1 --port ${port} --strictPort`;
+	const manifest = {
+		...(description ? { description } : {}),
+		id: name,
+		launch: { dev: ["game"] },
+		name,
+		services: [
+			{
+				command,
+				health: "/",
+				id: "game",
+				name: "2D игра",
+				port,
+				ui: [{ label: "Играть", url: "/" }],
+			},
+		],
+	};
+	await writeFile(join(root, "devhub.json"), serialize(manifest));
+	await installDevhub(
+		root,
+		hubRoot,
+		manifest,
+		["bun run check", "bun run test", "bun run build"],
+		{ "package.json": { dev: command } }
+	);
+}
+
 const pythonModule = (name: string): string => name.replaceAll("-", "_");
 
 /** A clean uv project; with `web` a FastAPI service DevHub runs on a free port, otherwise a plain package. */
@@ -527,6 +598,7 @@ export const spawnRunner: Runner = async (command, { cwd, onOutput }) => {
 /** Project creation as background jobs the page and the CLI follow. */
 export class ProjectCreator {
 	private readonly jobs = new Map<string, CreateJob>();
+	private readonly portsByJob = new Map<string, number[]>();
 	private readonly catalogue: () => Catalogue;
 	private readonly hubRoot: string;
 	private readonly registered: (folder: string) => Promise<void>;
@@ -556,8 +628,8 @@ export class ProjectCreator {
 	/** Checks the request and starts the job; the job itself reports how it ended. */
 	start(request: CreateRequest): CreateJob {
 		validateName(request.name);
-		if (request.template !== "bts" && request.template !== "python") {
-			throw new Error("Шаблон: bts или python");
+		if (!isTemplate(request.template)) {
+			throw new Error("Шаблон: bts, python или game2d");
 		}
 		const catalogue = this.catalogue();
 		if (
@@ -596,12 +668,14 @@ export class ProjectCreator {
 		this.jobs.set(job.id, job);
 		this.execute(job, request, code, catalogue).then(
 			() => {
+				this.portsByJob.delete(job.id);
 				job.status = "done";
 				job.project = request.name;
 				job.finishedAt = Date.now();
 				this.say(job, `\nГотово: ${job.path} подключён к пульту.\n`);
 			},
 			(error: unknown) => {
+				this.portsByJob.delete(job.id);
 				job.status = "failed";
 				job.error = (error as Error).message;
 				job.finishedAt = Date.now();
@@ -613,6 +687,21 @@ export class ProjectCreator {
 
 	private say(job: CreateJob, text: string): void {
 		job.log = (job.log + text).slice(-LOG_LIMIT);
+	}
+
+	private allocatePorts(
+		job: CreateJob,
+		used: Set<number>,
+		first: number,
+		count: number
+	): number[] {
+		const reserved = [...this.portsByJob.values()].flat();
+		const ports = freePorts(new Set([...used, ...reserved]), first, count);
+		this.portsByJob.set(job.id, [
+			...(this.portsByJob.get(job.id) ?? []),
+			...ports,
+		]);
+		return ports;
 	}
 
 	private async step(
@@ -644,8 +733,13 @@ export class ProjectCreator {
 		await mkdir(code, { recursive: true });
 		const bun = process.execPath;
 		if (request.template === "bts") {
-			const [server = 0, web = 0] = freePorts(used, FIRST_APP_PORT, 2);
-			const [db = 0] = freePorts(used, FIRST_DB_PORT, 1);
+			const [server = 0, web = 0] = this.allocatePorts(
+				job,
+				used,
+				FIRST_APP_PORT,
+				2
+			);
+			const [db = 0] = this.allocatePorts(job, used, FIRST_DB_PORT, 1);
 			this.say(
 				job,
 				`Better-T-Stack ${request.name}: server :${server}, web :${web}, Postgres :${db}\n`
@@ -682,8 +776,23 @@ export class ProjectCreator {
 					"\nUltracite находит замечания в коде шаблона: исправьте их и добавьте bun run check в .devhub/worktree.json.\n"
 				);
 			}
+		} else if (request.template === "game2d") {
+			const [port = 0] = this.allocatePorts(job, used, FIRST_APP_PORT, 1);
+			this.say(job, `2D игра ${request.name}: Phaser + Vite :${port}\n`);
+			await writeGame2d(
+				job.path,
+				this.hubRoot,
+				request.name,
+				port,
+				request.description
+			);
+			await this.step(job, [bun, "install"], job.path);
+			for (const check of ["check", "test", "build"]) {
+				// biome-ignore lint/performance/noAwaitInLoops: a failed gate must stop creation before registration
+				await this.step(job, [bun, "run", check], job.path);
+			}
 		} else {
-			const [port = 0] = freePorts(used, 8100, 1);
+			const [port = 0] = this.allocatePorts(job, used, 8100, 1);
 			const web = request.web !== false;
 			this.say(job, `Python ${request.name}${web ? `: API :${port}` : ""}\n`);
 			await mkdir(job.path, { recursive: true });
@@ -707,7 +816,7 @@ export class ProjectCreator {
 				"git",
 				"commit",
 				"-m",
-				`Create ${request.name} (${request.template === "bts" ? "Better-T-Stack" : "Python"}) with DevHub`,
+				`Create ${request.name} (${request.template}) with DevHub`,
 			],
 			job.path
 		);

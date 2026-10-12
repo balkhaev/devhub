@@ -1,7 +1,7 @@
 {
   "$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
   "files": {
-    "includes": ["!**/.logs", "!**/.state"]
+    "includes": ["!**/.logs", "!**/.state", "!templates/game2d"]
   },
   "formatter": {
     "enabled": true,

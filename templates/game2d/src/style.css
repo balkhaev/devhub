@@ -1,0 +1,68 @@
+:root {
+  font-family: Inter, "Segoe UI", sans-serif;
+  color: #e9eadf;
+  background: #111815;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { margin: 0; }
+button, a { -webkit-tap-highlight-color: transparent; }
+button { font: inherit; }
+button:focus-visible, a:focus-visible { outline: 2px solid #e0efb8; outline-offset: 5px; }
+button:disabled { cursor: not-allowed; }
+#app { max-width: 1536px; margin: auto; padding: 0 5%; }
+.topbar { display: flex; align-items: center; justify-content: space-between; min-height: 100px; border-bottom: 1px solid #2b342d; }
+.brand { display: flex; align-items: center; gap: 12px; font-weight: 650; font-size: 21px; letter-spacing: -0.6px; color: #e9eadf; text-decoration: none; }
+.brand-icon { color: #c8d89d; font-size: 32px; }
+.brand-type { margin-left: 16px; padding-left: 26px; border-left: 1px solid #394335; font-size: 10px; letter-spacing: 2px; color: #879181; }
+.live-pill { display: flex; align-items: center; gap: 9px; font-size: 12px; color: #aebba5; }
+.live-pill i, .dot { width: 5px; height: 5px; border-radius: 50%; background: #c4d594; display: inline-block; }
+.intro { padding: 49px 0 33px; display: flex; justify-content: space-between; align-items: end; }
+.eyebrow { font-size: 10px; color: #96a288; font-weight: 650; letter-spacing: 2px; }
+h1 { margin: 16px 0 11px; font-size: clamp(26px, 3.4vw, 45px); font-weight: 450; letter-spacing: -1.9px; }
+.intro p { margin: 0; color: #8d9888; line-height: 1.7; font-size: 14px; }
+.chapter { text-align: right; font-size: 10px; line-height: 2.2; color: #7d8a77; letter-spacing: 1.8px; }
+.chapter strong { font-size: 13px; letter-spacing: 0; color: #c4cabc; font-weight: 450; }
+.dashboard { display: grid; grid-template-columns: minmax(0, 1fr) 335px; gap: 22px; }
+.stage-card { background: #18221d; border: 1px solid #34402f; border-radius: 9px; overflow: hidden; display: flex; flex-direction: column; }
+.stage-heading { display: flex; justify-content: space-between; padding: 23px 25px; font-size: 10px; letter-spacing: 1.7px; color: #a3ae99; border-bottom: 1px solid #2c3b2e; }
+.stage-heading .dot { margin-right: 8px; }
+#game { min-height: 280px; aspect-ratio: 1000 / 620; position: relative; flex: 1; }
+#game canvas { display: block; }
+.stage-footer { margin-top: auto; display: flex; justify-content: space-between; gap: 12px; padding: 17px 25px; border-top: 1px solid #2c3b2e; color: #7b8a74; font-size: 11px; }
+.control-panel { border: 1px solid #34402f; border-radius: 9px; padding: 27px 23px 17px; background: #18211a; }
+.balance-label { font-size: 10px; letter-spacing: 1.8px; color: #9aa48d; }
+.balance { margin-top: 10px; display: flex; align-items: center; gap: 14px; font-size: 51px; font-weight: 500; letter-spacing: -2px; }
+.crystal { color: #c4d49b; font-size: 37px; }
+.rate { margin-top: 5px; font-size: 11px; color: #8c9d7d; display: flex; align-items: center; gap: 6px; }
+.collect-button { width: 100%; margin-top: 25px; border: 0; border-radius: 5px; background: #c2d496; color: #25321f; padding: 17px 14px; display: flex; justify-content: space-between; align-items: center; cursor: pointer; font-size: 12px; font-weight: 650; transition: background 150ms, transform 150ms; }
+.collect-button:hover { background: #d6e5b3; }
+.collect-button:active { transform: translateY(2px); }
+kbd { font: 8px "Segoe UI", sans-serif; letter-spacing: 0.5px; color: #536344; border: 1px solid #99ad73; border-radius: 3px; padding: 3px 5px; }
+.hint { margin: 12px 0 0; font-size: 10px; line-height: 1.6; color: #7d8c72; }
+.divider { height: 1px; background: #303e2a; margin: 24px 0; }
+.upgrade-card { width: 100%; display: flex; align-items: center; gap: 11px; text-align: left; padding: 17px 0; background: none; border: 0; border-bottom: 1px solid #2c3b2a; color: #d4dbc7; cursor: pointer; }
+.upgrade-card:hover:not(:disabled) .upgrade-icon { background: #435936; }
+.upgrade-card:disabled .cost { color: #7f8a71; }
+.upgrade-icon { width: 36px; height: 39px; display: grid; place-items: center; background: #2d3c25; border: 1px solid #3b4b32; border-radius: 5px; color: #bccd98; font-size: 24px; flex-shrink: 0; }
+.upgrade-info { flex: 1; display: flex; flex-direction: column; gap: 5px; }
+.upgrade-info strong { font-size: 11px; font-weight: 600; }
+.upgrade-info small { font-size: 9px; color: #7f9070; }
+.upgrade-info > span { font-size: 9px; color: #66785b; }
+.cost { font-size: 11px; white-space: nowrap; color: #c4d496; }
+.feedback { font-size: 10px; line-height: 1.6; min-height: 32px; margin: 19px 0 0; color: #95a187; }
+.overview { display: grid; grid-template-columns: repeat(4, 1fr); margin-top: 25px; border: 1px solid #2a3628; border-radius: 7px; background: #151e18; padding: 23px 0; }
+.overview > div { padding: 0 27px; border-right: 1px solid #2d3929; display: flex; flex-direction: column; gap: 9px; }
+.overview > div:last-child { border-right: none; }
+.overview span { color: #7c8b72; font-size: 10px; }
+.overview strong { font-size: 16px; font-weight: 500; color: #c6d1b7; }
+.overview #save-status { font-size: 12px; padding-top: 4px; }
+footer { padding: 26px 0 34px; display: flex; align-items: center; justify-content: space-between; gap: 20px; color: #626f59; font-size: 9px; }
+footer > span:first-child { letter-spacing: 1.2px; }
+@media (min-width: 1450px) { .dashboard { grid-template-columns: minmax(0, 1fr) 375px; } .control-panel { padding: 35px 28px; } .upgrade-card { padding: 22px 0; } }
+@media (max-width: 1040px) { #app { padding: 0 4%; } .dashboard { grid-template-columns: minmax(0, 1fr) 295px; gap: 14px; } .control-panel { padding: 22px 17px 12px; } .stage-heading, .stage-footer { padding-left: 16px; padding-right: 16px; } .chapter { display: none; } #game { min-height: 340px; } .upgrade-info strong { font-size: 10px; } }
+@media (max-width: 760px) { .topbar { min-height: 77px; } .brand { font-size: 18px; } .brand-type { display: none; } .live-pill { font-size: 10px; } .intro { padding: 34px 0 25px; } .intro p { font-size: 12px; max-width: 340px; } h1 { letter-spacing: -1px; } .dashboard { grid-template-columns: 1fr; } #game { min-height: 210px; } .stage-heading { padding-top: 16px; padding-bottom: 16px; } .stage-footer { padding: 14px; font-size: 9px; } .control-panel { padding: 23px; } .balance { font-size: 45px; } .collect-button { margin-top: 18px; } .upgrade-info strong { font-size: 13px; } .upgrade-info small, .upgrade-info > span { font-size: 11px; } .upgrade-card { padding: 18px 0; } .cost { font-size: 13px; } .overview { grid-template-columns: repeat(2, 1fr); row-gap: 22px; } .overview > div { padding: 0 20px; } .overview > div:nth-child(2) { border-right: none; } footer { font-size: 8px; align-items: start; } footer > span { max-width: 45%; line-height: 1.8; } }
+@media (prefers-reduced-motion: reduce) { *, *::before, *::after { transition: none !important; } }

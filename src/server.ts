@@ -334,7 +334,7 @@ export async function startHub(
 									? body.description.trim().slice(0, 200)
 									: undefined,
 							name: String(body.name ?? "").trim(),
-							template: body.template === "python" ? "python" : "bts",
+							template: body.template as CreateRequest["template"],
 							web: body.web !== false,
 						});
 					}),

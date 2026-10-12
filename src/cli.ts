@@ -12,7 +12,7 @@ import {
 	type ProjectConfig,
 } from "./config";
 import { Coolify, type ProdProject } from "./coolify";
-import type { CreateJob } from "./create";
+import { type CreateJob, isTemplate } from "./create";
 import { type HubView, samePath } from "./hub";
 import { ensureHub } from "./open";
 import { formatTidy, machineTidy } from "./tidy";
@@ -29,7 +29,7 @@ const HELP = `devhub — управление локальной разрабо�
   bun run hub start --project PATH --script dev[:name]
   bun run hub logs project/service [--lines N]   последние строки лога
   bun run hub attach project/service    запустить и следить за логом (для превью агентов)
-  bun run hub create bts|python NAME [--base-dir PATH] [--description TEXT] [--no-web]
+  bun run hub create bts|python|game2d NAME [--base-dir PATH] [--description TEXT] [--no-web]
                                         создать проект и подключить его к пульту
   bun run hub prod [project] [--logs] [--lines N] [--json]
                                         что работает в проде (Coolify)
@@ -341,8 +341,8 @@ async function hubJson(
 
 async function create(options: Arguments): Promise<void> {
 	const [template, name, extra] = options.targets;
-	if (!((template === "bts" || template === "python") && name) || extra) {
-		throw new Error("create bts|python NAME");
+	if (!(isTemplate(template) && name) || extra) {
+		throw new Error("create bts|python|game2d NAME");
 	}
 	const address = await ensureHub();
 	const token = await clientToken(ROOT);
