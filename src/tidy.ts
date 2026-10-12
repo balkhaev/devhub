@@ -5,6 +5,7 @@ import { sameSourcePath } from "./checkouts";
 import type { Catalogue } from "./config";
 import { StageProject } from "./stage";
 import {
+	held,
 	type MachineTidy,
 	type ProjectTidy,
 	projectLines,
@@ -42,7 +43,13 @@ function dataLeftovers(
  */
 export function machineTidy(
 	catalogue: Catalogue,
-	options: { apply?: boolean; project?: string; self?: string } = {}
+	options: {
+		apply?: boolean;
+		/** With `apply`: also end the processes that hold an emptied folder. */
+		kill?: boolean;
+		project?: string;
+		self?: string;
+	} = {}
 ): MachineTidy {
 	const projects = catalogue.projects.map((project) => ({
 		folder: folderOf(catalogue, project.path),
@@ -75,7 +82,7 @@ export function machineTidy(
 		let applied: ProjectTidy["applied"];
 		if (options.apply) {
 			try {
-				applied = stage.withLock(() => stage.tidyApply());
+				applied = stage.withLock(() => stage.tidyApply({ kill: options.kill }));
 			} catch {
 				// One project in the middle of an integration must not stop the cleanup of the others.
 				report.busy.push(id);
@@ -119,7 +126,14 @@ export function formatTidy(report: MachineTidy): string {
 		);
 	}
 	if (report.projects.some((project) => removable(project) > 0)) {
-		text.push("слитые ветки и записи без папок убирает tidy --apply");
+		text.push(
+			"слитые ветки, записи без папок и пустые папки убирает tidy --apply"
+		);
+	}
+	if (report.projects.some((project) => held(project) > 0)) {
+		text.push(
+			"пустые папки, которые держат процессы, убирает tidy --apply --kill: он завершает эти процессы"
+		);
 	}
 	if (clean.length) {
 		text.push(`чисто: ${clean.join(", ")}`);
