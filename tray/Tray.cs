@@ -1,8 +1,12 @@
 // «Пульт» в трее: значок, который открывает пульт в браузере, держит его запущенным и включает автозапуск.
+// Пока пульт работает, в меню есть и общая очередь GPU/CPU: её состояние, «Стоп», «Пауза», «Продолжить»
+// и исполнители. Эти пункты пульт присылает готовыми (GET api/queue/tray), значок их только рисует
+// и отправляет нажатия обратно в пульт: об очереди он сам ничего не знает.
 // Собирается компилятором C# из .NET Framework 4, который есть в каждой Windows (scripts/install-windows.ps1),
 // поэтому написан на C# 5: другого этот компилятор не знает.
 
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
@@ -149,6 +153,99 @@ namespace Devhub
         public bool Up;
     }
 
+    /// <summary>One line of the queue's part of the menu, as the hub words it.</summary>
+    internal sealed class QueueItem
+    {
+        public bool Checked;
+        public bool Enabled;
+        /// <summary>A page of the hub to open in the browser.</summary>
+        public string Open;
+        /// <summary>A hub action to send when the item is chosen.</summary>
+        public string Post;
+        public bool Separator;
+        public string Text;
+
+        public static QueueItem From(Dictionary<string, object> entry)
+        {
+            if (Flag(entry, "separator"))
+            {
+                return new QueueItem { Separator = true };
+            }
+            string text = Word(entry, "text");
+            if (string.IsNullOrEmpty(text))
+            {
+                return null;
+            }
+            return new QueueItem
+            {
+                Checked = Flag(entry, "checked"),
+                Enabled = Flag(entry, "enabled"),
+                Open = Word(entry, "open"),
+                Post = Word(entry, "post"),
+                Text = text,
+            };
+        }
+
+        private static bool Flag(Dictionary<string, object> entry, string key)
+        {
+            object value;
+            return entry.TryGetValue(key, out value) && value is bool && (bool)value;
+        }
+
+        private static string Word(Dictionary<string, object> entry, string key)
+        {
+            object value;
+            return entry.TryGetValue(key, out value) ? value as string : null;
+        }
+    }
+
+    /// <summary>
+    /// The shared queue's part of the tray menu. The hub sends it ready to draw; an answer that cannot be read is an
+    /// empty menu, the same as a hub without a queue.
+    /// </summary>
+    internal sealed class QueueMenu
+    {
+        public readonly List<QueueItem> Items = new List<QueueItem>();
+        /// <summary>The answer as it came: the menu is drawn again only when this changes.</summary>
+        public string Json = "";
+        /// <summary>A few words for the icon's tooltip.</summary>
+        public string Tip = "";
+
+        public static QueueMenu Parse(string json)
+        {
+            var menu = new QueueMenu();
+            try
+            {
+                var data = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(json);
+                object tip;
+                if (data.TryGetValue("tip", out tip) && tip is string)
+                {
+                    menu.Tip = ((string)tip).Replace('\r', ' ').Replace('\n', ' ');
+                }
+                object items;
+                var list = data.TryGetValue("items", out items) ? items as IEnumerable : null;
+                if (list != null && !(items is string))
+                {
+                    foreach (object raw in list)
+                    {
+                        var entry = raw as Dictionary<string, object>;
+                        QueueItem item = entry == null ? null : QueueItem.From(entry);
+                        if (item != null)
+                        {
+                            menu.Items.Add(item);
+                        }
+                    }
+                }
+                menu.Json = json;
+            }
+            catch (Exception)
+            {
+                return new QueueMenu();
+            }
+            return menu;
+        }
+    }
+
     /// <summary>The hub's server: where it lives, whether it answers, starting and stopping it.</summary>
     internal sealed class Hub
     {
@@ -156,6 +253,7 @@ namespace Devhub
         public readonly string Root;
         private readonly object guard = new object();
         private Process started;
+        private string token = "";
 
         public Hub(string root)
         {
@@ -232,6 +330,160 @@ namespace Devhub
             catch (Exception)
             {
                 return new Health();
+            }
+        }
+
+        /// <summary>The queue's part of the menu as the hub words it now; empty when the hub has none or is silent.</summary>
+        public QueueMenu ReadQueueMenu()
+        {
+            int status;
+            string body = Authorized("GET", "api/queue/tray", 4000, out status);
+            return status == 200 && body != null ? QueueMenu.Parse(body) : new QueueMenu();
+        }
+
+        /// <summary>Sends one of the queue menu's commands to the hub; returns what went wrong, or null.</summary>
+        public string Command(string path)
+        {
+            // The menu comes from the hub, yet only its queue commands are ever sent from here.
+            if (path == null || !path.StartsWith("/api/queue/", StringComparison.Ordinal))
+            {
+                return "Неизвестная команда очереди";
+            }
+            int status;
+            // The hub itself waits for the queue for a few seconds.
+            string body = Authorized("POST", path.TrimStart('/'), 15000, out status);
+            if (status == 200)
+            {
+                return null;
+            }
+            string said = ErrorOf(body);
+            if (said != null)
+            {
+                return said;
+            }
+            return status == 0 ? "Пульт не отвечает" : "Пульт ответил HTTP " + status;
+        }
+
+        /// <summary>Whether an address from the menu is a page of this hub: nothing else is opened from it.</summary>
+        public bool Owns(string url)
+        {
+            return url != null && url.StartsWith(Url, StringComparison.Ordinal);
+        }
+
+        /// <summary>
+        /// The hub's local client token from .state\client-token: what lets this program, which has no page, read
+        /// the queue's menu and send its commands. Read again when asked afresh (the hub refused the one in hand).
+        /// </summary>
+        private string Token(bool fresh)
+        {
+            lock (guard)
+            {
+                if (fresh || token.Length == 0)
+                {
+                    try
+                    {
+                        token = File.ReadAllText(Path.Combine(Root, ".state", "client-token"), Encoding.UTF8).Trim();
+                    }
+                    catch (Exception)
+                    {
+                        // The hub writes it when it first starts.
+                        token = "";
+                    }
+                }
+                return token;
+            }
+        }
+
+        /// <summary>A request with the client token; refused once, it is repeated with the token read again.</summary>
+        private string Authorized(string method, string path, int timeoutMs, out int status)
+        {
+            string used = Token(false);
+            string body = Ask(method, path, used, timeoutMs, out status);
+            if (status != 403)
+            {
+                return body;
+            }
+            string current = Token(true);
+            return current == used ? body : Ask(method, path, current, timeoutMs, out status);
+        }
+
+        /// <summary>The answer's text and status; status 0 and no text when the hub did not answer at all.</summary>
+        private string Ask(string method, string path, string credential, int timeoutMs, out int status)
+        {
+            status = 0;
+            if (credential.Length == 0)
+            {
+                return null;
+            }
+            try
+            {
+                var request = (HttpWebRequest)WebRequest.Create(Url + path);
+                request.Method = method;
+                request.Timeout = timeoutMs;
+                request.ReadWriteTimeout = timeoutMs;
+                request.Proxy = null;
+                request.Headers["x-devhub-client"] = credential;
+                if (method == "POST")
+                {
+                    request.ContentLength = 0;
+                }
+                using (var response = (HttpWebResponse)request.GetResponse())
+                {
+                    status = (int)response.StatusCode;
+                    return ReadText(response);
+                }
+            }
+            catch (WebException error)
+            {
+                // A refusal or a failed action still carries the hub's words.
+                var response = error.Response as HttpWebResponse;
+                if (response == null)
+                {
+                    return null;
+                }
+                using (response)
+                {
+                    try
+                    {
+                        status = (int)response.StatusCode;
+                        return ReadText(response);
+                    }
+                    catch (Exception)
+                    {
+                        return null;
+                    }
+                }
+            }
+            catch (Exception)
+            {
+                return null;
+            }
+        }
+
+        private static string ReadText(HttpWebResponse response)
+        {
+            using (var reader = new StreamReader(response.GetResponseStream(), Encoding.UTF8))
+            {
+                return reader.ReadToEnd();
+            }
+        }
+
+        private static string ErrorOf(string body)
+        {
+            if (string.IsNullOrEmpty(body))
+            {
+                return null;
+            }
+            try
+            {
+                var data = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(body);
+                object error;
+                string text = data.TryGetValue("error", out error) ? error as string : null;
+                return string.IsNullOrEmpty(text) ? null : text;
+            }
+            catch (Exception)
+            {
+                return null;
             }
         }
 
@@ -526,10 +778,12 @@ namespace Devhub
 
     /// <summary>
     /// The tray: the icon and its menu. It asks the hub every few seconds whether it runs, starts it when it does not
-    /// (three tries in five minutes, then it says so and waits), and opens the page when asked.
+    /// (three tries in five minutes, then it says so and waits), and opens the page when asked. While the hub runs,
+    /// the menu also carries the shared queue's lines exactly as the hub words them.
     /// </summary>
     internal sealed class TrayApp : ApplicationContext
     {
+        private const int BalloonLimit = 250;
         private const int MaxStarts = 3;
         private const int PollMs = 5000;
         private const int StartGraceSeconds = 30;
@@ -541,6 +795,7 @@ namespace Devhub
         private readonly Hub hub;
         private readonly NotifyIcon icon;
         private readonly ContextMenuStrip menu;
+        private readonly List<ToolStripItem> queueItems = new List<ToolStripItem>();
         private readonly List<DateTime> starts = new List<DateTime>();
         private readonly ToolStripMenuItem status;
         private readonly System.Windows.Forms.Timer timer;
@@ -551,6 +806,9 @@ namespace Devhub
         private bool keepRunning = true;
         private Health last = new Health();
         private bool openWhenUp;
+        private bool pollAgain;
+        private QueueMenu queueLatest = new QueueMenu();
+        private string queueShown = "";
         private DateTime startedAt = DateTime.MinValue;
 
         public TrayApp(Hub hub, Signals signals, bool open)
@@ -583,6 +841,8 @@ namespace Devhub
                 openItem, status, new ToolStripSeparator(), restart, logs, autostart, new ToolStripSeparator(), exit,
             });
             menu.Opening += delegate { autostart.Checked = Autostart.Enabled; };
+            // What the hub said while the menu was open is drawn once it has closed and its click is handled.
+            menu.Closed += delegate { Post(ShowQueue); };
 
             icon = new NotifyIcon();
             icon.Icon = downIcon;
@@ -623,6 +883,24 @@ namespace Devhub
         private static string Clip(string text)
         {
             return text.Length <= TipLimit ? text : text.Substring(0, TipLimit - 1) + "…";
+        }
+
+        /// <summary>
+        /// The tooltip with the queue's words after the hub's. It holds 63 characters: when both do not fit, the
+        /// hub's part is said shorter, so the queue's state is not the part that is cut.
+        /// </summary>
+        private static string WithQueue(string text, int managed, string tip)
+        {
+            if (tip.Length == 0)
+            {
+                return Clip(text);
+            }
+            string full = text + "; " + tip;
+            if (full.Length <= TipLimit)
+            {
+                return full;
+            }
+            return Clip((managed > 0 ? "Пульт: " + Servers(managed) : "Пульт") + "; " + tip);
         }
 
         private static string Servers(int n)
@@ -689,33 +967,146 @@ namespace Devhub
 
         private void Poll()
         {
-            if (checking || closing)
+            if (closing)
             {
+                return;
+            }
+            if (checking)
+            {
+                // The answer under way may be older than what was just done: ask once more after it.
+                pollAgain = true;
                 return;
             }
             checking = true;
             ThreadPool.QueueUserWorkItem(delegate
             {
                 Health health = hub.Check();
-                Post(() => Apply(health));
+                QueueMenu queue = health.Up ? hub.ReadQueueMenu() : new QueueMenu();
+                Post(() => Apply(health, queue));
             });
         }
 
-        private void Apply(Health health)
+        private void Apply(Health health, QueueMenu queue)
         {
             checking = false;
             last = health;
+            queueLatest = queue;
+            ShowQueue();
+            ShowHealth(health, queue.Tip);
+            if (pollAgain)
+            {
+                pollAgain = false;
+                Poll();
+            }
+        }
+
+        /// <summary>
+        /// Draws the queue's part of the menu, between the hub's state and its own commands, when the hub's answer
+        /// changed. An open menu is left as it is: its items must not move or vanish under the pointer.
+        /// </summary>
+        private void ShowQueue()
+        {
+            QueueMenu queue = queueLatest;
+            if (closing || menu.Visible || queue.Json == queueShown)
+            {
+                return;
+            }
+            queueShown = queue.Json;
+            menu.SuspendLayout();
+            foreach (ToolStripItem old in queueItems)
+            {
+                menu.Items.Remove(old);
+                old.Dispose();
+            }
+            queueItems.Clear();
+            if (queue.Items.Count > 0)
+            {
+                // The separator that follows the section is the menu's own, before «Перезапустить пульт».
+                queueItems.Add(new ToolStripSeparator());
+                foreach (QueueItem entry in queue.Items)
+                {
+                    queueItems.Add(QueueMenuItem(entry));
+                }
+                int at = menu.Items.IndexOf(status) + 1;
+                foreach (ToolStripItem item in queueItems)
+                {
+                    menu.Items.Insert(at, item);
+                    at++;
+                }
+            }
+            menu.ResumeLayout();
+        }
+
+        private ToolStripItem QueueMenuItem(QueueItem entry)
+        {
+            if (entry.Separator)
+            {
+                return new ToolStripSeparator();
+            }
+            // An ampersand would otherwise underline the next letter.
+            var item = new ToolStripMenuItem(entry.Text.Replace("&", "&&"));
+            item.Enabled = entry.Enabled;
+            item.Checked = entry.Checked;
+            if (entry.Post != null)
+            {
+                string path = entry.Post;
+                item.Click += delegate { SendQueue(path); };
+            }
+            else if (entry.Open != null)
+            {
+                string url = entry.Open;
+                item.Click += delegate { OpenQueue(url); };
+            }
+            return item;
+        }
+
+        /// <summary>Sends a queue command to the hub, says what went wrong if anything did, and reads the state anew.</summary>
+        private void SendQueue(string path)
+        {
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                string error = hub.Command(path);
+                Post(() =>
+                {
+                    if (!string.IsNullOrEmpty(error))
+                    {
+                        string text = error.Length <= BalloonLimit ? error : error.Substring(0, BalloonLimit - 1) + "…";
+                        icon.ShowBalloonTip(8000, "Общая очередь", text, ToolTipIcon.Warning);
+                    }
+                    Poll();
+                });
+            });
+        }
+
+        private void OpenQueue(string url)
+        {
+            if (!hub.Owns(url))
+            {
+                return;
+            }
+            try
+            {
+                Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+            }
+            catch (Exception error)
+            {
+                icon.ShowBalloonTip(5000, "Общая очередь", "Не удалось открыть страницу: " + error.Message, ToolTipIcon.Warning);
+            }
+        }
+
+        private void ShowHealth(Health health, string queueTip)
+        {
             if (health.Up)
             {
                 icon.Icon = upIcon;
                 if (health.Managed > 0)
                 {
-                    icon.Text = Clip("Пульт работает; из него запущено " + Servers(health.Managed));
+                    icon.Text = WithQueue("Пульт работает; из него запущено " + Servers(health.Managed), health.Managed, queueTip);
                     status.Text = "Работает; из пульта запущено " + Servers(health.Managed);
                 }
                 else
                 {
-                    icon.Text = "Пульт работает";
+                    icon.Text = WithQueue("Пульт работает", 0, queueTip);
                     status.Text = "Пульт работает";
                 }
                 if (openWhenUp)

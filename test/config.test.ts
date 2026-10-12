@@ -1,11 +1,12 @@
 import { expect, test } from "bun:test";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 
 import {
 	type Catalogue,
 	catalogueIssues,
 	catalogueSchema,
 	loadCatalogue,
+	queueTokenFile,
 	servicesOf,
 	uiUrl,
 } from "../src/config";
@@ -86,4 +87,102 @@ test("repeated services and needs that name nothing are found", () => {
 		"montage/web ждёт montage/nothing, а такого в списке нет",
 		"montage/web ждёт docker:nowhere, а такого в списке нет",
 	]);
+});
+
+const queueProject = (services: unknown[], id = "inference") => ({
+	id,
+	name: id,
+	path: `F:/fixture/${id}`,
+	services,
+});
+
+test("a service starts by hand and has nothing to do with the queue unless its manifest says so", () => {
+	const [plain, queue] = servicesOf(
+		catalogue([
+			queueProject([
+				{ id: "plain", name: "Plain" },
+				{
+					autostart: true,
+					detachedListener: true,
+					id: "queue",
+					name: "Queue",
+					queue: { role: "queue", tokenFile: "runtime/api-token" },
+				},
+			]),
+		])
+	);
+	expect(plain?.autostart).toBe(false);
+	expect(plain?.queue).toBeUndefined();
+	expect(queue?.autostart).toBe(true);
+	expect(queue?.queue).toEqual({
+		role: "queue",
+		tokenFile: "runtime/api-token",
+	});
+	if (!(plain && queue)) {
+		throw new Error("no services");
+	}
+	expect(queueTokenFile(plain)).toBeNull();
+	expect(queueTokenFile(queue)).toBe(
+		resolve("F:/fixture/inference", "runtime/api-token")
+	);
+	expect(() =>
+		catalogue([
+			queueProject([
+				{
+					id: "queue",
+					name: "Queue",
+					queue: { role: "panel", tokenFile: "t" },
+				},
+			]),
+		])
+	).toThrow();
+	expect(() =>
+		catalogue([
+			queueProject([{ id: "queue", name: "Queue", queue: { role: "queue" } }]),
+		])
+	).toThrow();
+});
+
+test("one queue, one host of its executors, and a token inside the service's own project", () => {
+	const declares = (id: string, role: string, tokenFile = "runtime/token") => ({
+		id,
+		name: id,
+		queue: { role, tokenFile },
+	});
+	expect(
+		catalogueIssues(
+			catalogue([
+				queueProject([
+					declares("queue", "queue"),
+					declares("executors", "executors"),
+				]),
+			])
+		)
+	).toEqual([]);
+	expect(
+		catalogueIssues(
+			catalogue([
+				queueProject([
+					declares("queue", "queue"),
+					declares("executors", "executors"),
+					declares("second", "executors"),
+				]),
+				queueProject([declares("queue", "queue")], "other"),
+			])
+		)
+	).toEqual([
+		"роль общей очереди queue объявлена несколько раз: inference/queue, other/queue",
+		"роль общей очереди executors объявлена несколько раз: inference/executors, inference/second",
+	]);
+	const outside = catalogue([
+		queueProject([
+			declares("queue", "queue", "../other/runtime/token"),
+			declares("executors", "executors", "C:/Users/someone/token"),
+		]),
+	]);
+	expect(catalogueIssues(outside)).toEqual([
+		"inference/queue: файл токена очереди ../other/runtime/token выходит за папку проекта",
+		"inference/executors: файл токена очереди C:/Users/someone/token выходит за папку проекта",
+	]);
+	expect(servicesOf(outside).map(queueTokenFile)).toEqual([null, null]);
 });

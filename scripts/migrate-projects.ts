@@ -411,12 +411,6 @@ function pythonRuntime(root: string, project: Project): void {
 }
 
 function managedPython(project: Project): void {
-	if (project.id === "inference") {
-		const queue = project.services.find((service) => service.id === "queue");
-		if (queue) {
-			queue.command = ".venv/Scripts/python.exe -m inference.tray";
-		}
-	}
 	if (project.id === "predict") {
 		(project.launch as Record<string, string[]>).dev = ["laya"];
 	}

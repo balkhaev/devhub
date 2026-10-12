@@ -346,6 +346,11 @@ code {
 	background: var(--crashed);
 }
 
+/* A steady hold, unlike the pulse of something that is starting. */
+.dot--paused {
+	background: var(--starting);
+}
+
 @keyframes pulse {
 	50% {
 		opacity: 0.3;
@@ -873,6 +878,118 @@ a.card__service:hover {
 
 .card__service .muted {
 	margin-left: auto;
+}
+
+/* The shared queue */
+
+.queue {
+	display: grid;
+	gap: 10px;
+}
+
+.queue p {
+	margin: 0;
+}
+
+.queue .card__services {
+	margin: 0;
+}
+
+.queue .button:disabled {
+	cursor: default;
+}
+
+.queue__offline {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 10px;
+	align-items: center;
+	justify-content: space-between;
+}
+
+.queue__meters {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+	gap: 6px 22px;
+}
+
+.meter {
+	display: grid;
+	grid-template-columns: 84px minmax(40px, 1fr) auto;
+	gap: 8px;
+	align-items: center;
+}
+
+.meter__bar {
+	width: 100%;
+	height: 6px;
+	background: var(--raised-2);
+	border-radius: 3px;
+}
+
+.meter__fill {
+	fill: var(--external);
+}
+
+.meter__fill--high {
+	fill: var(--unhealthy);
+}
+
+.queue__job {
+	min-width: 0;
+	overflow-wrap: anywhere;
+}
+
+.queue__executors {
+	display: grid;
+	gap: 8px;
+	padding: 10px 0 0;
+	margin: 0;
+	list-style: none;
+	border-top: 1px solid var(--line);
+}
+
+.queue__executor {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px 14px;
+	align-items: center;
+	justify-content: space-between;
+}
+
+.queue__executor-title {
+	display: grid;
+	gap: 2px;
+	min-width: 0;
+}
+
+.queue__executor-head {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 4px 8px;
+	align-items: center;
+}
+
+.queue__executor-actions {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 6px 10px;
+	align-items: center;
+}
+
+.queue__problem {
+	color: var(--crashed);
+}
+
+.queue__check {
+	display: inline-flex;
+	gap: 6px;
+	align-items: center;
+	cursor: pointer;
+}
+
+.queue .error {
+	margin: 0;
 }
 
 .table {

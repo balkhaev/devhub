@@ -26,13 +26,23 @@ const uiSchema = z.strictObject({
 	url: z.string().min(1),
 });
 
+/** A service that is part of this computer's shared GPU/CPU queue, which the hub shows and steers. */
+const queueSchema = z.strictObject({
+	/** `queue` speaks the queue's own local API; `executors` hosts its remote executors. */
+	role: z.enum(["queue", "executors"]),
+	/** The file with the API's bearer token, relative to the project folder. */
+	tokenFile: z.string().min(1),
+});
+
 const serviceSchema = z.strictObject({
+	/** Started together with the hub, after what it needs. */
+	autostart: z.boolean().default(false),
 	/** What starts it; without one the hub only watches for it (it is started elsewhere). */
 	command: z.string().min(1).optional(),
 	/** Folder the command runs in, relative to the project; the project's own folder by default. */
 	cwd: z.string().optional(),
 	description: z.string().optional(),
-	/** Opt in to the known Inference tray/CLI detached-listener readiness contract. */
+	/** A legacy key that no longer does anything: accepted until every manifest drops it. */
 	detachedListener: z.boolean().optional(),
 	env: z.record(z.string(), z.string()).default({}),
 	/** A path or URL that answers 2xx when the service is ready. */
@@ -43,6 +53,7 @@ const serviceSchema = z.strictObject({
 	/** What to start first: other services (`project/service`) and Docker Compose projects (`docker:<name>`). */
 	needs: z.array(z.string()).default([]),
 	port: z.number().int().min(1).max(65_535).optional(),
+	queue: queueSchema.optional(),
 	/** Recovery of the raw process remains inside the hub-owned process tree. */
 	restart: z.enum(["never", "on-failure", "always"]).default("never"),
 	restartDelayMs: z.number().int().min(100).max(300_000).default(30_000),
@@ -195,7 +206,40 @@ export function catalogueIssues(catalogue: Catalogue): string[] {
 		...issues,
 		...launchIssues(catalogue, keys),
 		...cycleIssues(servicesOf(catalogue)),
+		...queueIssues(servicesOf(catalogue)),
 	];
+}
+
+/** Where a queue service keeps its API token; null when the manifest points outside its own project. */
+export function queueTokenFile(service: Service): string | null {
+	if (!service.queue) {
+		return null;
+	}
+	const file = resolve(service.project.path, service.queue.tokenFile);
+	return isInsideProject(service.project.path, file) ? file : null;
+}
+
+/** This computer has one shared queue and one host of its executors, each with its token in its own project. */
+function queueIssues(services: Service[]): string[] {
+	const issues: string[] = [];
+	for (const role of ["queue", "executors"] as const) {
+		const declared = services.filter((service) => service.queue?.role === role);
+		if (declared.length > 1) {
+			issues.push(
+				`роль общей очереди ${role} объявлена несколько раз: ${declared
+					.map((service) => service.key)
+					.join(", ")}`
+			);
+		}
+	}
+	for (const service of services) {
+		if (service.queue && queueTokenFile(service) === null) {
+			issues.push(
+				`${service.key}: файл токена очереди ${service.queue.tokenFile} выходит за папку проекта`
+			);
+		}
+	}
+	return issues;
 }
 
 function launchIssues(catalogue: Catalogue, keys: Set<string>): string[] {

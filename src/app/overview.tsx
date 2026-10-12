@@ -12,6 +12,7 @@ import {
 } from "./project-preference-controls";
 import { favoriteProjects, useProjectPreferences } from "./project-preferences";
 import { projectRoute } from "./project-ui";
+import { QueueSection } from "./queue";
 import {
 	composeStatus,
 	composeWords,
@@ -22,7 +23,7 @@ import {
 	servicesWord,
 } from "./words";
 
-/** Everything at once: what runs now, every project with its services, Docker and every listening port. */
+/** Everything at once: what runs now, the shared queue, every project with its services, Docker and every listening port. */
 
 /** Bring up and stop buttons of a compose project; none while Docker itself is not running. */
 function ComposeButtons({
@@ -352,6 +353,7 @@ export function Overview({
 					))}
 				</div>
 			</section>
+			<QueueSection view={view} />
 			<section>
 				<h2 className="section-title">Проекты</h2>
 				<div className="cards">

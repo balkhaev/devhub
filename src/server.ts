@@ -19,14 +19,16 @@ import {
 import { Hub, type HubRuntime, type HubView } from "./hub";
 import { frameable } from "./probes";
 import { Projects } from "./projects";
+import { Queue } from "./queue";
 import { StageProject } from "./stage";
 import type { MachineTidy } from "./tidy-words";
 
 /**
  * The hub's server, on 127.0.0.1 only: the page, the state of every service (and its changes as server-sent
  * events), a service's log as it grows, and the actions (start, stop, restart a service or a whole project, bring a
- * compose project up or down). It answers only requests addressed to itself (a site renamed to 127.0.0.1 cannot
- * read it), and takes actions only from its own page.
+ * compose project up or down). It also passes the shared queue's state and its owner's commands between the queue
+ * and the two places they are given: the page and the tray. It answers only requests addressed to itself (a site
+ * renamed to 127.0.0.1 cannot read it), and takes actions only from its own page and its own local clients.
  */
 
 const ROOT = resolve(dirname(import.meta.dir));
@@ -53,12 +55,37 @@ const TARGET_WORDS: Record<string, string> = {
 	projects: "проект ",
 	services: "",
 };
+const QUEUE_WORDS: Record<string, string> = {
+	continue: "продолжить",
+	pause: "пауза",
+	resume: "снять паузу",
+	stop: "остановить",
+};
+const EXECUTOR_WORDS: Record<string, string> = {
+	"accept-off": "не принимать заказы при запуске",
+	"accept-on": "принимать заказы при запуске",
+	enable: "включить приём",
+	pause: "пауза",
+	stop: "остановить",
+};
+
+/** The shared queue's actions: `/api/queue/stop` → «очередь: остановить», and the same for one of its executors. */
+function queueWords(rest: string[]): string {
+	const action = rest.at(-1) ?? "";
+	const [scope, id] = rest;
+	return rest.length === 3 && scope === "executors"
+		? `исполнитель ${id}: ${EXECUTOR_WORDS[action] ?? action}`
+		: `очередь: ${QUEUE_WORDS[action] ?? action}`;
+}
 
 /** An action's address in words: `/api/docker/gameradar/stop` → «Docker gameradar: остановить». */
 export function actionWords(path: string): string {
 	const [kind = "", ...rest] = path.split("/").slice(2);
 	if (rest.length === 0) {
 		return ACTION_WORDS[kind] ?? kind;
+	}
+	if (kind === "queue") {
+		return queueWords(rest);
 	}
 	const action = rest.at(-1) ?? "";
 	const target = rest.slice(0, -1).join("/");
@@ -124,6 +151,7 @@ export async function startHub(
 		creator?: ProjectCreator;
 		dev?: boolean;
 		port?: number;
+		queue?: Queue;
 		root?: string;
 		runtime?: HubRuntime;
 	} = {}
@@ -140,6 +168,7 @@ export async function startHub(
 		new AiInference({ credential: (id, force) => ai.credential(id, force) });
 	const aiApi = new AiApi(ai, aiInference);
 	const coolify = options.coolify ?? new Coolify(() => hub.configuration);
+	const queue = options.queue ?? new Queue(() => hub.configuration);
 	const creator =
 		options.creator ??
 		new ProjectCreator({
@@ -410,6 +439,22 @@ export async function startHub(
 						throw new Error(`неизвестное действие ${action}`);
 					}),
 			},
+			"/api/queue": {
+				GET: (request) =>
+					guarded(request, async () => ({ queue: await queue.view() })),
+			},
+			"/api/queue/:action": {
+				POST: (request) => act(request, () => queue.act(request.params.action)),
+			},
+			"/api/queue/executors/:id/:action": {
+				POST: (request) =>
+					act(request, () =>
+						queue.executor(request.params.id, request.params.action)
+					),
+			},
+			"/api/queue/tray": {
+				GET: (request) => guarded(request, () => queue.tray(origin)),
+			},
 			"/api/services/:project/:service/:action": {
 				POST: (request) =>
 					act(request, () => {
@@ -497,6 +542,18 @@ export async function startHub(
 		hub.stop();
 		server.stop(true);
 		throw error;
+	}
+	// Services that run whenever the hub does come up beside it: the page and the CLI do not wait for them.
+	const wanted = hub.autostartPending();
+	if (wanted.length > 0) {
+		hub
+			.startAutostart()
+			.then((errors) => {
+				const outcome =
+					errors.length > 0 ? `не всё: ${errors.join("; ")}` : "готово";
+				journal(`автозапуск (${wanted.join(", ")}) — ${outcome}`, root);
+			})
+			.catch(() => undefined);
 	}
 	return {
 		hub,

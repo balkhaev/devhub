@@ -9,14 +9,15 @@ export function useAction(): {
 	error: string | null;
 	pending: string | null;
 	run: (event: MouseEvent<HTMLButtonElement>) => Promise<void>;
+	/** The same for a control that is not a button: the action's address, and what to ask first. */
+	send: (path: string, ask?: string) => Promise<void>;
 } {
 	const [error, setError] = useState<string | null>(null);
 	const [pending, setPending] = useState<string | null>(null);
 	const [confirm, dialog] = useConfirm();
-	const run = useCallback(
-		async (event: MouseEvent<HTMLButtonElement>) => {
-			const { path, confirm: ask } = event.currentTarget.dataset;
-			if (!path || (ask && !(await confirm(ask)))) {
+	const send = useCallback(
+		async (path: string, ask?: string) => {
+			if (ask && !(await confirm(ask))) {
 				return;
 			}
 			setPending(path);
@@ -25,5 +26,14 @@ export function useAction(): {
 		},
 		[confirm]
 	);
-	return { dialog, error, pending, run };
+	const run = useCallback(
+		async (event: MouseEvent<HTMLButtonElement>) => {
+			const { path, confirm: ask } = event.currentTarget.dataset;
+			if (path) {
+				await send(path, ask);
+			}
+		},
+		[send]
+	);
+	return { dialog, error, pending, run, send };
 }

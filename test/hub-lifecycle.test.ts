@@ -208,144 +208,139 @@ test("an external dependency cannot satisfy development readiness, even when hea
 	expect(hub.current.projects[0]?.services[1]?.needs[0]?.up).toBe(false);
 });
 
-const DETACHED_PID = process.pid + 999_999;
-const DETACHED_PARENT = DETACHED_PID + 1;
-const QUEUE_COMMAND = ".venv/Scripts/python.exe -m inference.tray";
+const LISTENER_PID = process.pid + 999_999;
+const VENV_LAUNCHER_PID = LISTENER_PID + 1;
+const QUEUE_COMMAND = ".venv/Scripts/python.exe -m inference.cli serve";
 
-async function detachedFixture(
-	options: {
-		duplicatePort?: boolean;
-		healthy?: boolean;
-		listenerCommand?: string;
-		parentCommand?: string;
-		service?: Record<string, unknown>;
-	} = {}
-) {
-	const parentCommand =
-		options.parentCommand ??
-		"F:/code/inference/.venv/Scripts/python.exe -m inference.cli --config F:/code/inference/inference.toml serve";
-	const listenerCommand =
-		options.listenerCommand ??
-		"C:/runtime/python.exe -m inference.cli --config C:/inference.toml serve";
-	const services = [
-		configService("api", {
-			command: QUEUE_COMMAND,
-			detachedListener: true,
-			health: "/health",
-			port: 8765,
-			...options.service,
-		}),
-		configService("web", { needs: ["app/api"] }),
-	];
-	if (options.duplicatePort) {
-		services.push(configService("other", { port: 8765 }));
-	}
+/** A managed queue whose port is held by a listener with the given parents above it. */
+async function listenerFixture(parents: Record<number, number>) {
 	const result = await fixture(
-		services,
+		[
+			configService("queue", {
+				command: QUEUE_COMMAND,
+				health: "/health",
+				port: 8765,
+			}),
+			configService("relay", { needs: ["app/queue"] }),
+		],
 		{
-			healthy: async () => options.healthy ?? true,
 			processInfo: async (pids) =>
 				new Map(
 					pids.map((pid) => [
 						pid,
 						{
-							command: pid === DETACHED_PID ? listenerCommand : parentCommand,
+							command: "python.exe -m inference.cli serve",
 							name: "python.exe",
-							parent: pid === DETACHED_PID ? DETACHED_PARENT : 0,
+							parent: parents[pid] ?? 0,
 							pid,
 						},
 					])
 				),
-		},
-		{},
-		"F:/code/inference"
+		}
 	);
-	result.processes.entries.set("app/api", {
+	result.processes.entries.set("app/queue", {
 		command: QUEUE_COMMAND,
-		cwd: "F:/code/inference",
+		cwd: ".",
 		exit: null,
 		log: "test.log",
 		pid: process.pid,
 		startedAt: Date.now(),
 		stopping: false,
 	});
-	result.ports.set(8765, DETACHED_PID);
+	result.ports.set(8765, LISTENER_PID);
 	await result.hub.refresh(true);
 	return result;
 }
 
-test("opted-in canonical detached queue satisfies readiness without adopting its listener", async () => {
-	const { hub, processes } = await detachedFixture();
+test("a listener a few processes under the managed launcher is the service itself", async () => {
+	// cmd (the hub's batch file) -> the venv's python launcher -> the interpreter that listens.
+	const { hub, processes } = await listenerFixture({
+		[LISTENER_PID]: VENV_LAUNCHER_PID,
+		[VENV_LAUNCHER_PID]: process.pid,
+	});
 	const queue = hub.current.projects[0]?.services[0];
 	expect(queue?.status).toBe("running");
+	expect(queue?.managed).toBe(true);
 	expect(queue?.pid).toBe(process.pid);
-	expect(queue?.owner?.pid).toBe(DETACHED_PID);
-	expect(queue?.owner?.checkout).toBe("F:\\code\\inference");
-	await hub.startService("app/web");
-	expect(processes.launches).toEqual(["app/web"]);
-	expect(processes.get("app/api")?.pid).toBe(process.pid);
+	expect(queue?.owner).toBeNull();
+	await hub.startService("app/relay");
+	expect(processes.launches).toEqual(["app/relay"]);
 	expect(processes.stops).toEqual([]);
 });
 
-test.each([
-	["default strict ownership", { service: { detachedListener: undefined } }],
-	["explicit disabled contract", { service: { detachedListener: false } }],
-	["foreign checkout", { parentCommand: "F:/code/other/.venv/python.exe" }],
-	["unknown checkout", { parentCommand: "C:/runtime/python.exe" }],
-	["failed health", { healthy: false }],
-	["missing health", { service: { health: undefined } }],
-	[
-		"wrong health host",
-		{ service: { health: "http://127.0.0.2:8765/health" } },
-	],
-	[
-		"wrong health port",
-		{ service: { health: "http://127.0.0.1:8089/health" } },
-	],
-	["wrong health endpoint", { service: { health: "/docs" } }],
-	["ambiguous shared port", { duplicatePort: true }],
-	["foreign listener module", { listenerCommand: "python.exe -m http.server" }],
-	[
-		"CLI without serve",
-		{ listenerCommand: "python.exe -m inference.cli status" },
-	],
-	[
-		"unknown supervisor contract",
-		{ service: { command: "run-other-supervisor" } },
-	],
-] as const)("detached readiness refuses %s", async (_name, options) => {
-	const { hub, processes } = await detachedFixture(options);
-	expect(hub.current.projects[0]?.services[0]?.status).toBe("busy");
-	await expect(hub.startService("app/web")).rejects.toThrow("порт 8765 занят");
+test("a managed service whose port a foreign process holds is busy, however healthy the port answers", async () => {
+	const { hub, processes } = await listenerFixture({
+		[LISTENER_PID]: VENV_LAUNCHER_PID,
+	});
+	const queue = hub.current.projects[0]?.services[0];
+	expect(queue?.status).toBe("busy");
+	expect(queue?.owner?.pid).toBe(LISTENER_PID);
+	await expect(hub.startService("app/relay")).rejects.toThrow(
+		"порт 8765 занят"
+	);
 	expect(processes.launches).toEqual([]);
 	expect(processes.stops).toEqual([]);
 });
 
-test("detached readiness refuses stopping or dead supervisors", async () => {
-	const { hub, processes } = await detachedFixture();
-	const managed = processes.get("app/api");
-	if (!managed) {
-		throw new Error("Missing managed queue fixture");
-	}
-	managed.stopping = true;
+test("a legacy detachedListener key is accepted and changes nothing", async () => {
+	const { hub, ports, processes } = await fixture([
+		configService("queue", {
+			detachedListener: true,
+			health: "/health",
+			port: 8765,
+		}),
+	]);
+	processes.entries.set("app/queue", {
+		command: "run-queue",
+		cwd: ".",
+		exit: null,
+		log: "test.log",
+		pid: process.pid,
+		startedAt: Date.now(),
+		stopping: false,
+	});
+	ports.set(8765, LISTENER_PID);
 	await hub.refresh(true);
 	expect(hub.current.projects[0]?.services[0]?.status).toBe("busy");
-	managed.stopping = false;
-	managed.pid = process.pid + 999_997;
-	await hub.refresh(true);
-	expect(hub.current.projects[0]?.services[0]?.status).toBe("busy");
-	expect(processes.stops).toEqual([]);
 });
 
-test("detached listener health is rechecked when the listening PID changes", async () => {
-	const { hub, ports } = await detachedFixture();
-	expect(hub.current.projects[0]?.services[0]?.status).toBe("running");
-	ports.set(8765, DETACHED_PID + 2);
-	await hub.refresh();
-	expect(hub.current.projects[0]?.services[0]?.status).toBe("running");
-	expect(hub.current.projects[0]?.services[0]?.owner?.pid).toBe(
-		DETACHED_PID + 2
-	);
+test("autostart brings up marked services after what they need and skips the ones the hub already runs", async () => {
+	const { hub, ports, processes } = await fixture([
+		configService("manual"),
+		configService("executors", {
+			autostart: true,
+			needs: ["app/queue"],
+			port: 8766,
+		}),
+		configService("queue", { autostart: true, health: "/health", port: 8765 }),
+		configService("watched", { autostart: true, command: undefined }),
+	]);
+	processes.onStart = async (service) => {
+		if (service.port) {
+			ports.set(service.port, process.pid);
+		}
+		await Promise.resolve();
+	};
+	expect(hub.autostartPending()).toEqual(["app/executors", "app/queue"]);
+	expect(await hub.startAutostart()).toEqual([]);
+	expect(processes.launches).toEqual(["app/queue", "app/executors"]);
+	expect(hub.autostartPending()).toEqual([]);
+	// The hub started again beside servers that kept running: nothing is launched twice.
+	expect(await hub.startAutostart()).toEqual([]);
+	expect(processes.launches).toEqual(["app/queue", "app/executors"]);
+});
+
+test("autostart reports what could not start, leaves a foreign port owner alone and goes on", async () => {
+	const { hub, ports, processes } = await fixture([
+		configService("queue", { autostart: true, health: "/health", port: 8765 }),
+		configService("executors", { autostart: true, name: "Executors" }),
+	]);
+	ports.set(8765, LISTENER_PID);
+	const errors = await hub.startAutostart();
+	expect(errors).toHaveLength(1);
+	expect(errors[0]).toContain("queue: порт 8765 занят");
+	expect(processes.launches).toEqual(["app/executors"]);
+	expect(processes.stops).toEqual([]);
 });
 
 test("a held unhealthy port is rejected without launching or stopping its owner", async () => {
