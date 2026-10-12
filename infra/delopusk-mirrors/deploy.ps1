@@ -7,7 +7,7 @@ function Invoke-Remote([string] $command) {
     # Pass scripts as data: PowerShell's native argument quoting must not
     # change nginx/Go templates, shell quotes or dollar variables.
     $payload = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes(($command -replace "`r", '') + "`n"))
-    $payload | & ssh @sshOptions $target 'base64 -d | sh'
+    $payload | & ssh @sshOptions $target 'base64 --decode --ignore-garbage | sh'
     if ($LASTEXITCODE -ne 0) { throw "Remote operation failed ($LASTEXITCODE)" }
 }
 
@@ -30,8 +30,9 @@ foreach ($file in @('nginx.conf', 'compose.yaml', 'edge.yaml')) {
 Invoke-Remote @'
 set -eu
 cd /data/devhub/delopusk-mirrors
-docker pull nginx:1.28-alpine
-docker run --rm --user nginx --read-only --cap-drop ALL --security-opt no-new-privileges:true --tmpfs /tmp:uid=101,gid=101,mode=1770 --entrypoint nginx -v /data/devhub/delopusk-mirrors/nginx.conf.next:/etc/nginx/nginx.conf:ro nginx:1.28-alpine -t
+image='nginx:1.28-alpine@sha256:a8b39bd9cf0f83869a2162827a0caf6137ddf759d50a171451b335cecc87d236'
+docker pull "$image"
+docker run --rm --user nginx --read-only --cap-drop ALL --security-opt no-new-privileges:true --tmpfs /tmp:uid=101,gid=101,mode=1770 --entrypoint nginx -v /data/devhub/delopusk-mirrors/nginx.conf.next:/etc/nginx/nginx.conf:ro "$image" -t
 docker compose -f compose.yaml.next config -q
 mv nginx.conf.next nginx.conf
 mv compose.yaml.next compose.yaml

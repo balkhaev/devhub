@@ -86,8 +86,8 @@ powershell -NoProfile -ExecutionPolicy Bypass -File infra/delopusk-mirrors/deplo
 контейнер зеркала и атомарно устанавливает свой маршрут Traefik. Traefik
 подхватывает файл автоматически; перезапуск Coolify, его proxy или production
 не нужен. Обновление контейнера зеркала кратко прерывает его активные потоки.
-Образ — официальная стабильная ветка `nginx:1.28-alpine`, после выкладки
-нужно фиксировать реально установленный digest при проверке.
+Образ — официальная стабильная ветка `nginx:1.28-alpine`, закреплённая по digest
+`sha256:a8b39bd9cf0f83869a2162827a0caf6137ddf759d50a171451b335cecc87d236`.
 
 Для диагностики:
 
@@ -106,3 +106,23 @@ API, API `/api/auth/get-session`, CORS preflight с Origin зеркала и ч�
 `/data/coolify/proxy/dynamic/delopusk-mirrors.yaml`, затем выполнить
 `docker compose -f /data/devhub/delopusk-mirrors/compose.yaml down`.
 Оригинальные приложения, их volumes и существующие маршруты не затрагиваются.
+
+## Проверено 12 октября 2026
+
+- Контейнер `healthy`; Nginx и Compose прошли проверку конфигурации.
+- CRM `/login`, API `/api/auth/get-session`, Алтай, GameRadar и Grafana `/login`
+  отвечают 200. Сертификаты проверены без исключений, `ssl_verify_result=0`.
+- Страница входа CRM, главная Алтая и витрина GameRadar открыты в браузере
+  на доменах зеркала. Внутренние ссылки сохраняют адрес зеркала.
+- Все JS страницы входа CRM загрузились; chunk `1mgvc4b7r66kx.js` содержит
+  `api.crm.balkhaev.com` и больше не содержит `api.crm.delopusk.ru`.
+  JS Алтая и GameRadar также отвечает 200.
+- CRM CORS preflight возвращает 204 с разрешением именно
+  `https://crm.balkhaev.com`; для `https://example.invalid` разрешения нет.
+- Неизвестный Host получает 421. Ошибок Nginx и Traefik после установки нет.
+- Вход с реальной учётной записью, защищённые операции и OAuth-провайдеры
+  не проверялись; они требуют отдельной проверки с сессией владельца.
+
+Директивы прокси и подстановки описаны в документации
+[Nginx proxy module](https://nginx.org/en/docs/http/ngx_http_proxy_module.html) и
+[sub module](https://nginx.org/en/docs/http/ngx_http_sub_module.html).
