@@ -330,6 +330,54 @@ test("a hub without a declared queue shows none and has nothing for the tray", a
 	}
 });
 
+test("a guarded read answers the hub's own page and its machine client, on the hub's own address only", async () => {
+	const sample = await fixtureRoot();
+	const instance = await startHub({
+		catalogue: catalogueSchema.parse({ projects: [] }),
+		port: 0,
+		root: sample.root,
+		runtime: quietComputer,
+	});
+	try {
+		const url = new URL(instance.url);
+		const state = new URL("api/queue", url);
+		const read = async (headers: Record<string, string>) =>
+			(await fetch(state, { headers })).status;
+		const page = { origin: url.origin, "x-devhub": "1" };
+		const machine = {
+			"x-devhub-client": (
+				await readFile(join(sample.root, ".state", "client-token"), "utf8")
+			).trim(),
+		};
+		const strangers: Record<string, string>[] = [
+			{},
+			{ origin: url.origin },
+			{ "x-devhub": "1" },
+			{ ...page, origin: "https://hostile.example" },
+			{ ...page, host: "hostile.example" },
+			{ ...machine, origin: "https://hostile.example" },
+			{ ...machine, host: "hostile.example" },
+		];
+		expect(await Promise.all(strangers.map(read))).toEqual(
+			strangers.map(() => 403)
+		);
+		expect(await Promise.all([read(page), read(machine)])).toEqual([200, 200]);
+		// A browser sends no Origin with a same-origin GET: the page is then known by its Referer.
+		const sameOrigin = {
+			referer: `${url.origin}/`,
+			"sec-fetch-site": "same-origin",
+			"x-devhub": "1",
+		};
+		expect(await read(sameOrigin)).toBe(200);
+		expect(
+			await read({ ...sameOrigin, referer: "https://hostile.example/" })
+		).toBe(403);
+	} finally {
+		instance.stop();
+		await sample.close();
+	}
+});
+
 class RecordingProcesses extends Processes {
 	readonly entries = new Map<string, Managed>();
 	readonly launches: string[] = [];

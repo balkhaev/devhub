@@ -61,7 +61,7 @@ windowsTest(
 	async () => {
 		const files = await fixture();
 		try {
-			const file = join(files.root, "vault.key");
+			const file = join(files.root, "token");
 			await writeFile(file, "existing-fixture-bytes");
 			await grant(files.root, "*S-1-5-11:(OI)(CI)R");
 			await expect(protectPrivateDirectory(files.root)).rejects.toMatchObject({

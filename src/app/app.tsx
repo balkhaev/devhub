@@ -1,6 +1,5 @@
 import { useCallback, useEffect } from "react";
 
-import { AiPage } from "./ai";
 import { useHub, useRoute } from "./api";
 import { CreatePage } from "./create";
 import { ComposeCard, Overview } from "./overview";
@@ -18,7 +17,7 @@ import { cx, isUp } from "./words";
  * an overview of what runs, Docker and every listening port. It follows the computer live.
  */
 
-const STATIC_ROUTES = new Set(["ai", "new", "prod", "tidy"]);
+const STATIC_ROUTES = new Set(["new", "prod", "tidy"]);
 
 function Main({
 	onDeleted,
@@ -29,9 +28,6 @@ function Main({
 	route: string | null;
 	view: NonNullable<ReturnType<typeof useHub>["view"]>;
 }) {
-	if (route === "ai") {
-		return <AiPage />;
-	}
 	if (route === "new") {
 		return <CreatePage />;
 	}
