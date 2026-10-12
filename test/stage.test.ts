@@ -565,6 +565,27 @@ describe("canonical staging with real disposable Git repositories", () => {
 		expect(project.worktrees()).toHaveLength(2);
 	}, 30_000);
 
+	test("finish removes an ignored copy of a file the canonical folder still holds", () => {
+		const { folder, project } = fixture();
+		project.init();
+		const tree = project.create("copied");
+		commitSource(tree, "finished task");
+		project.integrate("codex/copied");
+		const settings = join("ignored", "settings.local.json");
+		for (const checkout of [folder, tree]) {
+			mkdirSync(join(checkout, "ignored"));
+			writeFileSync(join(checkout, settings), '{"allow":[]}\n');
+		}
+		// A copy the task changed is its own state again.
+		writeFileSync(join(tree, settings), '{"allow":["task"]}\n');
+		expect(() => project.finish(tree)).toThrow("приватные ignored-файлы");
+		expect(existsSync(join(tree, settings))).toBe(true);
+		writeFileSync(join(tree, settings), '{"allow":[]}\n');
+		expect(project.finish(tree)).toBe(tree);
+		expect(existsSync(tree)).toBe(false);
+		expect(readFileSync(join(folder, settings), "utf8")).toBe('{"allow":[]}\n');
+	}, 30_000);
+
 	test("finish preserves an unmerged clean task and unrelated registered worktree", () => {
 		const { base, folder, project } = fixture();
 		project.init();
