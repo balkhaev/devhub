@@ -1,57 +1,34 @@
 <#
 .SYNOPSIS
-Routes the two known local development autostarts through DevHub.
+Routes the legacy Predict Paper autostart through DevHub.
 .DESCRIPTION
-Without -Apply this only prints a plan. -Apply backs up the Inference registry
-value and predict-paper-runtime task XML before changing their launch actions.
-It does not stop or start any task, tray, server or worker. Production tasks and
-the Montage Blender Bridge shortcut are outside this migration.
+Without -Apply this only prints a plan. -Apply backs up the
+predict-paper-runtime task XML before changing its launch action. It does not
+stop or start any task, server or worker. Production tasks and the Montage
+Blender Bridge shortcut are outside this migration.
 
-The queue contract must preserve the Inference tray and its paired executors,
-or -InferenceTrayWorkersPreserved must be supplied after that integration has
-been verified separately. The legacy tray has no client-only switch.
+The Inference queue has no Windows autostart of its own: inference/queue and
+inference/executors are ordinary DevHub services marked autostart and start
+with the hub. The HKCU Run value "Inference" launched the tray module
+inference.tray, removed on 2026-10-12; this script no longer reads or writes it.
 
 Restore: .\scripts\adopt-windows-startup.ps1 -Restore <backup-directory> -Apply
+A schema-1 backup also holds that Run value. Restore brings back only the
+Predict task from it and reports that the Run value was not restored.
 #>
 [CmdletBinding()]
 param(
     [switch]$Apply,
     [string]$Restore,
-    [string]$InferenceService = 'inference/queue',
-    [string]$PredictService = 'predict/runtime',
-    [switch]$InferenceTrayWorkersPreserved
+    [string]$PredictService = 'predict/runtime'
 )
 
 $ErrorActionPreference = 'Stop'
 $devhubStartupRoot = Split-Path -Parent $PSScriptRoot
-$devhubRunKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run'
 $devhubPredictTaskName = 'predict-paper-runtime'
 
 function ConvertTo-DevHubLiteral([string]$Value) {
     return "'" + $Value.Replace("'", "''") + "'"
-}
-
-function Get-DevHubStartupRegistry {
-    $key = Get-Item -LiteralPath $devhubRunKey -ErrorAction SilentlyContinue
-    if ($null -eq $key -or $key.GetValueNames() -notcontains 'Inference') {
-        return [pscustomobject]@{ Exists = $false; Value = $null; Kind = 'String' }
-    }
-    return [pscustomobject]@{
-        Exists = $true
-        Value = $key.GetValue('Inference', $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
-        Kind = [string]$key.GetValueKind('Inference')
-    }
-}
-
-function Test-DevHubInferenceStartup([string]$Value, [string]$Root) {
-    if ($Value -match '(?i)^\s*"?[^"\r\n]*pythonw?\.exe"?\s+-m\s+inference\.tray(?:\s+--(?:data-dir|ffmpeg)\s+(?:"[^"\r\n]+"|[^\s";|&]+))*\s*$') {
-        return 'legacy'
-    }
-    $wrapper = Join-Path $Root '.state\startup\inference.ps1'
-    if ($Value.Contains($wrapper) -and $Value -match '(?i)powershell\.exe') {
-        return 'managed'
-    }
-    return 'unrecognized'
 }
 
 function Get-DevHubPredictLegacyScript([string]$CodeRoot) {
@@ -92,22 +69,12 @@ function Get-DevHubStartupWrapper([string]$Bun, [string]$Root, [string]$Service)
         throw "Invalid DevHub service key: $Service"
     }
     $cli = Join-Path $Root 'src\cli.ts'
-    $target = ConvertTo-DevHubLiteral $Service
-    if ($Service -eq 'inference/queue') {
-        $project = Join-Path (Split-Path -Parent $Root) 'inference'
-        $target = '--project ' + (ConvertTo-DevHubLiteral $project) + ' --script dev'
-    }
     return @(
         "`$ErrorActionPreference = 'Stop'",
-        ('& ' + (ConvertTo-DevHubLiteral $Bun) + ' ' + (ConvertTo-DevHubLiteral $cli) + ' start ' + $target),
+        ('& ' + (ConvertTo-DevHubLiteral $Bun) + ' ' + (ConvertTo-DevHubLiteral $cli) + ' start ' + (ConvertTo-DevHubLiteral $Service)),
         'if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }',
         ''
     ) -join "`r`n"
-}
-
-function Get-DevHubStartupCommand([string]$PowerShell, [string]$Wrapper) {
-    if ($PowerShell.Contains('"') -or $Wrapper.Contains('"')) { throw 'Startup paths cannot contain double quotes.' }
-    return '"' + $PowerShell + '" -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + $Wrapper + '"'
 }
 
 function Get-DevHubStartupServices([string]$Bun, [string]$Root) {
@@ -126,39 +93,39 @@ function Restore-DevHubStartup([string]$Directory, [switch]$Commit) {
     $directoryPath = [IO.Path]::GetFullPath($Directory)
     $manifestPath = Join-Path $directoryPath 'backup.json'
     $backup = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json
-    if ($backup.Schema -ne 1 -or $backup.RegistryName -ne 'Inference' -or
+    # Schema 1 also recorded the HKCU Run value "Inference"; schema 2 holds the task only.
+    $recordsInference = $backup.Schema -eq 1 -and $backup.RegistryName -eq 'Inference'
+    if (($backup.Schema -ne 2 -and -not $recordsInference) -or
         $backup.TaskName -ne $devhubPredictTaskName -or $backup.TaskPath -ne '\') {
         throw 'This is not a supported DevHub startup backup.'
     }
+    # That Run value launched inference.tray, which no longer exists: it is never written back.
+    $inferenceRunValue = 'not in this backup'
+    if ($recordsInference -and $backup.RegistryChanged) {
+        $inferenceRunValue = 'not restored'
+        Write-Warning ('The Inference Run value saved in this backup is not restored: it launched inference.tray, ' +
+            'which was removed. The Inference queue starts with the hub as the autostart service inference/queue.')
+    }
+    $restoresTask = [bool]$backup.TaskChanged
     if (-not $Commit) {
-        [pscustomobject]@{ Mode = 'restore-dry-run'; Backup = $directoryPath; Registry = 'Inference'; Task = $backup.TaskName }
+        [pscustomobject]@{ Mode = 'restore-dry-run'; Backup = $directoryPath; Task = $backup.TaskName; TaskChanged = $restoresTask; InferenceRunValue = $inferenceRunValue }
         return
     }
-    # Only change resources whose current launch action still belongs to this migration.
-    # A running instance is unaffected by restoring a future launch action.
-    $currentRegistry = Get-DevHubStartupRegistry
-    if ($backup.RegistryChanged) {
-        if (-not $currentRegistry.Exists -or $currentRegistry.Value -ne $backup.NewRegistryValue) {
-            throw 'Inference startup changed after migration; refusing to overwrite the newer value.'
+    if ($restoresTask) {
+        # Only change the task while its current launch action still belongs to this migration.
+        # A running instance is unaffected by restoring a future launch action.
+        $currentTask = Get-ScheduledTask -TaskName $devhubPredictTaskName -TaskPath '\' -ErrorAction SilentlyContinue
+        if ($null -eq $currentTask -or @($currentTask.Actions).Count -ne 1 -or
+            $currentTask.Actions[0].Arguments -ne $backup.NewTaskArguments) {
+            throw 'Predict startup changed after migration; refusing to overwrite the newer action.'
         }
-    }
-    $currentTask = Get-ScheduledTask -TaskName $devhubPredictTaskName -TaskPath '\' -ErrorAction SilentlyContinue
-    if ($backup.TaskChanged -and ($null -eq $currentTask -or
-        @($currentTask.Actions).Count -ne 1 -or
-        $currentTask.Actions[0].Arguments -ne $backup.NewTaskArguments)) {
-        throw 'Predict startup changed after migration; refusing to overwrite the newer action.'
-    }
-    if ($backup.TaskChanged) {
         $taskXml = Get-Content -LiteralPath (Join-Path $directoryPath 'predict-paper-runtime.xml') -Raw
         [xml]$originalTask = $taskXml
         $originalAction = $originalTask.Task.Actions.Exec
         $action = New-ScheduledTaskAction -Execute $originalAction.Command -Argument $originalAction.Arguments -WorkingDirectory $originalAction.WorkingDirectory
         Set-ScheduledTask -TaskName $devhubPredictTaskName -TaskPath '\' -Action $action | Out-Null
     }
-    if ($backup.RegistryChanged) {
-        New-ItemProperty -LiteralPath $devhubRunKey -Name 'Inference' -Value $backup.Registry.Value -PropertyType $backup.Registry.Kind -Force | Out-Null
-    }
-    [pscustomobject]@{ Mode = 'restored'; Backup = $directoryPath; RunningProcessesChanged = $false }
+    [pscustomobject]@{ Mode = 'restored'; Backup = $directoryPath; Task = $backup.TaskName; TaskRestored = $restoresTask; InferenceRunValue = $inferenceRunValue; RunningProcessesChanged = $false }
 }
 
 function Invoke-DevHubStartupMigration {
@@ -166,96 +133,45 @@ function Invoke-DevHubStartupMigration {
     $root = [IO.Path]::GetFullPath($devhubStartupRoot)
     $codeRoot = Split-Path -Parent $root
     $powerShell = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
-    $inferenceWrapper = Join-Path $root '.state\startup\inference.ps1'
     $predictWrapper = Join-Path $root '.state\startup\predict-paper.ps1'
-    $registry = Get-DevHubStartupRegistry
-    $registryStatus = 'absent'
-    if ($registry.Exists) { $registryStatus = Test-DevHubInferenceStartup -Value $registry.Value -Root $root }
     $task = Get-ScheduledTask -TaskName $devhubPredictTaskName -TaskPath '\' -ErrorAction SilentlyContinue
     $taskStatus = 'absent'
     if ($null -ne $task) { $taskStatus = Test-DevHubPredictStartup -Task $task -CodeRoot $codeRoot -Root $root }
-    $newRegistryValue = Get-DevHubStartupCommand -PowerShell $powerShell -Wrapper $inferenceWrapper
     $newTaskArguments = '-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File "' + $predictWrapper + '"'
     $plan = [pscustomobject]@{
         Mode = $(if ($Apply) { 'apply' } else { 'dry-run' })
-        Inference = [pscustomobject]@{ Status = $registryStatus; Service = $InferenceService; NewCommand = $newRegistryValue; PreservesTrayAndPairedWorkersRequired = $true }
         Predict = [pscustomobject]@{ Status = $taskStatus; Service = $PredictService; NewArguments = $newTaskArguments; Task = $devhubPredictTaskName }
         BackupRoot = (Join-Path $root '.state\startup-backup')
         RunningProcessesChanged = $false
         ProductionWorkersChanged = $false
     }
     if (-not $Apply) { $plan; return }
-    if ($registryStatus -eq 'unrecognized' -or $taskStatus -eq 'unrecognized') {
-        throw 'A launch action no longer matches the classified legacy startup. Review it before migration.'
+    if ($taskStatus -eq 'unrecognized') {
+        throw 'The launch action no longer matches the classified legacy startup. Review it before migration.'
     }
-    if ($registryStatus -ne 'legacy' -and $taskStatus -ne 'legacy') { $plan; return }
+    if ($taskStatus -ne 'legacy') { $plan; return }
     $cli = Join-Path $root 'src\cli.ts'
     if (-not (Test-Path -LiteralPath $cli -PathType Leaf)) { throw 'DevHub CLI is missing; no startup changes made.' }
     $bun = (Get-Command bun -ErrorAction Stop).Source
     if (-not $bun) { $bun = (Get-Command bun -ErrorAction Stop).Path }
     $services = Get-DevHubStartupServices -Bun $bun -Root $root
-    if ($registryStatus -eq 'legacy') {
-        $queueService = @($services | Where-Object { $_.key -eq $InferenceService })
-        if ($queueService.Count -ne 1) { throw "Unknown DevHub service $InferenceService; no startup changes made." }
-        if (-not $InferenceTrayWorkersPreserved -and $queueService[0].command -notmatch 'inference\.tray') {
-            throw 'The queue contract does not preserve the Inference tray and paired workers yet; no startup changes made.'
-        }
-        $dataArgument = [regex]::Match($registry.Value, '--data-dir\s+(?:"([^"]+)"|([^\s]+))')
-        if ($dataArgument.Success) {
-            $previousDataDirectory = $dataArgument.Groups[1].Value
-            if (-not $previousDataDirectory) { $previousDataDirectory = $dataArgument.Groups[2].Value }
-            $defaultDataDirectory = Join-Path $env:LOCALAPPDATA 'MediaPipes'
-            if ([IO.Path]::GetFullPath($previousDataDirectory) -ne [IO.Path]::GetFullPath($defaultDataDirectory) -and
-                -not $queueService[0].command.Replace('/', '\').Contains($previousDataDirectory.Replace('/', '\'))) {
-                throw 'The Inference command does not preserve the existing custom --data-dir; no startup changes made.'
-            }
-        }
-    }
-    if ($taskStatus -eq 'legacy' -and @($services | Where-Object { $_.key -eq $PredictService }).Count -ne 1) {
+    if (@($services | Where-Object { $_.key -eq $PredictService }).Count -ne 1) {
         throw "Unknown DevHub service $PredictService; no startup changes made."
     }
     $backupRoot = Join-Path $root '.state\startup-backup'
     $backupDirectory = Join-Path $backupRoot ([DateTime]::UtcNow.ToString('yyyyMMddTHHmmssfffZ') + '-' + [Guid]::NewGuid().ToString('N').Substring(0, 8))
     New-Item -ItemType Directory -Path $backupDirectory -Force | Out-Null
     $backup = [ordered]@{
-        Schema = 1; RegistryName = 'Inference'; Registry = $registry
-        RegistryChanged = ($registryStatus -eq 'legacy'); NewRegistryValue = $newRegistryValue
-        TaskName = $devhubPredictTaskName; TaskPath = '\'; TaskChanged = ($taskStatus -eq 'legacy')
+        Schema = 2; TaskName = $devhubPredictTaskName; TaskPath = '\'; TaskChanged = $true
         NewTaskArguments = $newTaskArguments
     }
-    if ($taskStatus -eq 'legacy') {
-        Export-ScheduledTask -TaskName $devhubPredictTaskName -TaskPath '\' | Set-Content -LiteralPath (Join-Path $backupDirectory 'predict-paper-runtime.xml') -Encoding Unicode
-    }
-    if ($registryStatus -eq 'legacy') {
-        if ($registry.Kind -ne 'String') { throw 'Inference startup is not a REG_SZ value; no startup changes made.' }
-        $escapedValue = $registry.Value.Replace('\', '\\').Replace('"', '\"')
-        @('Windows Registry Editor Version 5.00', '', '[HKEY_CURRENT_USER\Software\Microsoft\Windows\CurrentVersion\Run]', ('"Inference"="' + $escapedValue + '"'), '') | Set-Content -LiteralPath (Join-Path $backupDirectory 'Inference.reg') -Encoding Unicode
-    }
+    Export-ScheduledTask -TaskName $devhubPredictTaskName -TaskPath '\' | Set-Content -LiteralPath (Join-Path $backupDirectory 'predict-paper-runtime.xml') -Encoding Unicode
     $backup | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $backupDirectory 'backup.json') -Encoding UTF8
     $wrapperDirectory = Join-Path $root '.state\startup'
     New-Item -ItemType Directory -Path $wrapperDirectory -Force | Out-Null
-    if ($registryStatus -eq 'legacy') {
-        Get-DevHubStartupWrapper -Bun $bun -Root $root -Service $InferenceService | Set-Content -LiteralPath $inferenceWrapper -Encoding UTF8
-    }
-    if ($taskStatus -eq 'legacy') {
-        Get-DevHubStartupWrapper -Bun $bun -Root $root -Service $PredictService | Set-Content -LiteralPath $predictWrapper -Encoding UTF8
-    }
-    $registryApplied = $false
-    try {
-        if ($registryStatus -eq 'legacy') {
-            Set-ItemProperty -LiteralPath $devhubRunKey -Name 'Inference' -Value $newRegistryValue
-            $registryApplied = $true
-        }
-        if ($taskStatus -eq 'legacy') {
-            $action = New-ScheduledTaskAction -Execute $powerShell -Argument $newTaskArguments -WorkingDirectory $root
-            Set-ScheduledTask -TaskName $devhubPredictTaskName -TaskPath '\' -Action $action | Out-Null
-        }
-    } catch {
-        if ($registryApplied) {
-            Set-ItemProperty -LiteralPath $devhubRunKey -Name 'Inference' -Value $registry.Value
-        }
-        throw
-    }
+    Get-DevHubStartupWrapper -Bun $bun -Root $root -Service $PredictService | Set-Content -LiteralPath $predictWrapper -Encoding UTF8
+    $action = New-ScheduledTaskAction -Execute $powerShell -Argument $newTaskArguments -WorkingDirectory $root
+    Set-ScheduledTask -TaskName $devhubPredictTaskName -TaskPath '\' -Action $action | Out-Null
     [pscustomobject]@{ Mode = 'applied'; Backup = $backupDirectory; RunningProcessesChanged = $false; ProductionWorkersChanged = $false }
 }
 
