@@ -6,6 +6,7 @@ import {
 	type AiInference,
 	type AiLifecycleEvent,
 	AiUpstreamError,
+	MAX_CLAUDE_BYTES,
 } from "./inference";
 import { AiProxyKeys, createKeySchema } from "./keys";
 import { AiModels } from "./models";
@@ -84,15 +85,17 @@ function json(value: unknown, status = 200): Response {
 }
 
 /** Read incrementally so chunked bodies cannot bypass Content-Length limits. */
-async function body(request: Request): Promise<unknown> {
+async function body(request: Request, limit = MAX_BODY): Promise<unknown> {
+	const tooLarge = () =>
+		new AiError(`AI-запрос превышает ${limit / MAX_BODY} МБ.`, 413);
 	if (
 		request.headers.get("content-type")?.split(";")[0]?.trim().toLowerCase() !==
 		"application/json"
 	) {
 		throw new AiError("Нужен Content-Type: application/json.", 415);
 	}
-	if (Number(request.headers.get("content-length")) > MAX_BODY) {
-		throw new AiError("AI-запрос превышает 1 МБ.", 413);
+	if (Number(request.headers.get("content-length")) > limit) {
+		throw tooLarge();
 	}
 	const reader = request.body?.getReader();
 	if (!reader) {
@@ -108,9 +111,9 @@ async function body(request: Request): Promise<unknown> {
 				break;
 			}
 			size += chunk.value.byteLength;
-			if (size > MAX_BODY) {
+			if (size > limit) {
 				await reader.cancel();
-				throw new AiError("AI-запрос превышает 1 МБ.", 413);
+				throw tooLarge();
 			}
 			chunks.push(chunk.value);
 		}
@@ -357,7 +360,13 @@ export class AiApi {
 			path === "/v1/responses" ||
 			path === "/v1/messages"
 		) {
-			const data = record(await body(request));
+			// Only the native Claude turn carries pictures and a whole conversation; the other methods keep 1 MB.
+			const data = record(
+				await body(
+					request,
+					path === "/v1/messages" ? MAX_CLAUDE_BYTES : MAX_BODY
+				)
+			);
 			const route = await this.pool.route(
 				data.model,
 				PATH_PROVIDER[path],
