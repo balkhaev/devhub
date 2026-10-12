@@ -54,6 +54,9 @@ const FRAME_ORIGIN = /^http:\/\/127\.0\.0\.1(?::[1-9]\d{0,4})?$/;
 const COMMAND_ARGUMENT = /"([^"]+)"|([^\s"]+)/g;
 const LEADING_EXECUTABLE = /^(?:"([^"]+)"|([^\s]+))/;
 const NEWLINE = 0x0a;
+/** The shell's list of its windows (the ShellWindows COM class): Explorer serves it from its own process. */
+const SHELL_WINDOWS = "9BA05972-F6A8-11CF-A442-00A0C90A8F39";
+const SHELL_FAILED = /^failed: /;
 
 const fileName = (service: Service): string => service.key.replace("/", "-");
 
@@ -218,7 +221,10 @@ export function batchOf(
 	].join("\r\n");
 }
 
-/** Starts a batch file hidden, in a console of its own; returns its process id. */
+/**
+ * Starts a batch file hidden, in a console of its own; returns its process id. The process keeps this one's view
+ * of `%LOCALAPPDATA%`, which is why the hub itself never runs in an app's private one.
+ */
 export async function launchHidden(batch: string): Promise<number> {
 	const script = `(Start-Process -FilePath '${batch.replaceAll("'", "''")}' -WindowStyle Hidden -PassThru).Id`;
 	const out = await capture(
@@ -234,6 +240,48 @@ export async function launchHidden(batch: string): Promise<number> {
 		LAUNCH_MS
 	);
 	return Number(out.trim());
+}
+
+/**
+ * The PowerShell that asks the desktop shell to start a batch file hidden. The desktop's window is found among the
+ * shell's windows (SWC_DESKTOP = 8) as a scriptable object (SWFO_NEEDDISPATCH = 1), and its `ShellExecute` runs in
+ * Explorer's own process. It prints `started`, or why it could not.
+ */
+export function shellLaunchScript(batch: string): string {
+	const quoted = (value: string) => `'${value.replaceAll("'", "''")}'`;
+	return [
+		`try { $windows = [Activator]::CreateInstance([Type]::GetTypeFromCLSID([Guid]'${SHELL_WINDOWS}'))`,
+		"$hwnd = 0",
+		"$desktop = $windows.FindWindowSW([ref]0, [ref]$null, 8, [ref]$hwnd, 1)",
+		`$desktop.Document.Application.ShellExecute(${quoted(batch)}, '', ${quoted(dirname(batch))}, 'open', 0)`,
+		"'started' } catch { 'failed: ' + $_.Exception.Message }",
+	].join("; ");
+}
+
+/**
+ * Starts a batch file hidden through the desktop shell, as Explorer's child. A process started any other way keeps
+ * the `%LOCALAPPDATA%` view of the app this one was started from (`app-view.ts`); this one sees the real folder.
+ * No process id comes back.
+ */
+export async function launchOutside(batch: string): Promise<void> {
+	const out = await capture(
+		"powershell",
+		[
+			"-NoProfile",
+			"-NonInteractive",
+			"-ExecutionPolicy",
+			"Bypass",
+			"-Command",
+			shellLaunchScript(batch),
+		],
+		LAUNCH_MS
+	);
+	const said = out.trim();
+	if (said !== "started") {
+		throw new Error(
+			said.replace(SHELL_FAILED, "") || "оболочка рабочего стола не ответила"
+		);
+	}
 }
 
 /** Starts a command detached, its output into the log (everywhere but Windows). */

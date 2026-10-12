@@ -63,7 +63,9 @@ function Build([string[]]$More) {
 
         '/nologo', '/target:winexe', '/optimize+', '/codepage:65001', "/out:$exe",
 
-        '/r:System.Windows.Forms.dll', '/r:System.Drawing.dll', '/r:System.Web.Extensions.dll'
+        '/r:System.Windows.Forms.dll', '/r:System.Drawing.dll', '/r:System.Web.Extensions.dll',
+
+        '/r:System.Core.dll', '/r:Microsoft.CSharp.dll'
 
     ) + $More + @($source)
 
