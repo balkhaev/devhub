@@ -3,8 +3,6 @@ import { lstat, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import { promisify } from "node:util";
 
-import { AiError } from "./ai/types";
-
 const runFile = promisify(execFile);
 const WINDOWS_USER_CSV = /^"(?:[^"\r\n]|"")*","(S-1-\d+(?:-\d+)+)"$/;
 const WINDOWS_OPTIONS = {
@@ -47,6 +45,16 @@ foreach ($Rule in $Acl.GetAccessRules($true, $true, [System.Security.Principal.S
 }
 if ($Seen.Count -ne $Trusted.Count) { throw "Missing trusted secret ACL identity" }
 `;
+
+/** Access to a secret could not be restricted: the reason is kept as `cause`, and `status` is the HTTP answer for it. */
+class PrivateFileError extends Error {
+	readonly status = 500;
+
+	constructor(message: string, options: ErrorOptions) {
+		super(message, options);
+		this.name = "PrivateFileError";
+	}
+}
 
 function systemExecutable(name: string): string {
 	return join(process.env.SystemRoot ?? "C:\\Windows", "System32", name);
@@ -143,9 +151,9 @@ export async function protectPrivateDirectory(
 			await verifyWindowsAcl(join(directory, entry.name), sid, "file", "any");
 		}
 	} catch (error) {
-		throw new AiError(
+		throw new PrivateFileError(
 			"Не удалось ограничить доступ к хранилищу секретов. Файлы сохранены; проверьте права Windows и перезапустите DevHub.",
-			{ cause: error, status: 500 }
+			{ cause: error }
 		);
 	}
 }
@@ -176,9 +184,9 @@ export async function protectPrivateFile(file: string): Promise<void> {
 		);
 		await verifyWindowsAcl(file, sid, "file");
 	} catch (error) {
-		throw new AiError(
+		throw new PrivateFileError(
 			"Не удалось ограничить доступ к секретному файлу. Файл сохранён; проверьте права Windows и перезапустите DevHub.",
-			{ cause: error, status: 500 }
+			{ cause: error }
 		);
 	}
 }

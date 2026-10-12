@@ -3,9 +3,6 @@ import { dirname, join, resolve } from "node:path";
 
 import { serve, spawn } from "bun";
 
-import { AiAccounts } from "./ai/accounts";
-import { AiApi, oauthCallback } from "./ai/api";
-import { AiInference } from "./ai/inference";
 import page from "./app/index.html";
 import { appViewOwner, appViewRefusal } from "./app-view";
 import { primaryCheckout, sameSourcePath } from "./checkouts";
@@ -145,8 +142,6 @@ function sse(
 
 export async function startHub(
 	options: {
-		ai?: AiAccounts;
-		aiInference?: AiInference;
 		catalogue?: Catalogue;
 		coolify?: Coolify;
 		creator?: ProjectCreator;
@@ -163,11 +158,6 @@ export async function startHub(
 	const token = await clientToken(root);
 	const hub = new Hub(catalogue, root, options.runtime);
 	const projects = new Projects(hub, root);
-	const ai = options.ai ?? new AiAccounts(root);
-	const aiInference =
-		options.aiInference ??
-		new AiInference({ credential: (id, force) => ai.credential(id, force) });
-	const aiApi = new AiApi(ai, aiInference);
 	const coolify = options.coolify ?? new Coolify(() => hub.configuration);
 	const queue = options.queue ?? new Queue(() => hub.configuration);
 	const creator =
@@ -319,10 +309,6 @@ export async function startHub(
 		port,
 		routes: {
 			"/": page,
-			"/api/ai/*": (request, bunServer) => {
-				bunServer.timeout(request, 0);
-				return aiApi.handle(request, allowed(request), origin, ready);
-			},
 			"/api/create": {
 				GET: (request) => guarded(request, async () => creator.list()),
 				POST: (request) =>
@@ -525,17 +511,6 @@ export async function startHub(
 						return tidy(true, body?.kill === true);
 					}),
 			},
-			"/auth/callback": (request) => oauthCallback(ai, request, local(request)),
-			"/v1/*": (request, bunServer) => {
-				bunServer.timeout(request, 0);
-				return aiApi.handle(
-					request,
-					allowed(request),
-					origin,
-					ready,
-					local(request)
-				);
-			},
 		},
 	});
 	// Port zero is useful for isolated endpoint checks; validate the actual bound address.
@@ -567,7 +542,6 @@ export async function startHub(
 	return {
 		hub,
 		stop: () => {
-			ai.stop();
 			hub.stop();
 			server.stop(true);
 		},
