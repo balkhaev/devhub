@@ -20,15 +20,17 @@ import { isAbsolute, join, parse, resolve } from "node:path";
 
 import { isInsideProject, primaryCheckout, sameSourcePath } from "./checkouts";
 import { canonicalProjectFolder, loadCatalogue } from "./config";
+import { changedAt, claudeLogs, lastUse } from "./folder-use";
 import {
 	type FolderProcesses,
 	type Holder,
 	holdersOf,
+	type ProcessSurvey,
 	removeFolder,
 	systemProcesses,
 } from "./holders";
 import { acquireFileLock, type ProcessProbe, systemProbe } from "./stage-lock";
-import { holderWords } from "./tidy-words";
+import { holderWords, IDLE_MS } from "./tidy-words";
 import {
 	type ProjectMode,
 	type WorkflowPolicy,
@@ -135,9 +137,10 @@ export interface TidyReport {
 	canonicalChanges: number;
 	/**
 	 * Folders in the policy's `worktreeRoot` that are no worktree and hold no files, with the processes that keep
-	 * them from being deleted: `tidyApply` removes them.
+	 * them from being deleted and the moment they were last in use (epoch milliseconds): `tidyApply` removes
+	 * them, and a day without use removes them by itself.
 	 */
-	emptied: { holders: Holder[]; path: string }[];
+	emptied: { holders: Holder[]; path: string; used: number }[];
 	/** Closed branches without commits of their own: `tidyApply` deletes them. */
 	merged: { branch: string; head: string }[];
 	/** Registered worktrees whose folder is gone: `tidyApply` prunes them. */
@@ -178,6 +181,9 @@ const HELP = `DevHub: MVP → main + push + выпуск; Прод → stage →
 
 finish, close и integrate сами завершают процессы, которые держат закрываемую папку. Сеанс,
 из которого запущена команда, не завершается: его пустую папку уберёт следующая уборка.
+Пустую папку без worktree, которой не пользовались сутки, убирает любая из команд create,
+integrate, finish, close и tidy --apply, а также сам пульт раз в час: процессы, которые
+её держат, при этом завершаются.
 
 В проекте те же команды доступны через bun/npm run worktree.
 DevHub запускает dev только из основной папки. В Прод push/deploy требуют отдельного выпуска.
@@ -211,6 +217,10 @@ export class StageProject {
 	readonly lockFile: string;
 	/** Who holds a folder and how a process is ended; tests answer for the computer. */
 	processes: FolderProcesses = systemProcesses;
+	/** Where agent sessions keep their logs: a recent write there is a use of the session's folder. */
+	sessionLogs: string = claudeLogs();
+	/** The clock that decides whether a day has passed; tests move it. */
+	now: () => number = Date.now;
 
 	constructor(folder: string, stateRoot = join(ROOT, ".state", "stage")) {
 		this.root = primaryCheckout(folder);
@@ -1175,28 +1185,11 @@ export class StageProject {
 				.split("\n")
 				.filter(Boolean)
 		);
-		const leftovers = (
-			existsSync(this.worktreeRoot)
-				? readdirSync(this.worktreeRoot, { withFileTypes: true })
-				: []
-		)
-			.filter((entry) => entry.isDirectory())
-			.map((entry) => join(this.worktreeRoot, entry.name))
-			// A task named `area/topic` keeps its checkout one level deeper.
-			.filter(
-				(folder) => !present.some((item) => isInsideProject(folder, item.path))
-			);
+		const leftovers = this.leftoverFolders(present);
 		const emptied = leftovers.filter((folder) => !holdsFiles(folder));
-		const survey =
-			emptied.length && options.holders !== false
-				? this.processes.survey([])
-				: undefined;
 		const report: TidyReport = {
 			canonicalChanges: changes(this.root),
-			emptied: emptied.map((path) => ({
-				holders: survey ? holdersOf(path, survey) : [],
-				path,
-			})),
+			emptied: this.describeEmptied(emptied, options.holders !== false),
 			merged: [],
 			missing: records
 				.filter((item) => !existsSync(item.path))
@@ -1241,9 +1234,105 @@ export class StageProject {
 		return report;
 	}
 
+	/** Folders in the policy's `worktreeRoot` that hold no worktree of this project. */
+	private leftoverFolders(present: WorktreeRecord[]): string[] {
+		return (
+			(
+				existsSync(this.worktreeRoot)
+					? readdirSync(this.worktreeRoot, { withFileTypes: true })
+					: []
+			)
+				.filter((entry) => entry.isDirectory())
+				.map((entry) => join(this.worktreeRoot, entry.name))
+				// A task named `area/topic` keeps its checkout one level deeper.
+				.filter(
+					(folder) =>
+						!present.some((item) => isInsideProject(folder, item.path))
+				)
+		);
+	}
+
+	/** Who holds each emptied folder and when it was last in use; one look at the processes serves them all. */
+	private describeEmptied(
+		paths: string[],
+		ask: boolean
+	): TidyReport["emptied"] {
+		const survey: ProcessSurvey =
+			paths.length && ask
+				? this.processes.survey([])
+				: { fileUsers: [], processes: [] };
+		return paths.map((path) => ({
+			holders: holdersOf(path, survey),
+			path,
+			used: lastUse(path, survey, this.sessionLogs),
+		}));
+	}
+
+	/** Reviewed again right before deletion: a checkout being created this moment is not a leftover. */
+	private stillLeftover(path: string): boolean {
+		return (
+			isInsideProject(this.worktreeRoot, path) &&
+			!sameSourcePath(path, this.worktreeRoot) &&
+			!this.worktrees().some((item) => isInsideProject(path, item.path)) &&
+			!holdsFiles(path)
+		);
+	}
+
+	/**
+	 * The part of tidy that runs by itself: a leftover folder without files that nobody used for a day is removed,
+	 * and the processes that still hold it are ended. The session this command runs in is never among them.
+	 */
+	removeIdleFolders(): { ended: Holder[]; folders: string[] } {
+		const done = { ended: [] as Holder[], folders: [] as string[] };
+		const now = this.now();
+		const present = this.worktrees().filter(
+			(item) => !sameSourcePath(item.path, this.root) && existsSync(item.path)
+		);
+		// A folder that changed within the day was in use within the day: nobody needs to be asked about it.
+		const old = this.leftoverFolders(present).filter(
+			(folder) => !holdsFiles(folder) && now - changedAt(folder) >= IDLE_MS
+		);
+		for (const { path, used } of this.describeEmptied(old, true)) {
+			if (now - used < IDLE_MS || !this.stillLeftover(path)) {
+				continue;
+			}
+			const removal = removeFolder(path, {
+				kill: true,
+				processes: this.processes,
+			});
+			done.ended.push(...removal.ended);
+			if (removal.removed) {
+				done.folders.push(path);
+			}
+		}
+		return done;
+	}
+
+	/** After a command that opens or closes a task: the cleanup never decides whether that command succeeded. */
+	sweepIdleFolders(): void {
+		try {
+			const swept = this.removeIdleFolders();
+			if (swept.folders.length) {
+				process.stdout.write(
+					`автоуборка: убраны пустые папки, которыми не пользовались сутки: ${swept.folders.join(", ")}\n`
+				);
+			}
+			if (swept.ended.length) {
+				process.stdout.write(
+					`автоуборка: завершены процессы, державшие их: ${holderWords(swept.ended)}\n`
+				);
+			}
+		} catch (error) {
+			process.stderr.write(
+				`автоуборка не выполнена: ${(error as Error).message}\n`
+			);
+		}
+	}
+
 	/**
 	 * Remove only what holds nothing: registrations without a folder, merged closed branches and emptied folders.
-	 * `kill` also ends the processes that keep an emptied folder from being deleted.
+	 * The processes that keep an emptied folder from being deleted are ended when nobody used it for a day, or
+	 * at once with `kill`.
 	 */
 	tidyApply(options: { kill?: boolean } = {}): {
 		branches: string[];
@@ -1259,21 +1348,16 @@ export class StageProject {
 		if (before.missing.length && reachable) {
 			gitOutput(this.root, ["worktree", "prune"]);
 		}
-		const after = this.tidy({ holders: false });
+		const after = this.tidy();
+		const now = this.now();
 		const ended: Holder[] = [];
 		const folders: string[] = [];
-		for (const { path } of after.emptied) {
-			// Reviewed again right before deletion: a checkout being created this moment is not a leftover.
-			if (
-				!isInsideProject(this.worktreeRoot, path) ||
-				sameSourcePath(path, this.worktreeRoot) ||
-				this.worktrees().some((item) => isInsideProject(path, item.path)) ||
-				holdsFiles(path)
-			) {
+		for (const { path, used } of after.emptied) {
+			if (!this.stillLeftover(path)) {
 				continue;
 			}
 			const removal = removeFolder(path, {
-				kill: Boolean(options.kill),
+				kill: Boolean(options.kill) || now - used >= IDLE_MS,
 				processes: this.processes,
 			});
 			ended.push(...removal.ended);
@@ -1343,6 +1427,35 @@ function parseArgs(args: string[]) {
 	return { action, apply, kill, operands, project };
 }
 
+/** Commands that open or close a task also take away leftover folders nobody used for a day. */
+const SWEEPING = new Set(["create", "integrate", "finish", "close"]);
+
+function perform(stage: StageProject, action: string, operand: string): void {
+	if (action === "init") {
+		stage.init();
+	} else if (action === "create") {
+		process.stdout.write(`${stage.create(operand)}\n`);
+	} else if (action === "integrate") {
+		stage.integrate(operand);
+	} else if (action === "check") {
+		stage.check();
+	} else if (action === "finish") {
+		stage.finish(operand);
+	} else if (action === "close") {
+		stage.close(operand);
+	} else if (action === "publish") {
+		stage.publish();
+	} else if (action === "mode") {
+		if (operand !== "mvp" && operand !== "prod") {
+			throw new Error("режим: mvp или prod");
+		}
+		stage.setMode(operand);
+	}
+	if (SWEEPING.has(action)) {
+		stage.sweepIdleFolders();
+	}
+}
+
 export async function main(args = process.argv.slice(2)): Promise<void> {
 	const { action, apply, kill, operands, project } = parseArgs(args);
 	if (["help", "--help", "-h"].includes(action)) {
@@ -1400,29 +1513,7 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
 		return;
 	}
 	const [operand = ""] = operands;
-	stage.withLock(() => {
-		if (action === "init") {
-			stage.init();
-		} else if (action === "create") {
-			process.stdout.write(`${stage.create(operand)}\n`);
-		} else if (action === "integrate") {
-			stage.integrate(operand);
-		} else if (action === "check") {
-			stage.check();
-		} else if (action === "finish") {
-			stage.finish(operand);
-		} else if (action === "close") {
-			stage.close(operand);
-		} else if (action === "publish") {
-			stage.publish();
-		} else if (action === "mode") {
-			const mode = operand;
-			if (mode !== "mvp" && mode !== "prod") {
-				throw new Error("режим: mvp или prod");
-			}
-			stage.setMode(mode);
-		}
-	});
+	stage.withLock(() => perform(stage, action, operand));
 	process.stdout.write(`${stage.root}: ${action} — готово\n`);
 }
 

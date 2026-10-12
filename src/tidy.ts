@@ -45,6 +45,8 @@ export function machineTidy(
 	catalogue: Catalogue,
 	options: {
 		apply?: boolean;
+		/** Only what goes by itself: emptied folders nobody used for a day, with their holders. */
+		idle?: boolean;
 		/** With `apply`: also end the processes that hold an emptied folder. */
 		kill?: boolean;
 		project?: string;
@@ -80,9 +82,13 @@ export function machineTidy(
 		}
 		const stage = new StageProject(folder);
 		let applied: ProjectTidy["applied"];
-		if (options.apply) {
+		if (options.apply || options.idle) {
 			try {
-				applied = stage.withLock(() => stage.tidyApply({ kill: options.kill }));
+				applied = stage.withLock(() =>
+					options.apply
+						? stage.tidyApply({ kill: options.kill })
+						: { branches: [], pruned: [], ...stage.removeIdleFolders() }
+				);
 			} catch {
 				// One project in the middle of an integration must not stop the cleanup of the others.
 				report.busy.push(id);
@@ -132,7 +138,7 @@ export function formatTidy(report: MachineTidy): string {
 	}
 	if (report.projects.some((project) => held(project) > 0)) {
 		text.push(
-			"пустые папки, которые держат процессы, убирает tidy --apply --kill: он завершает эти процессы"
+			"пустые папки, которые держат процессы, уходят сами через сутки без использования; раньше их убирает tidy --apply --kill: он завершает эти процессы"
 		);
 	}
 	if (clean.length) {

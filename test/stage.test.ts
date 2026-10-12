@@ -8,6 +8,7 @@ import {
 	readdirSync,
 	readFileSync,
 	rmSync,
+	utimesSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -18,6 +19,7 @@ import { StageProject } from "../src/stage";
 import { withProjectModeText } from "../src/workflow-policy";
 
 const fixtures: string[] = [];
+const NOT_ALPHANUMERIC = /[^a-zA-Z0-9]/g;
 
 function git(folder: string, ...args: string[]): string {
 	const result = spawnSync("git", ["-C", folder, ...args], {
@@ -746,9 +748,11 @@ describe("canonical staging with real disposable Git repositories", () => {
 		};
 
 		const report = project.tidy();
-		expect(report.emptied).toEqual([
+		expect(report.emptied).toMatchObject([
 			{ holders: [{ name: "claude.exe", pid: 4242 }], path: emptied },
 		]);
+		// Used a moment ago: the folder was just made.
+		expect(Date.now() - (report.emptied[0]?.used ?? 0)).toBeLessThan(60_000);
 		expect(report.unregistered).toEqual([notes]);
 
 		expect(project.tidyApply()).toMatchObject({
@@ -763,6 +767,145 @@ describe("canonical staging with real disposable Git repositories", () => {
 		expect(after.emptied).toEqual([]);
 		expect(after.unregistered).toEqual([notes]);
 	}, 30_000);
+
+	test("a leftover folder nobody used for a day goes by itself; any use within the day keeps it", () => {
+		const { base, project } = fixture({ mode: "mvp", remote: null });
+		const DAY = 24 * 60 * 60 * 1000;
+		const HOUR = 60 * 60 * 1000;
+		const longAgo = new Date(Date.now() - 2 * DAY);
+		const hourAgo = new Date(Date.now() - HOUR);
+		const leftover = (name: string): string => {
+			const folder = join(project.worktreeRoot, name);
+			mkdirSync(folder, { recursive: true });
+			utimesSync(folder, longAgo, longAgo);
+			return folder;
+		};
+		const forgotten = leftover("forgotten");
+		const logged = leftover("logged");
+		const started = leftover("started");
+		const today = join(project.worktreeRoot, "today");
+		mkdirSync(today);
+		// A session opened in `logged` wrote to its log an hour ago.
+		project.sessionLogs = join(base, "logs");
+		const log = join(
+			project.sessionLogs,
+			logged.replace(NOT_ALPHANUMERIC, "-"),
+			"session.jsonl"
+		);
+		mkdirSync(dirname(log), { recursive: true });
+		writeFileSync(log, "{}\n");
+		utimesSync(log, hourAgo, hourAgo);
+		// A process began to work in `started` an hour ago; the one in `forgotten` has sat there for two days.
+		const ended: number[] = [];
+		project.processes = {
+			end: (pid) => ended.push(pid),
+			survey: () => ({
+				fileUsers: [],
+				processes: [
+					{
+						cwd: started,
+						exe: null,
+						name: "bash.exe",
+						parent: 1,
+						pid: 7001,
+						started: hourAgo.getTime(),
+					},
+					{
+						cwd: forgotten,
+						exe: null,
+						name: "claude.exe",
+						parent: 1,
+						pid: 7002,
+						started: longAgo.getTime(),
+					},
+				],
+			}),
+		};
+
+		const report = project.tidy();
+		expect(
+			Object.fromEntries(
+				report.emptied.map((item) => [
+					basename(item.path),
+					Math.round((Date.now() - item.used) / HOUR),
+				])
+			)
+		).toEqual({ forgotten: 48, logged: 1, started: 1, today: 0 });
+
+		expect(project.removeIdleFolders().folders).toEqual([forgotten]);
+		expect(existsSync(forgotten)).toBe(false);
+		for (const folder of [logged, started, today]) {
+			expect(existsSync(folder)).toBe(true);
+		}
+		// Nothing held these folders for real, so nobody had to be ended.
+		expect(ended).toEqual([]);
+		// A day later the rest is forgotten too.
+		project.now = () => Date.now() + DAY;
+		expect(project.removeIdleFolders().folders.sort()).toEqual(
+			[logged, started, today].sort()
+		);
+	}, 30_000);
+
+	test.skipIf(process.platform !== "win32")(
+		"the processes that hold a folder nobody used for a day are ended; within the day they are left alone",
+		async () => {
+			const { base, project } = fixture({ mode: "mvp", remote: null });
+			project.sessionLogs = join(base, "logs");
+			const swept = join(project.worktreeRoot, "swept");
+			const applied = join(project.worktreeRoot, "applied");
+			const later = () => Date.now() + 25 * 60 * 60 * 1000;
+			const children: ReturnType<typeof spawn>[] = [];
+			const exited = (child: ReturnType<typeof spawn>) =>
+				child.exitCode !== null || child.signalCode !== null;
+			const idleIn = async (folder: string) => {
+				mkdirSync(folder, { recursive: true });
+				const child = spawn(
+					process.execPath,
+					["-e", "console.log('ready'); setInterval(() => {}, 1000)"],
+					{
+						cwd: folder,
+						stdio: ["ignore", "pipe", "ignore"],
+						windowsHide: true,
+					}
+				);
+				children.push(child);
+				// A new process opens its folder a moment after it is created.
+				if (child.stdout) {
+					await once(child.stdout, "data");
+				}
+				return child;
+			};
+			try {
+				const first = await idleIn(swept);
+				expect(project.removeIdleFolders()).toEqual({ ended: [], folders: [] });
+				expect(exited(first)).toBe(false);
+				project.now = later;
+				const sweptAway = project.removeIdleFolders();
+				expect(sweptAway.folders).toEqual([swept]);
+				expect(sweptAway.ended.map((holder) => holder.pid)).toEqual([
+					first.pid as number,
+				]);
+
+				// The explicit cleanup follows the same rule without --kill.
+				project.now = Date.now;
+				const second = await idleIn(applied);
+				expect(project.tidyApply()).toMatchObject({ ended: [], folders: [] });
+				expect(exited(second)).toBe(false);
+				project.now = later;
+				const cleaned = project.tidyApply();
+				expect(cleaned.folders).toEqual([applied]);
+				expect(cleaned.ended.map((holder) => holder.pid)).toEqual([
+					second.pid as number,
+				]);
+				expect(existsSync(swept) || existsSync(applied)).toBe(false);
+			} finally {
+				for (const child of children) {
+					child.kill();
+				}
+			}
+		},
+		90_000
+	);
 
 	test("tidy reports what tasks left behind and removes only what holds nothing", () => {
 		const { base, folder, project } = fixture({ mode: "mvp", remote: null });
