@@ -1,11 +1,14 @@
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+	closeSync,
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
+	openSync,
 	readdirSync,
 	readFileSync,
+	readSync,
 	renameSync,
 	rmSync,
 	statSync,
@@ -50,10 +53,40 @@ const REBUILDABLE = new Set([
 ]);
 const REBUILDABLE_SUFFIXES = [".egg-info", ".tsbuildinfo", ".pyc"];
 const PRIVATE_SAMPLE = 5;
+const COMPARE_CHUNK = 1024 * 1024;
 
 const rebuildable = (segment: string): boolean =>
 	REBUILDABLE.has(segment) ||
 	REBUILDABLE_SUFFIXES.some((suffix) => segment.endsWith(suffix));
+
+/** Whether two files hold the same bytes; read in pieces, an ignored file may be large. */
+function sameFile(left: string, right: string): boolean {
+	const first = statSync(left, { throwIfNoEntry: false });
+	const second = statSync(right, { throwIfNoEntry: false });
+	if (!(first?.isFile() && second?.isFile()) || first.size !== second.size) {
+		return false;
+	}
+	const handles = [openSync(left, "r"), openSync(right, "r")] as const;
+	try {
+		const one = Buffer.alloc(COMPARE_CHUNK);
+		const other = Buffer.alloc(COMPARE_CHUNK);
+		let read = 0;
+		do {
+			read = readSync(handles[0], one, 0, COMPARE_CHUNK, null);
+			if (
+				readSync(handles[1], other, 0, COMPARE_CHUNK, null) !== read ||
+				!one.subarray(0, read).equals(other.subarray(0, read))
+			) {
+				return false;
+			}
+		} while (read > 0);
+		return true;
+	} finally {
+		for (const handle of handles) {
+			closeSync(handle);
+		}
+	}
+}
 
 interface CheckRecord {
 	checkedAt: string;
@@ -938,7 +971,11 @@ export class StageProject {
 		return path;
 	}
 
-	/** Ignored files that are not inside a rebuildable folder; the first few are enough to refuse. */
+	/**
+	 * Ignored files that are not inside a rebuildable folder; the first few are enough to refuse.
+	 * A file the canonical folder holds unchanged at the same path is a copy, not the task's own state:
+	 * agent apps seed a new worktree with the project's local settings, and the original stays behind.
+	 */
 	private privateIgnored(folder: string): string[] {
 		const found: string[] = [];
 		const visit = (entry: string) => {
@@ -949,7 +986,9 @@ export class StageProject {
 				return;
 			}
 			if (!entry.endsWith("/")) {
-				found.push(entry);
+				if (!sameFile(join(this.root, entry), join(folder, entry))) {
+					found.push(entry);
+				}
 				return;
 			}
 			// Git names only the outermost ignored folder; its own layout decides what it holds.
