@@ -103,7 +103,6 @@ test("a service starts by hand and has nothing to do with the queue unless its m
 				{ id: "plain", name: "Plain" },
 				{
 					autostart: true,
-					detachedListener: true,
 					id: "queue",
 					name: "Queue",
 					queue: { role: "queue", tokenFile: "runtime/api-token" },
