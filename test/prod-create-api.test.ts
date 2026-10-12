@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { Coolify } from "../src/coolify";
-import { ProjectCreator } from "../src/create";
+import { type CreateJob, ProjectCreator } from "../src/create";
 import { startHub } from "../src/server";
 
 test("production state and project creation answer only the hub's page and CLI", async () => {
@@ -112,6 +112,30 @@ test("production state and project creation answer only the hub's page and CLI",
 			method: "POST",
 		});
 		expect(invalid.status).toBe(409);
+		const jobsBeforeUnsupported = creator.list().length;
+		for (const template of ["unknown", undefined]) {
+			// biome-ignore lint/performance/noAwaitInLoops: verify both invalid API inputs without creating jobs
+			const unsupported = await fetch(create, {
+				body: JSON.stringify({ name: "unsupported", template }),
+				headers: { ...page, "content-type": "application/json" },
+				method: "POST",
+			});
+			expect(unsupported.status).toBe(409);
+			expect(creator.list().length).toBe(jobsBeforeUnsupported);
+		}
+		const gameResponse = await fetch(create, {
+			body: JSON.stringify({ name: "idle-game", template: "game2d" }),
+			headers: { ...cli, "content-type": "application/json" },
+			method: "POST",
+		});
+		expect(gameResponse.status).toBe(200);
+		const game = (await gameResponse.json()) as {
+			ok: boolean;
+			result: CreateJob;
+		};
+		expect(game.ok).toBe(true);
+		expect(game.result.template).toBe("game2d");
+		expect(creator.job(game.result.id)?.template).toBe("game2d");
 		const job = new URL(`api/create/${started.result.id}`, url);
 		expect((await fetch(job)).status).toBe(403);
 		expect((await fetch(job, { headers: cli })).status).toBe(200);

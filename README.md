@@ -6,8 +6,8 @@
 ## Контракт разработки и production
 
 Для создания проекта в другой базовой папке используйте
-`bun run hub create python my-app --base-dir "D:/my projects"` (также доступен
-шаблон `bts`). Путь должен быть абсолютным. DevHub создаёт папку, назначает порты,
+`bun run hub create python my-app --base-dir "D:/my projects"` (также доступны
+шаблоны `bts` и `game2d`). Путь должен быть абсолютным. DevHub создаёт папку, назначает порты,
 записывает `devhub.json` и сохраняет базовую папку в списке обнаружения проектов;
 регистрация сохраняется после перезапуска пульта. HTTP `POST /api/create`
 принимает ту же настройку в поле `baseDir`.
@@ -341,7 +341,7 @@ Claude Code, Codex и другие агенты запускают dev-серв�
 
 ## Новый проект
 
-«+ Новый проект» в боковом списке или `bun run hub create bts|python ИМЯ [--description ТЕКСТ] [--no-web]`.
+«+ Новый проект» в боковом списке или `bun run hub create bts|python|game2d ИМЯ [--description ТЕКСТ] [--no-web]`.
 Проект создаётся в папке `code` из `services.json` и сразу появляется в пульте:
 
 - **Better-T-Stack** — `create-better-t-stack create-json`: Next.js, Hono на Bun, tRPC, Better Auth,
@@ -349,6 +349,9 @@ Claude Code, Codex и другие агенты запускают dev-серв�
   web и server. Как у analytics и brains.
 - **Python** — чистый проект на uv: пакет в `src/`, pytest, ruff; по умолчанию FastAPI с `/health`
   и Dockerfile, с `--no-web` — пакет без dev-сервиса.
+- **2D-игра** (`game2d`) — браузерная игра на Phaser, Vite и TypeScript: игровая сцена,
+  масштабирование экрана и локальное сохранение. `bun run build` создаёт статический сайт в `dist/`;
+  запуск разработки идёт через DevHub. Например: `bun run hub create game2d prapor-idle`.
 
 Пульт выбирает свободные порты (приложения с 3020, Postgres с 5433, Python API с 8100), пишет их в
 `devhub.json`, `.env` и `docker-compose.yml`, заменяет dev-скрипты обёртками, сохраняет исходные в

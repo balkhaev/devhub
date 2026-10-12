@@ -1,0 +1,23 @@
+{
+  "name": "__PROJECT_NAME__",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "A browser-based 2D idle game built with Phaser, TypeScript and Vite.",
+  "scripts": {
+    "dev": "node .devhub/launch.cjs dev",
+    "worktree": "node .devhub/worktree.cjs",
+    "check": "tsc --noEmit",
+    "test": "bun test",
+    "build": "vite build",
+    "start": "bun server.ts"
+  },
+  "dependencies": {
+    "phaser": "^3.90.0"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.3",
+    "typescript": "^6.0.3",
+    "vite": "^8.3.4"
+  }
+}

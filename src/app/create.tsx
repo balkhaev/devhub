@@ -29,6 +29,12 @@ const TEMPLATES: { description: string; id: Template; title: string }[] = [
 		id: "python",
 		title: "Python",
 	},
+	{
+		description:
+			"Браузерная 2D-игра на Phaser, Vite и TypeScript: сцены, масштабирование экрана, локальное сохранение и сборка для публикации.",
+		id: "game2d",
+		title: "2D-игра · Phaser",
+	},
 ];
 
 function useJob(id: string | null): CreateJob | null {
@@ -73,11 +79,12 @@ export function CreatePage() {
 	const [jobId, setJobId] = useState<string | null>(null);
 	const job = useJob(jobId);
 	const valid = NAME.test(name) && !name.includes("--");
-	const chooseTemplate = useCallback(
-		(event: ChangeEvent<HTMLInputElement>) =>
-			setTemplate(event.target.value === "python" ? "python" : "bts"),
-		[]
-	);
+	const chooseTemplate = useCallback((event: ChangeEvent<HTMLInputElement>) => {
+		const chosen = TEMPLATES.find((entry) => entry.id === event.target.value);
+		if (chosen) {
+			setTemplate(chosen.id);
+		}
+	}, []);
 	const changeName = useCallback(
 		(event: ChangeEvent<HTMLInputElement>) =>
 			setName(event.target.value.toLowerCase()),

@@ -11,6 +11,7 @@ import {
 	btsInput,
 	type CreateJob,
 	freePorts,
+	isTemplate,
 	ProjectCreator,
 	type Runner,
 	registerCreationFolder,
@@ -33,6 +34,8 @@ const readJson = async <T>(file: string): Promise<T> =>
 	JSON.parse(await readFile(file, "utf8")) as T;
 
 test("names, ports and env files are checked and edited conservatively", async () => {
+	expect(isTemplate("game2d")).toBe(true);
+	expect(isTemplate("unknown")).toBe(false);
 	for (const name of ["my-app", "ab", "a1"]) {
 		expect(() => validateName(name)).not.toThrow();
 	}
@@ -99,6 +102,139 @@ test("names, ports and env files are checked and edited conservatively", async (
 		],
 	});
 	expect([...used].sort()).toEqual([3001, 4700, 5432]);
+});
+
+test("a 2D game receives a standalone build, checked idle starter and DevHub service", async () => {
+	const { catalogue, code } = await setup();
+	const commands: string[][] = [];
+	let registered = 0;
+	const creator = new ProjectCreator({
+		catalogue: () => catalogue,
+		hubRoot: HUB,
+		registered: () => {
+			registered += 1;
+			return Promise.resolve();
+		},
+		runner: (command) => {
+			commands.push(command);
+			return Promise.resolve(0);
+		},
+	});
+	const job = await waitFor(
+		creator,
+		creator.start({
+			description: 'Игра с "рейдами" и коллекцией',
+			name: "idle-game",
+			template: "game2d",
+		}).id
+	);
+	expect(job.status).toBe("done");
+	expect(registered).toBe(1);
+	const root = join(code, "idle-game");
+	const manifest = manifestSchema.parse(
+		await readJson(join(root, "devhub.json"))
+	);
+	expect(manifest.services[0]).toMatchObject({
+		command:
+			"bun x --no-install vite --host 127.0.0.1 --port 3020 --strictPort",
+		id: "game",
+		port: 3020,
+	});
+	expect(manifest.launch.dev).toEqual(["game"]);
+	const pkg = await readJson<{
+		dependencies: Record<string, string>;
+		description: string;
+		name: string;
+		scripts: Record<string, string>;
+	}>(join(root, "package.json"));
+	expect(pkg.name).toBe("idle-game");
+	expect(pkg.description).toBe('Игра с "рейдами" и коллекцией');
+	expect(pkg.dependencies.phaser).toBeDefined();
+	expect(pkg.scripts).toMatchObject({
+		dev: "node .devhub/launch.cjs dev",
+		worktree: "node .devhub/worktree.cjs",
+	});
+	expect(pkg.scripts.start).not.toContain(".devhub");
+	expect(await readFile(join(root, "index.html"), "utf8")).not.toContain(
+		"__PROJECT_NAME__"
+	);
+	expect(existsSync(join(root, "server.ts"))).toBe(true);
+	expect(existsSync(join(root, "Dockerfile"))).toBe(true);
+	const policy = workflowPolicySchema.parse(
+		await readJson(join(root, ".devhub", "worktree.json"))
+	);
+	expect(policy).toMatchObject({ mode: "mvp", remote: null });
+	expect(policy.checks).toEqual([
+		"bun run check",
+		"bun run test",
+		"bun run build",
+	]);
+	expect(commands.map((command) => command.slice(1, 3).join(" "))).toEqual([
+		"install",
+		"run check",
+		"run test",
+		"run build",
+		"init -b",
+		"add -A",
+		"commit -m",
+	]);
+});
+
+test("a failed game check keeps its files and prevents registration and first commit", async () => {
+	const { catalogue, code } = await setup();
+	const commands: string[][] = [];
+	let registered = false;
+	const creator = new ProjectCreator({
+		catalogue: () => catalogue,
+		hubRoot: HUB,
+		registered: () => {
+			registered = true;
+			return Promise.resolve();
+		},
+		runner: (command) => {
+			commands.push(command);
+			return Promise.resolve(command.at(-1) === "check" ? 1 : 0);
+		},
+	});
+	const job = await waitFor(
+		creator,
+		creator.start({ name: "broken-game", template: "game2d" }).id
+	);
+	expect(job.status).toBe("failed");
+	expect(job.error).toContain("кодом 1");
+	expect(registered).toBe(false);
+	expect(commands.some((command) => command[0] === "git")).toBe(false);
+	expect(existsSync(join(code, "broken-game", "package.json"))).toBe(true);
+});
+
+test("simultaneously created games reserve different ports before registration", async () => {
+	const { catalogue, code } = await setup();
+	const creator = new ProjectCreator({
+		catalogue: () => catalogue,
+		hubRoot: HUB,
+		registered: () => Promise.resolve(),
+		runner: async () => {
+			await sleep(15);
+			return 0;
+		},
+	});
+	const first = creator.start({ name: "first-game", template: "game2d" });
+	const second = creator.start({ name: "second-game", template: "game2d" });
+	const jobs = await Promise.all([
+		waitFor(creator, first.id),
+		waitFor(creator, second.id),
+	]);
+	expect(jobs.every((job) => job.status === "done")).toBe(true);
+	const manifests = await Promise.all(
+		["first-game", "second-game"].map((name) =>
+			readJson<{ services: { port: number }[] }>(
+				join(code, name, "devhub.json")
+			)
+		)
+	);
+	expect(
+		new Set(manifests.map((manifest) => manifest.services[0]?.port)).size
+	).toBe(2);
 });
 
 async function waitFor(
