@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
 	closeSync,
+	type Dirent,
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
@@ -19,7 +20,15 @@ import { isAbsolute, join, parse, resolve } from "node:path";
 
 import { isInsideProject, primaryCheckout, sameSourcePath } from "./checkouts";
 import { canonicalProjectFolder, loadCatalogue } from "./config";
+import {
+	type FolderProcesses,
+	type Holder,
+	holdersOf,
+	removeFolder,
+	systemProcesses,
+} from "./holders";
 import { acquireFileLock, type ProcessProbe, systemProbe } from "./stage-lock";
+import { holderWords } from "./tidy-words";
 import {
 	type ProjectMode,
 	type WorkflowPolicy,
@@ -58,6 +67,24 @@ const COMPARE_CHUNK = 1024 * 1024;
 const rebuildable = (segment: string): boolean =>
 	REBUILDABLE.has(segment) ||
 	REBUILDABLE_SUFFIXES.some((suffix) => segment.endsWith(suffix));
+
+/** Whether a folder keeps anything besides empty folders and what any checkout rebuilds. */
+function holdsFiles(folder: string): boolean {
+	let entries: Dirent[];
+	try {
+		entries = readdirSync(folder, { withFileTypes: true });
+	} catch {
+		// A folder that cannot be read is not known to be empty.
+		return true;
+	}
+	return entries.some(
+		(entry) =>
+			!rebuildable(entry.name) &&
+			(entry.isSymbolicLink() ||
+				!entry.isDirectory() ||
+				holdsFiles(join(folder, entry.name)))
+	);
+}
 
 /** Whether two files hold the same bytes; read in pieces, an ignored file may be large. */
 function sameFile(left: string, right: string): boolean {
@@ -106,6 +133,11 @@ export interface WorktreeRecord {
 export interface TidyReport {
 	/** Uncommitted paths in the canonical folder. */
 	canonicalChanges: number;
+	/**
+	 * Folders in the policy's `worktreeRoot` that are no worktree and hold no files, with the processes that keep
+	 * them from being deleted: `tidyApply` removes them.
+	 */
+	emptied: { holders: Holder[]; path: string }[];
 	/** Closed branches without commits of their own: `tidyApply` deletes them. */
 	merged: { branch: string; head: string }[];
 	/** Registered worktrees whose folder is gone: `tidyApply` prunes them. */
@@ -114,7 +146,7 @@ export interface TidyReport {
 	parked: { ahead: number; branch: string; days: number }[];
 	root: string;
 	stashes: number;
-	/** Folders in the policy's `worktreeRoot` that are not a worktree of this project. */
+	/** Folders in the policy's `worktreeRoot` that are not a worktree of this project and hold files. */
 	unregistered: string[];
 	working: {
 		ahead: number;
@@ -139,8 +171,13 @@ const HELP = `DevHub: MVP → main + push + выпуск; Прод → stage →
   bun run stage status --project PATH         stage, worktree, актуальность проверки
   bun run stage finish PATH --project PATH    убрать чистый, уже влитый worktree и его ветку
   bun run stage close PATH --project PATH     закрыть чистый worktree, сохранив его ветку
-  bun run stage tidy [--apply] --project PATH что осталось после задач; --apply убирает слитые
-                                              ветки и записи о worktree без папок
+  bun run stage tidy [--apply [--kill]] --project PATH
+                                              что осталось после задач; --apply убирает слитые
+                                              ветки, записи о worktree без папок и пустые папки;
+                                              --kill завершает процессы, которые держат такую папку
+
+finish, close и integrate сами завершают процессы, которые держат закрываемую папку. Сеанс,
+из которого запущена команда, не завершается: его пустую папку уберёт следующая уборка.
 
 В проекте те же команды доступны через bun/npm run worktree.
 DevHub запускает dev только из основной папки. В Прод push/deploy требуют отдельного выпуска.
@@ -172,6 +209,8 @@ export class StageProject {
 	readonly worktreeRoot: string;
 	readonly stateFile: string;
 	readonly lockFile: string;
+	/** Who holds a folder and how a process is ended; tests answer for the computer. */
+	processes: FolderProcesses = systemProcesses;
 
 	constructor(folder: string, stateRoot = join(ROOT, ".state", "stage")) {
 		this.root = primaryCheckout(folder);
@@ -954,8 +993,7 @@ export class StageProject {
 				`${path}: сначала сохраните HEAD в ветке; worktree остаётся рабочим`
 			);
 		}
-		// Git verifies registration, locks and cleanliness again; never force removal.
-		gitOutput(this.root, ["worktree", "remove", path]);
+		this.removeCheckout(path);
 		// An integrated task leaves nothing behind: its commits are in the integration branch.
 		const dropped =
 			integrated && worktree.branch && worktree.head
@@ -969,6 +1007,50 @@ export class StageProject {
 		}
 		process.stdout.write(`worktree закрыт; ${outcome}\n`);
 		return path;
+	}
+
+	/**
+	 * Git verifies registration, locks and cleanliness again and deletes the folder; removal is never forced.
+	 * Windows does not let it delete a folder a process still uses. By then the checkout is verified and no longer
+	 * registered, so the processes that hold it are ended and the rest is removed here. The session this command
+	 * runs in is not ended: its emptied folder stays for the next tidy, and the task is closed all the same.
+	 */
+	private removeCheckout(path: string): void {
+		const git = spawnSync(
+			"git",
+			["-C", this.root, "worktree", "remove", path],
+			{ encoding: "utf8", windowsHide: true }
+		);
+		if (git.error) {
+			throw git.error;
+		}
+		if (this.worktrees().some((item) => sameSourcePath(item.path, path))) {
+			// Git refused before deleting anything.
+			throw new Error(git.stderr.trim() || `git worktree: ${git.status}`);
+		}
+		if (!existsSync(path)) {
+			return;
+		}
+		const removal = removeFolder(path, {
+			kill: true,
+			processes: this.processes,
+		});
+		if (removal.ended.length) {
+			process.stdout.write(
+				`завершены процессы, державшие ${path}: ${holderWords(removal.ended)}\n`
+			);
+		}
+		if (removal.removed) {
+			return;
+		}
+		const holders = removal.holders.length
+			? holderWords(removal.holders)
+			: "процесс не найден";
+		process.stdout.write(
+			removal.own
+				? `папку ${path} держит сеанс, из которого запущена команда (${holders}): он не завершается; пустую папку уберёт tidy --apply после его закрытия или tidy --apply --kill из другого сеанса\n`
+				: `папка ${path} осталась, её держат: ${holders}; повторите tidy --apply --kill\n`
+		);
 	}
 
 	/**
@@ -1062,8 +1144,11 @@ export class StageProject {
 		return true;
 	}
 
-	/** What the project still keeps after its tasks; reads Git only. */
-	tidy(): TidyReport {
+	/**
+	 * What the project still keeps after its tasks. It reads Git and, for emptied folders only, asks which
+	 * processes hold them.
+	 */
+	tidy(options: { holders?: boolean } = {}): TidyReport {
 		const integration = `refs/heads/${this.integrationBranch}`;
 		const now = Date.now() / 1000;
 		const days = (seconds: string) =>
@@ -1090,8 +1175,28 @@ export class StageProject {
 				.split("\n")
 				.filter(Boolean)
 		);
+		const leftovers = (
+			existsSync(this.worktreeRoot)
+				? readdirSync(this.worktreeRoot, { withFileTypes: true })
+				: []
+		)
+			.filter((entry) => entry.isDirectory())
+			.map((entry) => join(this.worktreeRoot, entry.name))
+			// A task named `area/topic` keeps its checkout one level deeper.
+			.filter(
+				(folder) => !present.some((item) => isInsideProject(folder, item.path))
+			);
+		const emptied = leftovers.filter((folder) => !holdsFiles(folder));
+		const survey =
+			emptied.length && options.holders !== false
+				? this.processes.survey([])
+				: undefined;
 		const report: TidyReport = {
 			canonicalChanges: changes(this.root),
+			emptied: emptied.map((path) => ({
+				holders: survey ? holdersOf(path, survey) : [],
+				path,
+			})),
 			merged: [],
 			missing: records
 				.filter((item) => !existsSync(item.path))
@@ -1101,17 +1206,7 @@ export class StageProject {
 			stashes: gitOutput(this.root, ["stash", "list"], true)
 				.split("\n")
 				.filter(Boolean).length,
-			unregistered: (existsSync(this.worktreeRoot)
-				? readdirSync(this.worktreeRoot, { withFileTypes: true })
-				: []
-			)
-				.filter((entry) => entry.isDirectory())
-				.map((entry) => join(this.worktreeRoot, entry.name))
-				// A task named `area/topic` keeps its checkout one level deeper.
-				.filter(
-					(folder) =>
-						!present.some((item) => isInsideProject(folder, item.path))
-				),
+			unregistered: leftovers.filter((folder) => !emptied.includes(folder)),
 			working: present.map((item) => ({
 				ahead: count(`${integration}..HEAD`, item.path),
 				behind: count(`HEAD..${integration}`, item.path),
@@ -1146,9 +1241,17 @@ export class StageProject {
 		return report;
 	}
 
-	/** Remove only what holds nothing: registrations without a folder and merged closed branches. */
-	tidyApply(): { branches: string[]; pruned: string[] } {
-		const before = this.tidy();
+	/**
+	 * Remove only what holds nothing: registrations without a folder, merged closed branches and emptied folders.
+	 * `kill` also ends the processes that keep an emptied folder from being deleted.
+	 */
+	tidyApply(options: { kill?: boolean } = {}): {
+		branches: string[];
+		ended: Holder[];
+		folders: string[];
+		pruned: string[];
+	} {
+		const before = this.tidy({ holders: false });
 		// A registration on an unplugged drive is not an abandoned one.
 		const reachable = before.missing.every((path) =>
 			existsSync(parse(resolve(path)).root)
@@ -1156,11 +1259,34 @@ export class StageProject {
 		if (before.missing.length && reachable) {
 			gitOutput(this.root, ["worktree", "prune"]);
 		}
-		const after = this.tidy();
+		const after = this.tidy({ holders: false });
+		const ended: Holder[] = [];
+		const folders: string[] = [];
+		for (const { path } of after.emptied) {
+			// Reviewed again right before deletion: a checkout being created this moment is not a leftover.
+			if (
+				!isInsideProject(this.worktreeRoot, path) ||
+				sameSourcePath(path, this.worktreeRoot) ||
+				this.worktrees().some((item) => isInsideProject(path, item.path)) ||
+				holdsFiles(path)
+			) {
+				continue;
+			}
+			const removal = removeFolder(path, {
+				kill: Boolean(options.kill),
+				processes: this.processes,
+			});
+			ended.push(...removal.ended);
+			if (removal.removed) {
+				folders.push(path);
+			}
+		}
 		return {
 			branches: after.merged
 				.filter((item) => this.deleteMergedBranch(item.branch, item.head))
 				.map((item) => item.branch),
+			ended,
+			folders,
 			pruned: before.missing.filter((path) => !after.missing.includes(path)),
 		};
 	}
@@ -1190,6 +1316,7 @@ export class StageProject {
 function parseArgs(args: string[]) {
 	const action = args[0] ?? "help";
 	let apply = false;
+	let kill = false;
 	let project: string | undefined;
 	const operands: string[] = [];
 	for (let i = 1; i < args.length; i += 1) {
@@ -1202,17 +1329,22 @@ function parseArgs(args: string[]) {
 			}
 		} else if (value === "--apply" && action === "tidy") {
 			apply = true;
+		} else if (value === "--kill" && action === "tidy") {
+			kill = true;
 		} else if (value.startsWith("-")) {
 			throw new Error(`неизвестный параметр ${value}`);
 		} else {
 			operands.push(value);
 		}
 	}
-	return { action, apply, operands, project };
+	if (kill && !apply) {
+		throw new Error("--kill относится только к tidy --apply");
+	}
+	return { action, apply, kill, operands, project };
 }
 
 export async function main(args = process.argv.slice(2)): Promise<void> {
-	const { action, apply, operands, project } = parseArgs(args);
+	const { action, apply, kill, operands, project } = parseArgs(args);
 	if (["help", "--help", "-h"].includes(action)) {
 		process.stdout.write(HELP);
 		return;
@@ -1259,7 +1391,9 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
 		return;
 	}
 	if (action === "tidy") {
-		const applied = apply ? stage.withLock(() => stage.tidyApply()) : undefined;
+		const applied = apply
+			? stage.withLock(() => stage.tidyApply({ kill }))
+			: undefined;
 		process.stdout.write(
 			`${JSON.stringify({ ...(applied ? { applied } : {}), ...stage.tidy() }, null, 2)}\n`
 		);

@@ -1,9 +1,11 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { spawn, spawnSync } from "node:child_process";
+import { once } from "node:events";
 import {
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
+	readdirSync,
 	readFileSync,
 	rmSync,
 	writeFileSync,
@@ -643,6 +645,123 @@ describe("canonical staging with real disposable Git repositories", () => {
 		expect(() => project.close(outside)).toThrow("закрытие допустимо только");
 		expect(existsSync(folder)).toBe(true);
 		expect(existsSync(outside)).toBe(true);
+	}, 30_000);
+
+	test.skipIf(process.platform !== "win32")(
+		"closing ends a process that still works in the checkout",
+		async () => {
+			const { project } = fixture({ mode: "mvp", remote: null });
+			const tree = project.create("held");
+			commitSource(tree, "finished task");
+			const child = spawn(
+				process.execPath,
+				["-e", "console.log('ready'); setInterval(() => {}, 1000)"],
+				{ cwd: tree, stdio: ["ignore", "pipe", "ignore"], windowsHide: true }
+			);
+			const exited = () => child.exitCode !== null || child.signalCode !== null;
+			try {
+				// A new process opens its folder a moment after it is created.
+				if (child.stdout) {
+					await once(child.stdout, "data");
+				}
+				project.integrate(tree);
+				expect(existsSync(tree)).toBe(false);
+				expect(project.worktrees()).toHaveLength(1);
+				expect(git(project.root, "for-each-ref", "refs/heads/codex")).toBe("");
+				if (!exited()) {
+					await Promise.race([once(child, "exit"), delay(5000)]);
+				}
+				expect(exited()).toBe(true);
+			} finally {
+				child.kill();
+			}
+		},
+		60_000
+	);
+
+	test.skipIf(process.platform !== "win32")(
+		"the session that closes its own checkout is not ended: the task closes and tidy takes the emptied folder",
+		() => {
+			const { project } = fixture({ mode: "mvp", remote: null });
+			const tree = project.create("own");
+			commitSource(tree, "finished task");
+			const home = process.cwd();
+			process.chdir(tree);
+			try {
+				project.integrate(tree);
+				// Closed all the same: no registration and no branch.
+				expect(project.worktrees()).toHaveLength(1);
+				expect(git(project.root, "for-each-ref", "refs/heads/codex")).toBe("");
+				expect(readdirSync(tree)).toEqual([]);
+				const report = project.tidy();
+				expect(report.unregistered).toEqual([]);
+				expect(report.emptied.map((item) => item.path)).toEqual([tree]);
+				expect(
+					report.emptied[0]?.holders.map((holder) => holder.pid)
+				).toContain(process.pid);
+				// Not even an explicit kill ends the session that asks for it.
+				expect(project.tidyApply({ kill: true })).toMatchObject({
+					ended: [],
+					folders: [],
+				});
+				expect(existsSync(tree)).toBe(true);
+			} finally {
+				process.chdir(home);
+			}
+			expect(project.tidyApply().folders).toEqual([tree]);
+			expect(existsSync(tree)).toBe(false);
+		},
+		60_000
+	);
+
+	test("tidy removes leftover folders that hold no files and keeps those that do", () => {
+		const { project } = fixture({ mode: "mvp", remote: null });
+		const emptied = join(project.worktreeRoot, "closed");
+		mkdirSync(join(emptied, "apps", "web"), { recursive: true });
+		mkdirSync(join(emptied, "node_modules", "left-pad"), { recursive: true });
+		writeFileSync(
+			join(emptied, "node_modules", "left-pad", "index.js"),
+			"module.exports = 1;\n"
+		);
+		const notes = join(project.worktreeRoot, "notes");
+		mkdirSync(join(notes, "deep"), { recursive: true });
+		writeFileSync(join(notes, "deep", "draft.txt"), "someone's work\n");
+		project.processes = {
+			end: () => {
+				throw new Error("nothing is ended without kill");
+			},
+			survey: () => ({
+				fileUsers: [],
+				processes: [
+					{
+						cwd: emptied,
+						exe: null,
+						name: "claude.exe",
+						parent: 1,
+						pid: 4242,
+						started: 1,
+					},
+				],
+			}),
+		};
+
+		const report = project.tidy();
+		expect(report.emptied).toEqual([
+			{ holders: [{ name: "claude.exe", pid: 4242 }], path: emptied },
+		]);
+		expect(report.unregistered).toEqual([notes]);
+
+		expect(project.tidyApply()).toMatchObject({
+			ended: [],
+			folders: [emptied],
+		});
+		expect(existsSync(emptied)).toBe(false);
+		expect(readFileSync(join(notes, "deep", "draft.txt"), "utf8")).toBe(
+			"someone's work\n"
+		);
+		const after = project.tidy();
+		expect(after.emptied).toEqual([]);
+		expect(after.unregistered).toEqual([notes]);
 	}, 30_000);
 
 	test("tidy reports what tasks left behind and removes only what holds nothing", () => {

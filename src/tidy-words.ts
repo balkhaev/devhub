@@ -1,3 +1,4 @@
+import type { Holder } from "./holders";
 import type { TidyReport } from "./stage";
 
 /** The tidy report in words, shared by the terminal and the hub's page. */
@@ -6,7 +7,13 @@ import type { TidyReport } from "./stage";
 const IDLE_DAYS = 3;
 
 export interface ProjectTidy extends TidyReport {
-	applied?: { branches: string[]; pruned: string[] };
+	applied?: {
+		branches: string[];
+		/** Processes that were ended because they held an emptied folder. */
+		ended: Holder[];
+		folders: string[];
+		pruned: string[];
+	};
 	id: string;
 }
 
@@ -20,9 +27,18 @@ export interface MachineTidy {
 	skipped: string[];
 }
 
-/** What `--apply` removes without asking: it holds no work. */
+export const holderWords = (holders: Holder[]): string =>
+	holders.map((holder) => `${holder.name} (PID ${holder.pid})`).join(", ");
+
+/** What `--apply` removes without asking: it holds no work and no process uses it. */
 export const removable = (project: ProjectTidy): number =>
-	project.merged.length + project.missing.length;
+	project.merged.length +
+	project.missing.length +
+	project.emptied.filter((folder) => folder.holders.length === 0).length;
+
+/** Emptied folders that processes still use: `--apply --kill` ends those processes. */
+export const held = (project: ProjectTidy): number =>
+	project.emptied.filter((folder) => folder.holders.length > 0).length;
 
 export function projectLines(project: ProjectTidy): string[] {
 	const lines: string[] = [];
@@ -31,6 +47,14 @@ export function projectLines(project: ProjectTidy): string[] {
 	}
 	if (project.applied?.pruned.length) {
 		lines.push(`убрано записей без папок: ${project.applied.pruned.length}`);
+	}
+	if (project.applied?.folders.length) {
+		lines.push(`убрано пустых папок: ${project.applied.folders.length}`);
+	}
+	if (project.applied?.ended.length) {
+		lines.push(
+			`завершены процессы, державшие папки: ${holderWords(project.applied.ended)}`
+		);
 	}
 	if (project.canonicalChanges) {
 		lines.push(
@@ -61,6 +85,11 @@ export function projectLines(project: ProjectTidy): string[] {
 		];
 		lines.push(
 			`worktree: ${tree.path} · ${tree.branch ?? "без ветки"} · ${marks.join(" · ")}`
+		);
+	}
+	for (const folder of project.emptied) {
+		lines.push(
+			`пустая папка без worktree: ${folder.path}${folder.holders.length ? ` · держат: ${holderWords(folder.holders)}` : ""}`
 		);
 	}
 	for (const folder of project.unregistered) {

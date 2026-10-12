@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import type { ProjectView } from "../hub";
-import { type MachineTidy, projectLines, removable } from "../tidy-words";
+import { held, type MachineTidy, projectLines, removable } from "../tidy-words";
 import { readHub, sendHub } from "./api";
 import { projectRoute } from "./project-ui";
 
@@ -10,6 +10,8 @@ import { projectRoute } from "./project-ui";
 function useTidy(): {
 	apply: () => void;
 	busy: boolean;
+	/** Also ends the processes that hold emptied folders. */
+	free: () => void;
 	error: string | null;
 	refresh: () => void;
 	report: MachineTidy | null;
@@ -33,8 +35,12 @@ function useTidy(): {
 		() => run(() => sendHub<MachineTidy>("/api/tidy", {})),
 		[run]
 	);
+	const free = useCallback(
+		() => run(() => sendHub<MachineTidy>("/api/tidy", { kill: true })),
+		[run]
+	);
 	useEffect(refresh, [refresh]);
-	return { apply, busy, error, refresh, report };
+	return { apply, busy, error, free, refresh, report };
 }
 
 function DataCard({ data }: { data: MachineTidy["data"] }) {
@@ -64,7 +70,7 @@ function DataCard({ data }: { data: MachineTidy["data"] }) {
 }
 
 export function TidyPage({ projects }: { projects: ProjectView[] }) {
-	const { apply, busy, error, refresh, report } = useTidy();
+	const { apply, busy, error, free, refresh, report } = useTidy();
 	const names = new Map(projects.map((project) => [project.id, project.name]));
 	const listed = (report?.projects ?? []).map((project) => ({
 		lines: projectLines(project),
@@ -73,6 +79,10 @@ export function TidyPage({ projects }: { projects: ProjectView[] }) {
 	const clean = listed.filter((entry) => entry.lines.length === 0);
 	const pending = listed.reduce(
 		(count, entry) => count + removable(entry.project),
+		0
+	);
+	const occupied = listed.reduce(
+		(count, entry) => count + held(entry.project),
 		0
 	);
 	return (
@@ -98,10 +108,21 @@ export function TidyPage({ projects }: { projects: ProjectView[] }) {
 						className="button button--primary"
 						disabled={busy}
 						onClick={apply}
-						title="Слитые ветки закрытых задач и записи о worktree без папок: в них нет работы"
+						title="Слитые ветки закрытых задач, записи о worktree без папок и пустые папки: в них нет работы"
 						type="button"
 					>
 						Убрать лишнее: {pending}
+					</button>
+				) : null}
+				{occupied ? (
+					<button
+						className="button"
+						disabled={busy}
+						onClick={free}
+						title="Завершит процессы, которые держат пустые папки закрытых задач (они названы в списке), и удалит папки. Сеанс агента, открытый в такой папке, закроется"
+						type="button"
+					>
+						Освободить занятые папки: {occupied}
 					</button>
 				) : null}
 			</header>

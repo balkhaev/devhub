@@ -48,7 +48,7 @@ const ACTION_WORDS: Record<string, string> = {
 	restart: "перезапустить",
 	start: "запустить",
 	stop: "остановить",
-	tidy: "убрать слитые ветки и записи без папок",
+	tidy: "убрать слитые ветки, записи без папок и пустые папки",
 	up: "поднять",
 };
 const TARGET_WORDS: Record<string, string> = {
@@ -207,7 +207,7 @@ export async function startHub(
 		};
 	};
 	/** Git inspection of every checkout takes seconds: it runs beside the hub, not inside its event loop. */
-	const tidy = async (apply: boolean): Promise<MachineTidy> => {
+	const tidy = async (apply: boolean, kill = false): Promise<MachineTidy> => {
 		const child = spawn(
 			[
 				process.execPath,
@@ -215,6 +215,7 @@ export async function startHub(
 				"tidy",
 				"--json",
 				...(apply ? ["--apply"] : []),
+				...(apply && kill ? ["--kill"] : []),
 			],
 			{ stderr: "pipe", stdout: "pipe", windowsHide: true }
 		);
@@ -515,7 +516,14 @@ export async function startHub(
 				local(request) ? json(hub.current) : refused(),
 			"/api/tidy": {
 				GET: (request) => guarded(request, () => tidy(false)),
-				POST: (request) => act(request, () => tidy(true)),
+				POST: (request) =>
+					act(request, async () => {
+						// The page asks to end the processes that hold emptied folders with `{ kill: true }`.
+						const body = (await request.json().catch(() => null)) as {
+							kill?: unknown;
+						} | null;
+						return tidy(true, body?.kill === true);
+					}),
 			},
 			"/auth/callback": (request) => oauthCallback(ai, request, local(request)),
 			"/v1/*": (request, bunServer) => {

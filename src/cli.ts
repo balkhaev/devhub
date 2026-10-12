@@ -33,9 +33,10 @@ const HELP = `devhub — управление локальной разрабо�
                                         создать проект и подключить его к пульту
   bun run hub prod [project] [--logs] [--lines N] [--json]
                                         что работает в проде (Coolify)
-  bun run hub tidy [project] [--apply] [--json]
+  bun run hub tidy [project] [--apply [--kill]] [--json]
                                         что осталось после задач в code, worktrees и data;
-                                        --apply убирает слитые ветки и записи без папок
+                                        --apply убирает слитые ветки, записи без папок и пустые
+                                        папки; --kill завершает процессы, которые держат такую папку
 
 Проекты хранят dev-команды в devhub.json. Production запускается собственными start/deploy-командами.
 `;
@@ -65,6 +66,7 @@ interface Arguments {
 	baseDir?: string;
 	description?: string;
 	json: boolean;
+	kill: boolean;
 	lines: number;
 	logs: boolean;
 	project?: string;
@@ -83,6 +85,9 @@ const FLAGS: Record<string, (parsed: Arguments) => void> = {
 	},
 	"--json": (parsed) => {
 		parsed.json = true;
+	},
+	"--kill": (parsed) => {
+		parsed.kill = true;
 	},
 	"--logs": (parsed) => {
 		parsed.logs = true;
@@ -117,6 +122,7 @@ export function parseArguments(args: string[]): Arguments {
 		action: args[0] ?? "help",
 		apply: false,
 		json: false,
+		kill: false,
 		lines: DEFAULT_LINES,
 		logs: false,
 		targets: [],
@@ -156,6 +162,9 @@ function validateRouting(parsed: Arguments): void {
 	}
 	if (parsed.apply && parsed.action !== "tidy") {
 		throw new Error("--apply относится только к tidy");
+	}
+	if (parsed.kill && !(parsed.apply && parsed.action === "tidy")) {
+		throw new Error("--kill относится только к tidy --apply");
 	}
 }
 
@@ -483,6 +492,7 @@ function tidy(catalogue: Catalogue, options: Arguments): Promise<void> {
 	}
 	const report = machineTidy(catalogue, {
 		apply: options.apply,
+		kill: options.kill,
 		project,
 		self: ROOT,
 	});
