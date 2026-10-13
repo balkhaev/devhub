@@ -17,7 +17,7 @@ import {
 import { Hub, type HubRuntime, type HubView } from "./hub";
 import { frameable } from "./probes";
 import { Projects } from "./projects";
-import { Queue } from "./queue";
+import { Queue, QueueError } from "./queue";
 import { StageProject } from "./stage";
 import { holderWords, type MachineTidy } from "./tidy-words";
 
@@ -272,7 +272,10 @@ export async function startHub(
 		try {
 			return json(await work());
 		} catch (error) {
-			const status = error instanceof CoolifyError ? error.status : 409;
+			const status =
+				error instanceof CoolifyError || error instanceof QueueError
+					? error.status
+					: 409;
 			return json({ error: (error as Error).message }, status);
 		}
 	};
@@ -442,6 +445,12 @@ export async function startHub(
 					act(request, () =>
 						queue.executor(request.params.id, request.params.action)
 					),
+			},
+			"/api/queue/jobs/:id": {
+				GET: (request) =>
+					guarded(request, async () => ({
+						job: await queue.job(request.params.id),
+					})),
 			},
 			"/api/queue/tray": {
 				GET: (request) => guarded(request, () => queue.tray(origin)),

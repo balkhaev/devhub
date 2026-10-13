@@ -29,6 +29,32 @@ export interface QueueJob {
 	startedAt: number | null;
 }
 
+/** Selected job diagnostics, with operational fields only; no command, workflow, output text or private key. */
+export interface QueueJobDetails {
+	cpuThreads: number | null;
+	createdAt: number | null;
+	expectedSeconds: number | null;
+	finishedAt: number | null;
+	gpuCompute: number | null;
+	id: string;
+	outputBytes: number | null;
+	peakRamMb: number | null;
+	peakVramMb: number | null;
+	pid: number | null;
+	position: number | null;
+	priority: number | null;
+	profile: string | null;
+	queuedSeconds: number | null;
+	quietSeconds: number | null;
+	ramMb: number | null;
+	resource: "gpu" | "cpu" | null;
+	runningSeconds: number | null;
+	startedAt: number | null;
+	state: string;
+	vramMb: number | null;
+	waitingFor: string | null;
+}
+
 export interface QueueExecutorCommand {
 	enabled: boolean;
 	id: "enable" | "pause" | "stop";
@@ -117,6 +143,8 @@ const FRESH_MS = 1000;
 const ANONYMOUS = "Анонимное задание";
 const NAME_LIMIT = 200;
 const EXECUTOR_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+const JOB_ID =
+	/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 /** The token never leaves this computer, whatever host a manifest names. */
 const LOOPBACK = new Set(["127.0.0.1", "localhost", "[::1]"]);
 const MENTIONS_QUEUE = /очеред/i;
@@ -157,6 +185,67 @@ const text = (value: unknown): string =>
 	typeof value === "string" ? value : "";
 const amount = (value: unknown): number | null =>
 	typeof value === "number" && Number.isFinite(value) ? value : null;
+
+/** An upstream refusal keeps its HTTP status when shown by a protected hub reading. */
+export class QueueError extends Error {
+	readonly status: number;
+
+	constructor(message: string, status: number) {
+		super(message);
+		this.name = "QueueError";
+		this.status = status;
+	}
+}
+
+const milliseconds = (value: unknown): number | null => {
+	const seconds = amount(value);
+	return seconds === null ? null : Math.round(seconds * 1000);
+};
+
+function jobDetailsOf(value: unknown, id: string): QueueJobDetails {
+	const job = record(record(value)?.job);
+	if (!job || text(job.id).toLowerCase() !== id.toLowerCase()) {
+		throw new QueueError("Очередь не вернула сведения о задании", 502);
+	}
+	if (job.private === true) {
+		throw new QueueError("Задание не найдено", 404);
+	}
+	const decision = record(job.decision);
+	const allocation = record(job.allocation) ?? record(decision?.estimate);
+	const metrics = record(job.metrics);
+	const output = record(job.output);
+	const waiting =
+		text(record(decision?.wait)?.summary) ||
+		text(record(decision?.recovery)?.summary) ||
+		list(decision?.waiting_for)
+			.flatMap((reason) => (typeof reason === "string" ? [reason] : []))
+			.join(" · ");
+	const resource = job.resource ?? allocation?.resource;
+	return {
+		cpuThreads: amount(allocation?.cpu_threads),
+		createdAt: milliseconds(job.created),
+		expectedSeconds: amount(allocation?.expected_seconds),
+		finishedAt: milliseconds(job.finished),
+		gpuCompute: amount(allocation?.gpu_compute_pct),
+		id: text(job.id),
+		outputBytes: amount(output?.bytes),
+		peakRamMb: amount(metrics?.peak_ram_mb),
+		peakVramMb: amount(metrics?.peak_vram_mb),
+		pid: amount(job.pid),
+		position: amount(decision?.position),
+		priority: amount(job.priority),
+		profile: text(job.profile).slice(0, NAME_LIMIT) || null,
+		queuedSeconds: amount(job.queued_seconds),
+		quietSeconds: amount(output?.quiet_seconds),
+		ramMb: amount(allocation?.ram_mb),
+		resource: resource === "gpu" || resource === "cpu" ? resource : null,
+		runningSeconds: amount(job.running_seconds),
+		startedAt: milliseconds(job.started),
+		state: text(job.state).slice(0, 40) || "unknown",
+		vramMb: amount(allocation?.vram_mb),
+		waitingFor: waiting.slice(0, 600) || null,
+	};
+}
 
 function jobOf(value: unknown): QueueJob[] {
 	const job = record(value);
@@ -495,8 +584,9 @@ export class Queue {
 		const body: unknown = await response.json().catch(() => null);
 		if (!response.ok) {
 			const detail = text(record(body)?.detail);
-			throw new Error(
-				detail || `${service.key} ответил HTTP ${response.status}`
+			throw new QueueError(
+				detail || `${service.key} ответил HTTP ${response.status}`,
+				response.status
 			);
 		}
 		return body;
@@ -538,6 +628,22 @@ export class Queue {
 
 	async tray(hubUrl: string): Promise<TrayMenu> {
 		return trayMenu(await this.view(), hubUrl);
+	}
+
+	/** Selected-job diagnostics only: reading the raw job endpoint would renew its client's lease. */
+	async job(id: string): Promise<QueueJobDetails> {
+		if (!JOB_ID.test(id)) {
+			throw new QueueError("Неверный ID задания", 400);
+		}
+		const service = this.service("queue");
+		if (!service) {
+			throw new QueueError("общая очередь не подключена", 409);
+		}
+		const answer = await this.request(service, `/api/jobs/${id}/diagnostics`, {
+			method: "GET",
+			timeoutMs: READ_TIMEOUT_MS,
+		});
+		return jobDetailsOf(answer, id);
 	}
 
 	private async send(

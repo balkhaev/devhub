@@ -14,6 +14,7 @@ const PROJECT = "F:/fixture/inference";
 const TOKEN_FILE = resolve(PROJECT, "runtime/api-token");
 const HUB = "http://127.0.0.1:4700";
 const SERVICES = { executors: "inference/executors", queue: "inference/queue" };
+const JOB = "8ee7c920-a582-4ba9-90fc-926dc4a7c865";
 
 const catalogue = (services: unknown[]): Catalogue =>
 	catalogueSchema.parse({
@@ -585,6 +586,153 @@ test("an unavailable queue plan does not hide a healthy queue or its own waiting
 		queuedJobs: null,
 		state: "ready",
 	});
+});
+
+test("selected job details project operational diagnostics without reading or renewing the raw job", async () => {
+	const { calls, queue } = fixture({
+		[`GET 8765/api/jobs/${JOB}/diagnostics`]: () =>
+			Response.json({
+				events: [{ data: "private event payload" }],
+				job: {
+					allocation: {
+						backend_urls: ["http://private-backend"],
+						cpu_threads: 4,
+						expected_seconds: 160.5,
+						gpu_compute_pct: 85,
+						ram_mb: 8192,
+						vram_mb: 4096,
+					},
+					created: 1_760_000_000.4,
+					decision: { position: 2, wait: { summary: "Ждёт свободную GPU" } },
+					finished: null,
+					id: JOB,
+					metrics: { peak_ram_mb: 6000, peak_vram_mb: 3000 },
+					output: { bytes: 2048, quiet_seconds: 2.5 },
+					pid: 456,
+					priority: 50,
+					profile: "render",
+					queued_seconds: 3.5,
+					resource: "gpu",
+					result: "private result",
+					running_seconds: 12,
+					spec: { command: "private command", workflow: "private workflow" },
+					stack: "private stack",
+					started: 1_760_000_003.9,
+					state: "running",
+				},
+			}),
+	});
+	const details = await queue.job(JOB);
+	expect(details).toEqual({
+		cpuThreads: 4,
+		createdAt: 1_760_000_000_400,
+		expectedSeconds: 160.5,
+		finishedAt: null,
+		gpuCompute: 85,
+		id: JOB,
+		outputBytes: 2048,
+		peakRamMb: 6000,
+		peakVramMb: 3000,
+		pid: 456,
+		position: 2,
+		priority: 50,
+		profile: "render",
+		queuedSeconds: 3.5,
+		quietSeconds: 2.5,
+		ramMb: 8192,
+		resource: "gpu",
+		runningSeconds: 12,
+		startedAt: 1_760_000_003_900,
+		state: "running",
+		vramMb: 4096,
+		waitingFor: "Ждёт свободную GPU",
+	});
+	expect(JSON.stringify(details)).not.toContain("private");
+	expect(calls).toEqual([
+		{
+			authorization: "Bearer secret-token",
+			body: null,
+			method: "GET",
+			url: `http://127.0.0.1:8765/api/jobs/${JOB}/diagnostics`,
+		},
+	]);
+});
+
+test("waiting job details use scheduler estimates and tolerate unavailable optional diagnostics", async () => {
+	const { queue } = fixture({
+		[`GET 8765/api/jobs/${JOB}/diagnostics`]: () =>
+			Response.json({
+				job: {
+					decision: {
+						estimate: {
+							cpu_threads: 2,
+							ram_mb: 4096,
+							resource: "cpu",
+							vram_mb: 0,
+						},
+						waiting_for: ["Waiting for RAM", 7],
+					},
+					id: JOB,
+					pid: "not a number",
+					state: "queued",
+				},
+			}),
+	});
+	expect(await queue.job(JOB)).toMatchObject({
+		cpuThreads: 2,
+		createdAt: null,
+		finishedAt: null,
+		outputBytes: null,
+		pid: null,
+		profile: null,
+		ramMb: 4096,
+		resource: "cpu",
+		startedAt: null,
+		vramMb: 0,
+		waitingFor: "Waiting for RAM",
+	});
+});
+
+test("invalid job IDs are rejected before token reads or network requests", async () => {
+	const { calls, queue, reads } = fixture({});
+	await Promise.all(
+		[
+			"",
+			"job-1",
+			"../queue/continue",
+			`${JOB}?private-key=secret`,
+			`${JOB}/logs`,
+		].map((id) => expect(queue.job(id)).rejects.toMatchObject({ status: 400 }))
+	);
+	expect(calls).toEqual([]);
+	expect(reads).toEqual([]);
+});
+
+test("private job refusals and broken diagnostics do not expose a partial detailed response", async () => {
+	const hidden = fixture({
+		[`GET 8765/api/jobs/${JOB}/diagnostics`]: () =>
+			Response.json({ detail: "Job not found" }, { status: 404 }),
+	});
+	await expect(hidden.queue.job(JOB)).rejects.toMatchObject({
+		message: "Job not found",
+		status: 404,
+	});
+	const privateAnswer = fixture({
+		[`GET 8765/api/jobs/${JOB}/diagnostics`]: () =>
+			Response.json({
+				job: { id: JOB, private: true, profile: "Hidden profile" },
+			}),
+	});
+	await expect(privateAnswer.queue.job(JOB)).rejects.toMatchObject({
+		status: 404,
+	});
+	const wrongJob = fixture({
+		[`GET 8765/api/jobs/${JOB}/diagnostics`]: () =>
+			Response.json({ job: { id: "another job" } }),
+	});
+	await expect(wrongJob.queue.job(JOB)).rejects.toMatchObject({ status: 502 });
+	const offline = fixture({});
+	await expect(offline.queue.job(JOB)).rejects.toThrow("не отвечает");
 });
 
 test("commands go to the queue's own addresses, and its refusal is the error shown", async () => {

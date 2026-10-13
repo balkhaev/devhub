@@ -389,6 +389,9 @@ test("the expanded queue groups running and waiting jobs while hiding private na
 	expect(markup).toContain("Export");
 	expect(markup).toContain("Анонимное задание");
 	expect(markup).not.toContain("Private title");
+	expect(markup).toContain('data-job="run"');
+	expect(markup).toContain('data-job="wait"');
+	expect(markup).toContain('title="Подробности задания"');
 	expect(markup).toContain("Нагрузка");
 	expect(markup).toContain("87% · 61 °C");
 	expect(markup).toContain("4,0 из 15,9 ГБ");

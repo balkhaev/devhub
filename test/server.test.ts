@@ -330,6 +330,105 @@ test("a hub without a declared queue shows none and has nothing for the tray", a
 	}
 });
 
+test("selected queue job diagnostics are protected read-only requests and preserve private refusals", async () => {
+	const sample = await fixtureRoot();
+	const catalogue = queueCatalogue();
+	const id = "8ee7c920-a582-4ba9-90fc-926dc4a7c865";
+	const upstream: {
+		body: string | null;
+		headers: Record<string, string>;
+		method: string;
+		url: string;
+	}[] = [];
+	let hidden = false;
+	const queue = new Queue(() => catalogue, {
+		fetch: (url, init) => {
+			upstream.push({
+				body: typeof init.body === "string" ? init.body : null,
+				headers: Object.fromEntries(new Headers(init.headers).entries()),
+				method: init.method ?? "GET",
+				url,
+			});
+			if (hidden) {
+				return Promise.resolve(
+					Response.json({ detail: "Job not found" }, { status: 404 })
+				);
+			}
+			return Promise.resolve(
+				Response.json({
+					events: [{ data: "hidden payload" }],
+					job: {
+						id,
+						priority: 50,
+						queued_seconds: 10,
+						state: "queued",
+						workflow: "hidden workflow",
+					},
+				})
+			);
+		},
+		readFile: () => Promise.resolve("queue-token"),
+	});
+	const instance = await startHub({
+		catalogue,
+		port: 0,
+		queue,
+		root: sample.root,
+		runtime: quietComputer,
+	});
+	try {
+		const url = new URL(instance.url);
+		const page = { origin: url.origin, "x-devhub": "1" };
+		const endpoint = new URL(`api/queue/jobs/${id}`, url);
+		expect((await fetch(endpoint)).status).toBe(403);
+		expect(
+			(
+				await fetch(endpoint, {
+					headers: { ...page, origin: "https://unrelated.example" },
+				})
+			).status
+		).toBe(403);
+		expect(upstream).toEqual([]);
+		const response = await fetch(endpoint, { headers: page });
+		expect(response.status).toBe(200);
+		const body = await response.json();
+		expect(body).toMatchObject({
+			job: { id, priority: 50, queuedSeconds: 10, state: "queued" },
+		});
+		expect(JSON.stringify(body)).not.toContain("hidden");
+		expect(JSON.stringify(body)).not.toContain("queue-token");
+		expect(upstream).toEqual([
+			{
+				body: null,
+				headers: { authorization: "Bearer queue-token" },
+				method: "GET",
+				url: `http://127.0.0.1:8765/api/jobs/${id}/diagnostics`,
+			},
+		]);
+		expect(
+			(
+				await fetch(new URL("api/queue/jobs/not-a-uuid", url), {
+					headers: page,
+				})
+			).status
+		).toBe(400);
+		expect(
+			(await fetch(endpoint, { headers: page, method: "POST" })).status
+		).not.toBe(200);
+		expect(upstream).toHaveLength(1);
+		hidden = true;
+		const refused = await fetch(endpoint, { headers: page });
+		expect(refused.status).toBe(404);
+		expect(await refused.json()).toEqual({ error: "Job not found" });
+		expect(
+			upstream.every((call) => call.method === "GET" && call.body === null)
+		).toBe(true);
+	} finally {
+		instance.stop();
+		await sample.close();
+	}
+});
+
 test("a guarded read answers the hub's own page and its machine client, on the hub's own address only", async () => {
 	const sample = await fixtureRoot();
 	const instance = await startHub({

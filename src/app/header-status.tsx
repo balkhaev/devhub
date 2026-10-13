@@ -1,6 +1,14 @@
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import {
+	type MouseEvent,
+	useCallback,
+	useEffect,
+	useId,
+	useRef,
+	useState,
+} from "react";
 
-import type { QueueState, QueueView } from "../queue";
+import type { QueueJob, QueueState, QueueView } from "../queue";
+import { JobDetailDialog } from "./job-details";
 import { QueueMeters, useQueue } from "./queue";
 import { cx, since } from "./words";
 
@@ -14,9 +22,11 @@ const STATE_WORDS: Record<QueueState, string> = {
 
 export function QueueList({
 	available,
+	onSelect,
 	queue,
 }: {
 	available: boolean;
+	onSelect?: (event: MouseEvent<HTMLButtonElement>) => void;
 	queue: QueueView;
 }) {
 	if (!available || queue.state === "offline") {
@@ -50,17 +60,25 @@ export function QueueList({
 						<ol className="queue-popover__jobs">
 							{jobs.map((job) => (
 								<li key={job.id}>
-									<span className="queue-popover__name">
-										{job.private ? "Анонимное задание" : job.name}
-									</span>
-									<span className="muted small">
-										{[
-											job.resource?.toUpperCase(),
-											job.startedAt === null ? null : since(job.startedAt),
-										]
-											.filter(Boolean)
-											.join(" · ")}
-									</span>
+									<button
+										className="queue-popover__job"
+										data-job={job.id}
+										onClick={onSelect}
+										title="Подробности задания"
+										type="button"
+									>
+										<span className="queue-popover__name">
+											{job.private ? "Анонимное задание" : job.name}
+										</span>
+										<span className="muted small">
+											{[
+												job.resource?.toUpperCase(),
+												job.startedAt === null ? null : since(job.startedAt),
+											]
+												.filter(Boolean)
+												.join(" · ")}
+										</span>
+									</button>
 								</li>
 							))}
 						</ol>
@@ -87,10 +105,28 @@ export function InferenceStatus({
 	queue: QueueView;
 }) {
 	const [open, setOpen] = useState(false);
+	const [selected, setSelected] = useState<QueueJob | null>(null);
 	const root = useRef<HTMLDivElement>(null);
 	const button = useRef<HTMLButtonElement>(null);
 	const listId = useId();
 	const toggle = useCallback(() => setOpen((current) => !current), []);
+	const close = useCallback(() => setOpen(false), []);
+	const selectJob = useCallback(
+		(event: MouseEvent<HTMLButtonElement>) => {
+			const job = [...queue.jobs, ...(queue.queuedJobs ?? [])].find(
+				(entry) => entry.id === event.currentTarget.dataset.job
+			);
+			if (job) {
+				setSelected(job);
+				setOpen(false);
+			}
+		},
+		[queue.jobs, queue.queuedJobs]
+	);
+	const closeJob = useCallback(() => {
+		setSelected(null);
+		button.current?.focus();
+	}, []);
 	useEffect(() => {
 		if (!open) {
 			return;
@@ -150,9 +186,21 @@ export function InferenceStatus({
 					className="queue-popover"
 					id={listId}
 				>
-					<h2>Очередь Inference</h2>
-					<QueueList available={available} queue={queue} />
+					<div className="queue-popover__head">
+						<h2>Очередь Inference</h2>
+						<a
+							className="button button--small"
+							href={queue.panel}
+							onClick={close}
+						>
+							Панель очереди
+						</a>
+					</div>
+					<QueueList available={available} onSelect={selectJob} queue={queue} />
 				</section>
+			) : null}
+			{selected ? (
+				<JobDetailDialog job={selected} key={selected.id} onClose={closeJob} />
 			) : null}
 		</div>
 	);
