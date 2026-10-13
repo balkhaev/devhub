@@ -168,14 +168,20 @@ code {
 	margin-left: auto;
 }
 
+.queue-widget {
+	position: relative;
+}
+
 .queue-status {
 	--queue-color: var(--running);
 	display: flex;
 	gap: 8px;
 	align-items: center;
 	padding: 3px 10px;
+	color: var(--text);
 	white-space: nowrap;
 	text-decoration: none;
+	cursor: pointer;
 	background: var(--raised);
 	border: 1px solid var(--line-strong);
 	border-radius: 8px;
@@ -228,6 +234,66 @@ code {
 	font-size: 11px;
 	font-variant-numeric: tabular-nums;
 	color: var(--muted);
+}
+
+.queue-status__chevron {
+	font-size: 11px;
+	color: var(--muted);
+}
+
+.queue-popover {
+	position: absolute;
+	top: calc(100% + 8px);
+	right: 0;
+	z-index: 20;
+	width: min(380px, calc(100vw - 32px));
+	max-height: min(520px, calc(100dvh - 100px));
+	padding: 16px;
+	overflow: auto;
+	background: var(--panel);
+	border: 1px solid var(--line-strong);
+	border-radius: 12px;
+	box-shadow: 0 16px 48px rgb(0 0 0 / 0.5);
+}
+
+.queue-popover h2 {
+	margin: 0 0 12px;
+	font-size: 14px;
+}
+
+.queue-popover__group + .queue-popover__group {
+	padding-top: 12px;
+	margin-top: 12px;
+	border-top: 1px solid var(--line);
+}
+
+.queue-popover__group h3 {
+	display: flex;
+	gap: 8px;
+	justify-content: space-between;
+	margin: 0 0 8px;
+	font-size: 12px;
+}
+
+.queue-popover p {
+	margin: 8px 0;
+}
+
+.queue-popover__jobs {
+	display: grid;
+	gap: 10px;
+	padding: 0;
+	margin: 0;
+	list-style: none;
+}
+
+.queue-popover__jobs li {
+	display: grid;
+	gap: 2px;
+}
+
+.queue-popover__name {
+	overflow-wrap: anywhere;
 }
 
 .live {
@@ -1111,8 +1177,7 @@ a.card__service:hover {
 		padding: 6px 10px;
 	}
 
-	.header__services,
-	.live__label {
+	.header__services {
 		display: none;
 	}
 

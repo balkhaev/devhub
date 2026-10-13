@@ -213,6 +213,95 @@ test("only a job's id, name, resource and start leave the hub, and a private job
 	});
 });
 
+test("waiting jobs keep the scheduler's order and privacy without duplicating active or launched jobs", () => {
+	const view = queueView(
+		SERVICES,
+		status({
+			active_jobs: [{ id: "active", name: "Running" }],
+			queued_count: 5,
+		}),
+		null,
+		{
+			jobs: [
+				{
+					command: ["private-command"],
+					estimate: { resource: "gpu", workflow: "private-workflow" },
+					job_id: "waiting-1",
+					name: "Next render",
+					started: 123,
+					waiting_for: ["private-path"],
+				},
+				{
+					estimate: { resource: "cpu" },
+					job_id: "waiting-private",
+					name: "Secret job name",
+					private: true,
+				},
+				{
+					estimate: { resource: "gpu" },
+					job_id: "waiting-anonymous",
+					name: "Анонимное задание",
+				},
+				{ job_id: "launched", launched: true, name: "Just started" },
+				{ job_id: "active", name: "Already running" },
+				{ job_id: "waiting-1", name: "Duplicate" },
+				{ name: "Missing id" },
+				"not a job",
+			],
+		}
+	);
+	expect(view.queued).toBe(5);
+	expect(view.queuedJobs).toEqual([
+		{
+			id: "waiting-1",
+			name: "Next render",
+			private: false,
+			resource: "gpu",
+			startedAt: null,
+		},
+		{
+			id: "waiting-private",
+			name: "Анонимное задание",
+			private: true,
+			resource: "cpu",
+			startedAt: null,
+		},
+		{
+			id: "waiting-anonymous",
+			name: "Анонимное задание",
+			private: true,
+			resource: "gpu",
+			startedAt: null,
+		},
+	]);
+	for (const secret of [
+		"private-command",
+		"private-workflow",
+		"private-path",
+		"Secret job name",
+	]) {
+		expect(JSON.stringify(view)).not.toContain(secret);
+	}
+});
+
+test("waiting listings distinguish unavailable data from an empty queue and never outlive an offline status", () => {
+	const plan = { jobs: [{ job_id: "old-job", name: "Old plan" }] };
+	expect(queueView(SERVICES, status(), null, plan).queuedJobs).toEqual([]);
+	expect(queueView(SERVICES, null, null, plan).queuedJobs).toBeNull();
+	expect(
+		queueView(SERVICES, status({ queued_count: 2 }), null).queuedJobs
+	).toBeNull();
+	expect(
+		queueView(SERVICES, status({ queued_count: 2 }), null, {
+			jobs: "not a list",
+		}).queuedJobs
+	).toBeNull();
+	expect(
+		queueView(SERVICES, status({ queued_count: 2 }), null, { jobs: [] })
+			.queuedJobs
+	).toEqual([]);
+});
+
 test("the queue's state is said in words; the owner's stop wins over a pause and silence is offline", () => {
 	const of = (answer: unknown): Pick<QueueView, "label" | "state"> => {
 		const { label, state } = queueView(SERVICES, answer, null);
@@ -388,8 +477,18 @@ test("paired executors get their own block of the tray menu, with their commands
 	).toHaveLength(5);
 });
 
-test("the hub reads both services with the project's token, and only on this computer", async () => {
+test("the hub reads both services and the cached queue plan with the project's token, and only on this computer", async () => {
 	const { calls, queue, reads } = fixture({
+		"GET 8765/api/queue-plan": () =>
+			Response.json({
+				jobs: [
+					{
+						estimate: { resource: "gpu" },
+						job_id: "waiting",
+						name: "Waiting render",
+					},
+				],
+			}),
 		"GET 8765/api/status": () => Response.json(status({ queued_count: 4 })),
 		"GET 8766/api/executors": () => Response.json([modeler()]),
 	});
@@ -397,6 +496,7 @@ test("the hub reads both services with the project's token, and only on this com
 	expect(view).toMatchObject({
 		executorsService: "inference/executors",
 		queued: 4,
+		queuedJobs: [{ id: "waiting", name: "Waiting render", resource: "gpu" }],
 		service: "inference/queue",
 		state: "ready",
 	});
@@ -406,6 +506,7 @@ test("the hub reads both services with the project's token, and only on this com
 		paired: true,
 	});
 	expect(calls.map((call) => `${call.method} ${call.url}`).sort()).toEqual([
+		"GET http://127.0.0.1:8765/api/queue-plan",
 		"GET http://127.0.0.1:8765/api/status",
 		"GET http://127.0.0.1:8766/api/executors",
 	]);
@@ -470,7 +571,20 @@ test("a queue that is not declared is absent; one that is silent, tokenless or b
 		executorsService: null,
 		state: "ready",
 	});
-	expect(alone.calls).toHaveLength(1);
+	expect(alone.calls).toHaveLength(2);
+});
+
+test("an unavailable queue plan does not hide a healthy queue or its own waiting count", async () => {
+	const { queue } = fixture({
+		"GET 8765/api/queue-plan": () =>
+			Response.json({ detail: "Not found" }, { status: 404 }),
+		"GET 8765/api/status": () => Response.json(status({ queued_count: 4 })),
+	});
+	expect(await queue.view()).toMatchObject({
+		queued: 4,
+		queuedJobs: null,
+		state: "ready",
+	});
 });
 
 test("commands go to the queue's own addresses, and its refusal is the error shown", async () => {
@@ -539,9 +653,14 @@ test("commands go to the queue's own addresses, and its refusal is the error sho
 
 test("the page and the tray asking together share one reading, and a command ends it", async () => {
 	let readings = 0;
+	let plans = 0;
 	const queue = new Queue(() => catalogue([queueService()]), {
-		fetch: (_url, init) => {
+		fetch: (url, init) => {
 			if (init.method === "GET") {
+				if (url.endsWith("/api/queue-plan")) {
+					plans += 1;
+					return Promise.resolve(Response.json({ jobs: [] }));
+				}
 				readings += 1;
 			}
 			return Promise.resolve(Response.json(status()));
@@ -551,7 +670,9 @@ test("the page and the tray asking together share one reading, and a command end
 	});
 	await Promise.all([queue.view(), queue.tray(HUB), queue.view()]);
 	expect(readings).toBe(1);
+	expect(plans).toBe(1);
 	await queue.act("pause");
 	await queue.view();
 	expect(readings).toBe(2);
+	expect(plans).toBe(2);
 });

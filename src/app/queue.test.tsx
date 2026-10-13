@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 import type { HubView, ServiceStatus } from "../hub";
 import type { QueueExecutor, QueueView } from "../queue";
-import { HeaderStatus, InferenceStatus } from "./header-status";
+import { HeaderStatus, InferenceStatus, QueueList } from "./header-status";
 import { QueueCard, QueueSection, readQueue } from "./queue";
 
 const noop = () => undefined;
@@ -40,6 +40,7 @@ function queue(changes: Partial<QueueView> = {}): QueueView {
 		label: "Общая очередь готова · GPU 87%",
 		panel: "#/inference/queue",
 		queued: 0,
+		queuedJobs: [],
 		running: 0,
 		service: "inference/queue",
 		state: "ready",
@@ -265,7 +266,7 @@ test("the card is read from the hub as its own page, and is absent until the hub
 	expect(renderToStaticMarkup(<QueueSection view={hub} />)).toBe("");
 });
 
-test("the header uses authoritative counts and opens the queue without exposing job names", () => {
+test("the header uses authoritative counts and offers a disclosure without exposing job names", () => {
 	const markup = renderToStaticMarkup(
 		<InferenceStatus
 			available
@@ -285,7 +286,9 @@ test("the header uses authoritative counts and opens the queue without exposing 
 			})}
 		/>
 	);
-	expect(markup).toContain('href="#/inference/queue"');
+	expect(markup).toContain('aria-expanded="false"');
+	expect(markup).toContain("<button");
+	expect(markup).not.toContain("href=");
 	expect(markup).toContain("В работе");
 	expect(markup).toContain("3 выполняется · 6 в очереди");
 	expect(markup).not.toContain("Private job name");
@@ -341,9 +344,68 @@ test("the header hides counts when the queue or its latest reading is unavailabl
 
 test("without a declared queue the header still shows the hub connection", () => {
 	const connected = renderToStaticMarkup(<HeaderStatus connected />);
-	expect(connected).toContain("на связи");
+	expect(connected).toContain('aria-label="на связи"');
+	expect(connected).not.toContain(">на связи<");
 	expect(connected).not.toContain("Inference");
 	const disconnected = renderToStaticMarkup(<HeaderStatus connected={false} />);
 	expect(disconnected).toContain("нет связи с пультом");
 	expect(disconnected).not.toContain("live--on");
+});
+
+test("the expanded queue groups running and waiting jobs while hiding private names", () => {
+	const markup = renderToStaticMarkup(
+		<QueueList
+			available
+			queue={queue({
+				jobs: [
+					{
+						id: "run",
+						name: "Render",
+						private: false,
+						resource: "gpu",
+						startedAt: null,
+					},
+				],
+				queued: 2,
+				queuedJobs: [
+					{
+						id: "wait",
+						name: "Export",
+						private: false,
+						resource: "cpu",
+						startedAt: null,
+					},
+					{
+						id: "private",
+						name: "Private title",
+						private: true,
+						resource: "gpu",
+						startedAt: null,
+					},
+				],
+				running: 1,
+				state: "working",
+			})}
+		/>
+	);
+	expect(markup).toContain("Выполняется");
+	expect(markup).toContain("В очереди");
+	expect(markup).toContain("Render");
+	expect(markup).toContain("Export");
+	expect(markup).toContain("Анонимное задание");
+	expect(markup).not.toContain("Private title");
+});
+
+test("the expanded queue distinguishes empty, incomplete and unavailable readings", () => {
+	const empty = renderToStaticMarkup(<QueueList available queue={queue()} />);
+	expect(empty).toContain("Нет заданий");
+	const incomplete = renderToStaticMarkup(
+		<QueueList available queue={queue({ queued: 3, queuedJobs: null })} />
+	);
+	expect(incomplete).toContain("Список заданий недоступен");
+	const unavailable = renderToStaticMarkup(
+		<QueueList available={false} queue={queue({ queued: 3 })} />
+	);
+	expect(unavailable).toContain("Нет данных об очереди");
+	expect(unavailable).not.toContain("В очереди");
 });

@@ -74,6 +74,8 @@ export interface QueueView {
 	panel: string;
 	/** How many jobs wait; null when the running queue is too old to say. */
 	queued: number | null;
+	/** Waiting jobs in the scheduler's order; null when their listing does not answer. */
+	queuedJobs: QueueJob[] | null;
 	/** How many jobs run now; the queue may count more than it lists. */
 	running: number;
 	service: string;
@@ -177,6 +179,43 @@ function jobOf(value: unknown): QueueJob[] {
 	];
 }
 
+/** The cached scheduler plan also includes jobs it has just launched; they are already in the active list. */
+function queuedJobsOf(
+	value: unknown,
+	status: Json | null,
+	active: QueueJob[]
+): QueueJob[] | null {
+	if (!status) {
+		return null;
+	}
+	if (amount(status.queued_count) === 0) {
+		return [];
+	}
+	const planned = record(value)?.jobs;
+	if (!Array.isArray(planned)) {
+		return null;
+	}
+	const seen = new Set(active.map((job) => job.id));
+	return planned.flatMap((entry) => {
+		const row = record(entry);
+		const id = text(row?.job_id);
+		if (!row || row.launched === true || seen.has(id)) {
+			return [];
+		}
+		const jobs = jobOf({
+			id,
+			name: row.name,
+			// The queue itself anonymizes a plan row and need not send a private flag with it.
+			private: row.private === true || row.name === ANONYMOUS,
+			spec: row.estimate,
+		});
+		if (jobs.length > 0) {
+			seen.add(id);
+		}
+		return jobs;
+	});
+}
+
 function gpuOf(value: unknown): QueueView["gpu"] {
 	const gpu = record(value);
 	const total = amount(gpu?.total_mb);
@@ -277,7 +316,8 @@ const gpuWords = (gpu: QueueView["gpu"]): string =>
 export function queueView(
 	services: { executors: string | null; queue: string },
 	answer: unknown,
-	executors: unknown
+	executors: unknown,
+	plan: unknown = null
 ): QueueView {
 	const status = record(answer);
 	const jobs = list(status?.active_jobs).flatMap(jobOf);
@@ -295,6 +335,7 @@ export function queueView(
 		label: `${words}${gpuWords(gpu)}`,
 		panel: `#/${services.queue}`,
 		queued: amount(status?.queued_count),
+		queuedJobs: queuedJobsOf(plan, status, jobs),
 		running,
 		service: services.queue,
 		state,
@@ -468,16 +509,19 @@ export class Queue {
 		}
 		const executors = this.service("executors");
 		const reading = { method: "GET", timeoutMs: READ_TIMEOUT_MS } as const;
-		const [status, hosted] = await Promise.all([
+		const [status, hosted, plan] = await Promise.all([
 			this.request(queue, "/api/status", reading).catch(() => null),
 			executors
 				? this.request(executors, "/api/executors", reading).catch(() => null)
 				: null,
+			// This endpoint returns the scheduler's cached plan, without running a scheduler tick.
+			this.request(queue, "/api/queue-plan", reading).catch(() => null),
 		]);
 		return queueView(
 			{ executors: executors?.key ?? null, queue: queue.key },
 			status,
-			hosted
+			hosted,
+			plan
 		);
 	}
 
