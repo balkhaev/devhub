@@ -296,29 +296,6 @@ code {
 	overflow-wrap: anywhere;
 }
 
-.live {
-	display: inline-flex;
-	flex-shrink: 0;
-	gap: 6px;
-	align-items: center;
-	font-size: 12px;
-	color: var(--faint);
-	white-space: nowrap;
-}
-
-.live::before {
-	width: 8px;
-	height: 8px;
-	content: "";
-	background: var(--crashed);
-	border-radius: 50%;
-}
-
-.live--on::before {
-	background: var(--running);
-	box-shadow: 0 0 8px var(--running);
-}
-
 .main {
 	min-width: 0;
 	min-height: 0;
@@ -1077,6 +1054,21 @@ a.card__service:hover {
 
 .meter__fill--high {
 	fill: var(--unhealthy);
+}
+
+.queue-popover .queue__meters {
+	grid-template-columns: minmax(0, 1fr);
+	gap: 10px;
+}
+
+.queue-popover .meter {
+	grid-template-columns: minmax(0, 1fr) auto;
+	gap: 4px 8px;
+}
+
+.queue-popover .meter__bar {
+	grid-row: 2;
+	grid-column: 1 / -1;
 }
 
 .queue__job {

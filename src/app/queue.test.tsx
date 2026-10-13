@@ -342,14 +342,9 @@ test("the header hides counts when the queue or its latest reading is unavailabl
 	}
 });
 
-test("without a declared queue the header still shows the hub connection", () => {
-	const connected = renderToStaticMarkup(<HeaderStatus connected />);
-	expect(connected).toContain('aria-label="на связи"');
-	expect(connected).not.toContain(">на связи<");
-	expect(connected).not.toContain("Inference");
-	const disconnected = renderToStaticMarkup(<HeaderStatus connected={false} />);
-	expect(disconnected).toContain("нет связи с пультом");
-	expect(disconnected).not.toContain("live--on");
+test("without a declared queue the header has no separate hub connection indicator", () => {
+	expect(renderToStaticMarkup(<HeaderStatus connected />)).toBe("");
+	expect(renderToStaticMarkup(<HeaderStatus connected={false} />)).toBe("");
 });
 
 test("the expanded queue groups running and waiting jobs while hiding private names", () => {
@@ -394,6 +389,11 @@ test("the expanded queue groups running and waiting jobs while hiding private na
 	expect(markup).toContain("Export");
 	expect(markup).toContain("Анонимное задание");
 	expect(markup).not.toContain("Private title");
+	expect(markup).toContain("Нагрузка");
+	expect(markup).toContain("87% · 61 °C");
+	expect(markup).toContain("4,0 из 15,9 ГБ");
+	expect(markup).toContain("свободно 40,0 из 64,0 ГБ");
+	expect(markup).toContain("7%");
 });
 
 test("the expanded queue distinguishes empty, incomplete and unavailable readings", () => {
@@ -408,4 +408,11 @@ test("the expanded queue distinguishes empty, incomplete and unavailable reading
 	);
 	expect(unavailable).toContain("Нет данных об очереди");
 	expect(unavailable).not.toContain("В очереди");
+	expect(unavailable).not.toContain("Нагрузка");
+	expect(unavailable).not.toContain("87%");
+	const missingLoad = renderToStaticMarkup(
+		<QueueList available queue={queue({ gpu: null, host: null })} />
+	);
+	expect(missingLoad).toContain("Нет данных о нагрузке");
+	expect(missingLoad).not.toContain('class="meter"');
 });

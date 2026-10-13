@@ -142,7 +142,7 @@ function Meter({
 	);
 }
 
-function Meters({ queue }: { queue: QueueView }) {
+export function QueueMeters({ queue }: { queue: QueueView }) {
 	const { gpu, host } = queue;
 	if (!(gpu || host)) {
 		return null;
@@ -434,7 +434,7 @@ export function QueueCard({
 					status={status}
 				/>
 			) : null}
-			<Meters queue={queue} />
+			<QueueMeters queue={queue} />
 			<Jobs queue={queue} />
 			{executors.length > 0 ? (
 				<ul className="queue__executors">

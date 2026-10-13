@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
 
 import type { QueueState, QueueView } from "../queue";
-import { useQueue } from "./queue";
+import { QueueMeters, useQueue } from "./queue";
 import { cx, since } from "./words";
 
 const STATE_WORDS: Record<QueueState, string> = {
@@ -33,6 +33,14 @@ export function QueueList({
 					{STATE_WORDS[queue.state]}. Новые задания ждут, начатые продолжаются.
 				</p>
 			) : null}
+			<section className="queue-popover__group">
+				<h3>Нагрузка</h3>
+				{queue.gpu || queue.host ? (
+					<QueueMeters queue={queue} />
+				) : (
+					<p className="muted small">Нет данных о нагрузке</p>
+				)}
+			</section>
 			{groups.map(({ count, jobs, title }) => (
 				<section className="queue-popover__group" key={title}>
 					<h3>
@@ -152,18 +160,12 @@ export function InferenceStatus({
 
 export function HeaderStatus({ connected }: { connected: boolean }) {
 	const { available, queue } = useQueue();
-	const connection = connected ? "на связи" : "нет связи с пультом";
+	if (!queue) {
+		return null;
+	}
 	return (
 		<div className="header-status">
-			{queue ? (
-				<InferenceStatus available={connected && available} queue={queue} />
-			) : null}
-			<span
-				aria-label={connection}
-				className={cx("live", connected && "live--on")}
-				role="status"
-				title={connection}
-			/>
+			<InferenceStatus available={connected && available} queue={queue} />
 		</div>
 	);
 }
