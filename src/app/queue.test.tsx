@@ -3,6 +3,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 
 import type { HubView, ServiceStatus } from "../hub";
 import type { QueueExecutor, QueueView } from "../queue";
+import { HeaderStatus, InferenceStatus } from "./header-status";
 import { QueueCard, QueueSection, readQueue } from "./queue";
 
 const noop = () => undefined;
@@ -262,4 +263,87 @@ test("the card is read from the hub as its own page, and is absent until the hub
 		updatedAt: 1,
 	};
 	expect(renderToStaticMarkup(<QueueSection view={hub} />)).toBe("");
+});
+
+test("the header uses authoritative counts and opens the queue without exposing job names", () => {
+	const markup = renderToStaticMarkup(
+		<InferenceStatus
+			available
+			queue={queue({
+				jobs: [
+					{
+						id: "private-job",
+						name: "Private job name",
+						private: true,
+						resource: "gpu",
+						startedAt: 1,
+					},
+				],
+				queued: 6,
+				running: 3,
+				state: "working",
+			})}
+		/>
+	);
+	expect(markup).toContain('href="#/inference/queue"');
+	expect(markup).toContain("В работе");
+	expect(markup).toContain("3 выполняется · 6 в очереди");
+	expect(markup).not.toContain("Private job name");
+});
+
+test.each([
+	["paused", "На паузе"],
+	["stopped", "Остановлена"],
+] as const)(
+	"the header shows %s even while started jobs finish",
+	(state, words) => {
+		const markup = renderToStaticMarkup(
+			<InferenceStatus
+				available
+				queue={queue({ queued: 5, running: 2, state })}
+			/>
+		);
+		expect(markup).toContain(words);
+		expect(markup).toContain("2 выполняется · 5 в очереди");
+	}
+);
+
+test("the header distinguishes an empty queue from an unknown waiting count", () => {
+	const empty = renderToStaticMarkup(
+		<InferenceStatus available queue={queue()} />
+	);
+	expect(empty).toContain("Готова");
+	expect(empty).toContain("0 выполняется · 0 в очереди");
+	const unknown = renderToStaticMarkup(
+		<InferenceStatus available queue={queue({ queued: null })} />
+	);
+	expect(unknown).toContain("? в очереди");
+	expect(unknown).not.toContain("0 в очереди");
+});
+
+test("the header hides counts when the queue or its latest reading is unavailable", () => {
+	for (const [available, state] of [
+		[true, "offline"],
+		[false, "working"],
+	] as const) {
+		const markup = renderToStaticMarkup(
+			<InferenceStatus
+				available={available}
+				queue={queue({ queued: 6, running: 3, state })}
+			/>
+		);
+		expect(markup).toContain("Нет связи");
+		expect(markup).toContain("Нет данных об очереди");
+		expect(markup).not.toContain("3 выполняется");
+		expect(markup).not.toContain("6 в очереди");
+	}
+});
+
+test("without a declared queue the header still shows the hub connection", () => {
+	const connected = renderToStaticMarkup(<HeaderStatus connected />);
+	expect(connected).toContain("на связи");
+	expect(connected).not.toContain("Inference");
+	const disconnected = renderToStaticMarkup(<HeaderStatus connected={false} />);
+	expect(disconnected).toContain("нет связи с пультом");
+	expect(disconnected).not.toContain("live--on");
 });

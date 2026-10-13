@@ -2,15 +2,17 @@ import { useCallback, useEffect } from "react";
 
 import { useHub, useRoute } from "./api";
 import { CreatePage } from "./create";
+import { HeaderStatus } from "./header-status";
 import { ComposeCard, Overview } from "./overview";
 import { ProdPage } from "./prod";
 import { ProjectPage } from "./project";
 import { ProjectPreferencesProvider } from "./project-preferences";
 import { projectRoute } from "./project-ui";
+import { QueueProvider } from "./queue";
 import { ServicePage } from "./service";
 import { Sidebar } from "./sidebar";
 import { TidyPage } from "./tidy";
-import { cx, isUp } from "./words";
+import { isUp } from "./words";
 
 /**
  * The hub: every local project's dev servers on the left, the chosen one's pages, log and details on the right, and
@@ -105,30 +107,30 @@ export function App() {
 	const up = services.filter((service) => isUp(service.status)).length;
 	return (
 		<ProjectPreferencesProvider>
-			<div className="app">
-				<header className="header">
-					<a className="brand" href="#/">
-						<span aria-hidden="true" className="brand__mark" />
-						<strong>Пульт</strong>
-					</a>
-					<span className="muted">
-						{view
-							? `работают ${up} из ${services.length}`
-							: "читаю, что запущено…"}
-					</span>
-					<span className={cx("live", connected && "live--on")}>
-						{connected ? "на связи" : "нет связи с пультом"}
-					</span>
-				</header>
-				<Sidebar onOpen={go} selected={route} view={view} />
-				<main className="main">
-					{view ? (
-						<Main onDeleted={deleted} route={route} view={view} />
-					) : (
-						<p className="muted pad">Загрузка…</p>
-					)}
-				</main>
-			</div>
+			<QueueProvider>
+				<div className="app">
+					<header className="header">
+						<a className="brand" href="#/">
+							<span aria-hidden="true" className="brand__mark" />
+							<strong>Пульт</strong>
+						</a>
+						<span className="header__services muted">
+							{view
+								? `работают ${up} из ${services.length}`
+								: "читаю, что запущено…"}
+						</span>
+						<HeaderStatus connected={connected} />
+					</header>
+					<Sidebar onOpen={go} selected={route} view={view} />
+					<main className="main">
+						{view ? (
+							<Main onDeleted={deleted} route={route} view={view} />
+						) : (
+							<p className="muted pad">Загрузка…</p>
+						)}
+					</main>
+				</div>
+			</QueueProvider>
 		</ProjectPreferencesProvider>
 	);
 }

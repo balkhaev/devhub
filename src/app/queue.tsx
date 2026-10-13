@@ -1,7 +1,10 @@
 import {
 	type ChangeEvent,
+	createContext,
 	type MouseEvent,
+	type ReactNode,
 	useCallback,
+	useContext,
 	useEffect,
 	useRef,
 	useState,
@@ -43,8 +46,9 @@ export const readQueue = async (): Promise<QueueView | null> =>
 	(await readHub<{ queue: QueueView | null }>("/api/queue")).queue;
 
 /** The queue as the hub reads it now: asked every few seconds while the page is looked at, and on demand. */
-export function useQueue(): { queue: QueueView | null; refresh: () => void } {
+function useQueueReading() {
 	const [queue, setQueue] = useState<QueueView | null>(null);
+	const [available, setAvailable] = useState(false);
 	const asked = useRef(0);
 	const refresh = useCallback(() => {
 		asked.current += 1;
@@ -54,10 +58,14 @@ export function useQueue(): { queue: QueueView | null; refresh: () => void } {
 				// An answer overtaken by a later question would bring the old state back.
 				if (question === asked.current) {
 					setQueue(next);
+					setAvailable(true);
 				}
 			})
-			// The hub itself is restarting: what was shown stays until it answers again.
-			.catch(() => undefined);
+			.catch(() => {
+				if (question === asked.current) {
+					setAvailable(false);
+				}
+			});
 	}, []);
 	useEffect(() => {
 		const ask = () => {
@@ -69,12 +77,27 @@ export function useQueue(): { queue: QueueView | null; refresh: () => void } {
 		const timer = setInterval(ask, POLL_MS);
 		document.addEventListener("visibilitychange", ask);
 		return () => {
+			asked.current += 1;
 			clearInterval(timer);
 			document.removeEventListener("visibilitychange", ask);
 		};
 	}, [refresh]);
-	return { queue, refresh };
+	return { available, queue, refresh };
 }
+
+const QueueContext = createContext<ReturnType<typeof useQueueReading>>({
+	available: false,
+	queue: null,
+	refresh: () => undefined,
+});
+
+/** One reading for the persistent header and the overview, including refreshes after queue actions. */
+export function QueueProvider({ children }: { children: ReactNode }) {
+	const reading = useQueueReading();
+	return <QueueContext value={reading}>{children}</QueueContext>;
+}
+
+export const useQueue = () => useContext(QueueContext);
 
 /** Megabytes as gibibytes with one decimal, the way the video card's memory is spoken of. */
 const gib = (mb: number): string =>
