@@ -7,6 +7,7 @@ import { JobDetailDialog, JobFacts, readJobDetails } from "./job-details";
 const noop = () => undefined;
 
 const detail: QueueJobDetails = {
+	cancelRequested: false,
 	cpuThreads: 4,
 	createdAt: 1_791_800_000_000,
 	expectedSeconds: 180,
@@ -79,6 +80,7 @@ test("queued details explain the wait and private dialogs do not expose titles",
 	expect(markup).toContain("Позиция в очереди</dt><dd>2");
 	const privateMarkup = renderToStaticMarkup(
 		<JobDetailDialog
+			initialState="queued"
 			job={{
 				id: detail.id,
 				name: "Secret title",

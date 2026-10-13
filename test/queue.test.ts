@@ -624,6 +624,7 @@ test("selected job details project operational diagnostics without reading or re
 	});
 	const details = await queue.job(JOB);
 	expect(details).toEqual({
+		cancelRequested: false,
 		cpuThreads: 4,
 		createdAt: 1_760_000_000_400,
 		expectedSeconds: 160.5,
@@ -693,6 +694,32 @@ test("waiting job details use scheduler estimates and tolerate unavailable optio
 	});
 });
 
+test("cancellation requested in another client is visible in active rows and selected diagnostics", async () => {
+	const view = queueView(
+		SERVICES,
+		status({
+			active_jobs: [
+				{ cancel: 1, id: "numeric", name: "Numeric flag" },
+				{ cancel: true, id: "boolean", name: "Boolean flag" },
+				{ cancel: 0, id: "idle", name: "No request" },
+			],
+		}),
+		null
+	);
+	expect(view.jobs[0]?.cancelRequested).toBe(true);
+	expect(view.jobs[1]?.cancelRequested).toBe(true);
+	expect(view.jobs[2]).not.toHaveProperty("cancelRequested");
+	await Promise.all(
+		[1, true].map(async (cancel) => {
+			const { queue } = fixture({
+				[`GET 8765/api/jobs/${JOB}/diagnostics`]: () =>
+					Response.json({ job: { cancel, id: JOB, state: "running" } }),
+			});
+			expect((await queue.job(JOB)).cancelRequested).toBe(true);
+		})
+	);
+});
+
 test("invalid job IDs are rejected before token reads or network requests", async () => {
 	const { calls, queue, reads } = fixture({});
 	await Promise.all(
@@ -733,6 +760,108 @@ test("private job refusals and broken diagnostics do not expose a partial detail
 	await expect(wrongJob.queue.job(JOB)).rejects.toMatchObject({ status: 502 });
 	const offline = fixture({});
 	await expect(offline.queue.job(JOB)).rejects.toThrow("не отвечает");
+});
+
+test("job cancellation distinguishes waiting and explicitly requested running work and discards private payloads", async () => {
+	const { calls, queue } = fixture({
+		[`POST 8765/api/jobs/${JOB}/cancel`]: () =>
+			Response.json({
+				name: "Private title",
+				private: true,
+				spec: { private: true },
+			}),
+	});
+	expect(await queue.cancelJob(JOB, "queued")).toBeUndefined();
+	expect(await queue.cancelJob(JOB, "running")).toBeUndefined();
+	expect(calls).toEqual([
+		{
+			authorization: "Bearer secret-token",
+			body: null,
+			method: "POST",
+			url: `http://127.0.0.1:8765/api/jobs/${JOB}/cancel?require_unstarted=true`,
+		},
+		{
+			authorization: "Bearer secret-token",
+			body: null,
+			method: "POST",
+			url: `http://127.0.0.1:8765/api/jobs/${JOB}/cancel?require_unstarted=false`,
+		},
+	]);
+});
+
+test("invalid cancellation IDs or states do not reach the queue or its token", async () => {
+	const { calls, queue, reads } = fixture({});
+	await Promise.all([
+		expect(queue.cancelJob("not-a-uuid", "queued")).rejects.toMatchObject({
+			status: 400,
+		}),
+		...(
+			[undefined, null, "succeeded", true, { state: "queued" }] as unknown[]
+		).map((state) =>
+			expect(queue.cancelJob(JOB, state)).rejects.toMatchObject({ status: 400 })
+		),
+	]);
+	expect(calls).toEqual([]);
+	expect(reads).toEqual([]);
+});
+
+test("a waiting cancellation refuses a started or held job without an unguarded retry", async () => {
+	const { calls, queue } = fixture({
+		[`POST 8765/api/jobs/${JOB}/cancel`]: () =>
+			Response.json(
+				{
+					detail:
+						"Job is not a never-started queued request; cancellation refused",
+				},
+				{ status: 409 }
+			),
+	});
+	await expect(queue.cancelJob(JOB, "queued")).rejects.toMatchObject({
+		status: 409,
+	});
+	expect(calls).toHaveLength(1);
+	expect(calls[0]?.url).toEndWith("?require_unstarted=true");
+	const refused = fixture({
+		[`POST 8765/api/jobs/${JOB}/cancel`]: () =>
+			Response.json({ detail: "Job not found" }, { status: 404 }),
+	});
+	await expect(refused.queue.cancelJob(JOB, "queued")).rejects.toMatchObject({
+		message: "Job not found",
+		status: 404,
+	});
+});
+
+test("attempted cancellation invalidates the shared queue reading even after a refusal", async () => {
+	let readings = 0;
+	const responses = new Set<"refused">();
+	const queue = new Queue(() => catalogue([queueService()]), {
+		fetch: (url) => {
+			if (url.includes("/cancel?")) {
+				return Promise.resolve(
+					responses.has("refused")
+						? Response.json({ detail: "Queue stopped" }, { status: 409 })
+						: Response.json({ private: true })
+				);
+			}
+			if (url.endsWith("/api/status")) {
+				readings += 1;
+				return Promise.resolve(Response.json(status()));
+			}
+			return Promise.resolve(Response.json({ jobs: [] }));
+		},
+		freshMs: 60_000,
+		readFile: () => Promise.resolve("secret-token"),
+	});
+	await queue.view();
+	await queue.cancelJob(JOB, "queued");
+	await queue.view();
+	expect(readings).toBe(2);
+	responses.add("refused");
+	await expect(queue.cancelJob(JOB, "queued")).rejects.toMatchObject({
+		status: 409,
+	});
+	await queue.view();
+	expect(readings).toBe(3);
 });
 
 test("commands go to the queue's own addresses, and its refusal is the error shown", async () => {

@@ -8,6 +8,11 @@ import {
 } from "react";
 
 import type { QueueJob, QueueState, QueueView } from "../queue";
+import {
+	CancelJobButton,
+	canCancelJob,
+	useJobCancellation,
+} from "./job-cancel";
 import { JobDetailDialog } from "./job-details";
 import { QueueMeters, useQueue } from "./queue";
 import { cx, since } from "./words";
@@ -22,10 +27,14 @@ const STATE_WORDS: Record<QueueState, string> = {
 
 export function QueueList({
 	available,
+	cancellation,
+	onCancel,
 	onSelect,
 	queue,
 }: {
 	available: boolean;
+	cancellation?: ReturnType<typeof useJobCancellation>;
+	onCancel?: (event: MouseEvent<HTMLButtonElement>) => void;
 	onSelect?: (event: MouseEvent<HTMLButtonElement>) => void;
 	queue: QueueView;
 }) {
@@ -33,8 +42,18 @@ export function QueueList({
 		return <p className="muted">Нет данных об очереди</p>;
 	}
 	const groups = [
-		{ count: queue.running, jobs: queue.jobs, title: "Выполняется" },
-		{ count: queue.queued, jobs: queue.queuedJobs, title: "В очереди" },
+		{
+			count: queue.running,
+			jobs: queue.jobs,
+			state: "running",
+			title: "Выполняется",
+		},
+		{
+			count: queue.queued,
+			jobs: queue.queuedJobs,
+			state: "queued",
+			title: "В очереди",
+		},
 	];
 	return (
 		<>
@@ -51,7 +70,7 @@ export function QueueList({
 					<p className="muted small">Нет данных о нагрузке</p>
 				)}
 			</section>
-			{groups.map(({ count, jobs, title }) => (
+			{groups.map(({ count, jobs, state, title }) => (
 				<section className="queue-popover__group" key={title}>
 					<h3>
 						{title} <span className="muted">{count ?? "?"}</span>
@@ -73,12 +92,22 @@ export function QueueList({
 										<span className="muted small">
 											{[
 												job.resource?.toUpperCase(),
+												job.private ? job.id.slice(0, 8) : null,
 												job.startedAt === null ? null : since(job.startedAt),
 											]
 												.filter(Boolean)
 												.join(" · ")}
 										</span>
 									</button>
+									{cancellation && onCancel ? (
+										<CancelJobButton
+											job={job}
+											onClick={onCancel}
+											pending={cancellation.pending}
+											requested={cancellation.requested.has(job.id)}
+											state={state}
+										/>
+									) : null}
 								</li>
 							))}
 						</ol>
@@ -106,11 +135,27 @@ export function InferenceStatus({
 }) {
 	const [open, setOpen] = useState(false);
 	const [selected, setSelected] = useState<QueueJob | null>(null);
+	const [selectedState, setSelectedState] = useState<"queued" | "running">(
+		"queued"
+	);
+	const cancellation = useJobCancellation();
 	const root = useRef<HTMLDivElement>(null);
 	const button = useRef<HTMLButtonElement>(null);
 	const listId = useId();
 	const toggle = useCallback(() => setOpen((current) => !current), []);
 	const close = useCallback(() => setOpen(false), []);
+	const cancelFromList = useCallback(
+		async (event: MouseEvent<HTMLButtonElement>) => {
+			const { job: id, state } = event.currentTarget.dataset;
+			const job = [...queue.jobs, ...(queue.queuedJobs ?? [])].find(
+				(entry) => entry.id === id
+			);
+			if (job && canCancelJob(state)) {
+				await cancellation.cancel(job, state);
+			}
+		},
+		[cancellation.cancel, queue.jobs, queue.queuedJobs]
+	);
 	const selectJob = useCallback(
 		(event: MouseEvent<HTMLButtonElement>) => {
 			const job = [...queue.jobs, ...(queue.queuedJobs ?? [])].find(
@@ -118,6 +163,9 @@ export function InferenceStatus({
 			);
 			if (job) {
 				setSelected(job);
+				setSelectedState(
+					queue.jobs.some((entry) => entry.id === job.id) ? "running" : "queued"
+				);
 				setOpen(false);
 			}
 		},
@@ -132,6 +180,9 @@ export function InferenceStatus({
 			return;
 		}
 		const outside = (event: PointerEvent) => {
+			if (event.target instanceof Element && event.target.closest("dialog")) {
+				return;
+			}
 			if (
 				event.target instanceof Node &&
 				!root.current?.contains(event.target)
@@ -140,6 +191,9 @@ export function InferenceStatus({
 			}
 		};
 		const escapeKey = (event: KeyboardEvent) => {
+			if (event.target instanceof Element && event.target.closest("dialog")) {
+				return;
+			}
 			if (event.key === "Escape") {
 				setOpen(false);
 				button.current?.focus();
@@ -196,12 +250,34 @@ export function InferenceStatus({
 							Панель очереди
 						</a>
 					</div>
-					<QueueList available={available} onSelect={selectJob} queue={queue} />
+					<QueueList
+						available={available}
+						cancellation={cancellation}
+						onCancel={cancelFromList}
+						onSelect={selectJob}
+						queue={queue}
+					/>
+					{cancellation.error ? (
+						<p className="error small" role="alert">
+							{cancellation.error}
+						</p>
+					) : null}
+					{cancellation.notice ? (
+						<p className="muted small" role="status">
+							{cancellation.notice}
+						</p>
+					) : null}
 				</section>
 			) : null}
 			{selected ? (
-				<JobDetailDialog job={selected} key={selected.id} onClose={closeJob} />
+				<JobDetailDialog
+					initialState={selectedState}
+					job={selected}
+					key={selected.id}
+					onClose={closeJob}
+				/>
 			) : null}
+			{cancellation.dialog}
 		</div>
 	);
 }

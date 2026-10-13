@@ -300,6 +300,13 @@ code {
 	list-style: none;
 }
 
+.queue-popover__jobs li {
+	display: grid;
+	grid-template-columns: minmax(0, 1fr) auto;
+	gap: 8px;
+	align-items: start;
+}
+
 .queue-popover__job {
 	display: grid;
 	gap: 2px;
@@ -377,6 +384,8 @@ code {
 
 .queue-detail__actions {
 	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
 	justify-content: flex-end;
 	margin-top: 20px;
 }

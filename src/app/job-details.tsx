@@ -6,9 +6,16 @@ import {
 	useState,
 } from "react";
 
-import type { QueueJob, QueueJobDetails } from "../queue";
+import type { QueueJob, QueueJobDetails, QueueView } from "../queue";
 import { readHub } from "./api";
 import { DialogPortal } from "./dialog-portal";
+import {
+	CancelJobButton,
+	type CancelJobState,
+	canCancelJob,
+	useJobCancellation,
+} from "./job-cancel";
+import { useQueue } from "./queue";
 
 const STATES: Record<string, string> = {
 	cancelled: "Отменено",
@@ -91,10 +98,29 @@ export function JobFacts({ detail }: { detail: QueueJobDetails }) {
 	);
 }
 
+function listedState(
+	queue: QueueView | null,
+	id: string,
+	fallback: CancelJobState
+): CancelJobState | null {
+	if (!queue) {
+		return fallback;
+	}
+	if (queue.jobs.some((entry) => entry.id === id)) {
+		return "running";
+	}
+	if (queue.queuedJobs?.some((entry) => entry.id === id)) {
+		return "queued";
+	}
+	return null;
+}
+
 export function JobDetailDialog({
+	initialState,
 	job,
 	onClose,
 }: {
+	initialState: CancelJobState;
 	job: QueueJob;
 	onClose: () => void;
 }) {
@@ -103,6 +129,13 @@ export function JobDetailDialog({
 	const [detail, setDetail] = useState<QueueJobDetails | null>(null);
 	const [error, setError] = useState<string | null>(null);
 	const [pending, setPending] = useState(false);
+	const cancellation = useJobCancellation();
+	const { available, queue } = useQueue();
+	const runningJob = queue?.jobs.find((entry) => entry.id === job.id);
+	const queuedJob = queue?.queuedJobs?.find((entry) => entry.id === job.id);
+	const listedJob = runningJob ?? queuedJob ?? job;
+	const privateState = listedState(queue, job.id, initialState);
+	const currentState = job.private ? privateState : (detail?.state ?? null);
 	const close = useCallback(
 		(event: SyntheticEvent) => {
 			event.preventDefault();
@@ -137,6 +170,19 @@ export function JobDetailDialog({
 				}
 			});
 	}, [job.id, job.private]);
+	const cancelSelected = useCallback(async () => {
+		if (
+			canCancelJob(currentState) &&
+			(await cancellation.cancel(listedJob, currentState))
+		) {
+			refresh();
+		}
+	}, [cancellation.cancel, currentState, listedJob, refresh]);
+	useEffect(() => {
+		if (cancellation.error && !job.private) {
+			refresh();
+		}
+	}, [cancellation.error, job.private, refresh]);
 	useEffect(() => {
 		const element = dialog.current;
 		element?.showModal();
@@ -181,19 +227,42 @@ export function JobDetailDialog({
 						{pending && !detail ? (
 							<p className="muted">Загружаю подробности…</p>
 						) : null}
-						<div className="queue-detail__actions">
-							<button
-								className="button button--small"
-								disabled={pending}
-								onClick={refresh}
-								type="button"
-							>
-								{pending ? "Обновляю…" : "Обновить"}
-							</button>
-						</div>
 					</>
 				)}
+				{cancellation.error ? (
+					<p className="error" role="alert">
+						{cancellation.error}
+					</p>
+				) : null}
+				{cancellation.notice ? (
+					<p className="muted small" role="status">
+						{cancellation.notice}
+					</p>
+				) : null}
+				<div className="queue-detail__actions">
+					<CancelJobButton
+						disabled={pending || !available || queue?.state === "offline"}
+						job={listedJob}
+						onClick={cancelSelected}
+						pending={cancellation.pending}
+						requested={
+							detail?.cancelRequested || cancellation.requested.has(job.id)
+						}
+						state={currentState}
+					/>
+					{job.private ? null : (
+						<button
+							className="button button--small"
+							disabled={pending || cancellation.pending?.phase === "sending"}
+							onClick={refresh}
+							type="button"
+						>
+							{pending ? "Обновляю…" : "Обновить"}
+						</button>
+					)}
+				</div>
 			</dialog>
+			{cancellation.dialog}
 		</DialogPortal>
 	);
 }

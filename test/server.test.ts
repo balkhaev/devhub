@@ -41,6 +41,9 @@ test("an action's address is said in words for the journal", () => {
 	expect(words("/api/queue/executors/modeler/accept-off")).toBe(
 		"исполнитель modeler: не принимать заказы при запуске"
 	);
+	expect(words("/api/queue/jobs/job-id/cancel")).toBe(
+		"задание job-id: отменить"
+	);
 });
 
 async function fixtureRoot() {
@@ -423,6 +426,127 @@ test("selected queue job diagnostics are protected read-only requests and preser
 		expect(
 			upstream.every((call) => call.method === "GET" && call.body === null)
 		).toBe(true);
+	} finally {
+		instance.stop();
+		await sample.close();
+	}
+});
+
+test("job cancellation requires a protected explicit state and preserves a queued-start race refusal", async () => {
+	const sample = await fixtureRoot();
+	const catalogue = queueCatalogue();
+	const id = "8ee7c920-a582-4ba9-90fc-926dc4a7c865";
+	const upstream: {
+		body: string | null;
+		headers: Record<string, string>;
+		method: string;
+		url: string;
+	}[] = [];
+	let refusal: 404 | 409 | null = null;
+	const queue = new Queue(() => catalogue, {
+		fetch: (url, init) => {
+			upstream.push({
+				body: typeof init.body === "string" ? init.body : null,
+				headers: Object.fromEntries(new Headers(init.headers).entries()),
+				method: init.method ?? "GET",
+				url,
+			});
+			return Promise.resolve(
+				refusal
+					? Response.json(
+							{
+								detail:
+									refusal === 404
+										? "Job not found"
+										: "Job started; cancellation refused",
+							},
+							{ status: refusal }
+						)
+					: Response.json({
+							name: "Private title",
+							private: true,
+							result: "Private result",
+						})
+			);
+		},
+		readFile: () => Promise.resolve("queue-token"),
+	});
+	const instance = await startHub({
+		catalogue,
+		port: 0,
+		queue,
+		root: sample.root,
+		runtime: quietComputer,
+	});
+	try {
+		const url = new URL(instance.url);
+		const page = { origin: url.origin, "x-devhub": "1" };
+		const endpoint = new URL(`api/queue/jobs/${id}/cancel`, url);
+		const send = (body: unknown, headers: Record<string, string> = page) =>
+			fetch(endpoint, {
+				body: JSON.stringify(body),
+				headers: { "Content-Type": "application/json", ...headers },
+				method: "POST",
+			});
+		expect((await send({ state: "queued" }, {})).status).toBe(403);
+		expect(
+			(
+				await send(
+					{ state: "queued" },
+					{ ...page, origin: "https://unrelated.example" }
+				)
+			).status
+		).toBe(403);
+		const malformed = await fetch(endpoint, {
+			body: "{",
+			headers: page,
+			method: "POST",
+		});
+		expect(malformed.status).toBe(400);
+		const invalid = await Promise.all(
+			[
+				null,
+				{},
+				[],
+				{ state: "succeeded" },
+				{ force: true, state: "queued" },
+			].map((body) => send(body))
+		);
+		expect(invalid.every((response) => response.status === 400)).toBe(true);
+		expect(
+			(
+				await fetch(new URL("api/queue/jobs/not-a-uuid/cancel", url), {
+					body: JSON.stringify({ state: "queued" }),
+					headers: page,
+					method: "POST",
+				})
+			).status
+		).toBe(400);
+		expect(upstream).toEqual([]);
+		const cancelled = await send({ state: "queued" });
+		expect(cancelled.status).toBe(200);
+		expect(await cancelled.json()).toEqual({ ok: true, result: null });
+		expect(upstream).toEqual([
+			{
+				body: null,
+				headers: { authorization: "Bearer queue-token" },
+				method: "POST",
+				url: `http://127.0.0.1:8765/api/jobs/${id}/cancel?require_unstarted=true`,
+			},
+		]);
+		expect((await send({ state: "running" })).status).toBe(200);
+		expect(upstream[1]?.url).toEndWith("?require_unstarted=false");
+		refusal = 409;
+		const race = await send({ state: "queued" });
+		expect(race.status).toBe(409);
+		expect(await race.json()).toEqual({
+			error: "Job started; cancellation refused",
+			ok: false,
+		});
+		expect(upstream).toHaveLength(3);
+		expect(upstream[2]?.url).toEndWith("?require_unstarted=true");
+		refusal = 404;
+		expect((await send({ state: "queued" })).status).toBe(404);
 	} finally {
 		instance.stop();
 		await sample.close();

@@ -73,6 +73,9 @@ const EXECUTOR_WORDS: Record<string, string> = {
 function queueWords(rest: string[]): string {
 	const action = rest.at(-1) ?? "";
 	const [scope, id] = rest;
+	if (rest.length === 3 && scope === "jobs" && action === "cancel") {
+		return `задание ${id}: отменить`;
+	}
 	return rest.length === 3 && scope === "executors"
 		? `исполнитель ${id}: ${EXECUTOR_WORDS[action] ?? action}`
 		: `очередь: ${QUEUE_WORDS[action] ?? action}`;
@@ -303,7 +306,10 @@ export async function startHub(
 			return json({ ok: true, result });
 		} catch (error) {
 			journal(`${what} — не вышло: ${(error as Error).message}`, root);
-			return json({ error: (error as Error).message, ok: false }, 409);
+			return json(
+				{ error: (error as Error).message, ok: false },
+				error instanceof QueueError ? error.status : 409
+			);
 		}
 	};
 
@@ -451,6 +457,27 @@ export async function startHub(
 					guarded(request, async () => ({
 						job: await queue.job(request.params.id),
 					})),
+			},
+			"/api/queue/jobs/:id/cancel": {
+				POST: (request) =>
+					act(request, async () => {
+						const body: unknown = await request.json().catch(() => {
+							throw new QueueError("Нужно тело JSON с состоянием задания", 400);
+						});
+						if (
+							!body ||
+							typeof body !== "object" ||
+							Array.isArray(body) ||
+							Object.keys(body).length !== 1 ||
+							!("state" in body)
+						) {
+							throw new QueueError(
+								"Нужно только поле state со значением queued или running",
+								400
+							);
+						}
+						return queue.cancelJob(request.params.id, body.state);
+					}),
 			},
 			"/api/queue/tray": {
 				GET: (request) => guarded(request, () => queue.tray(origin)),

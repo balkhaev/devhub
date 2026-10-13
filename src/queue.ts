@@ -21,6 +21,8 @@ import {
 export type QueueState = "ready" | "working" | "paused" | "stopped" | "offline";
 
 export interface QueueJob {
+	/** An active cancellation was already requested; absent before any request. */
+	cancelRequested?: boolean;
 	id: string;
 	name: string;
 	private: boolean;
@@ -31,6 +33,7 @@ export interface QueueJob {
 
 /** Selected job diagnostics, with operational fields only; no command, workflow, output text or private key. */
 export interface QueueJobDetails {
+	cancelRequested: boolean;
 	cpuThreads: number | null;
 	createdAt: number | null;
 	expectedSeconds: number | null;
@@ -222,6 +225,7 @@ function jobDetailsOf(value: unknown, id: string): QueueJobDetails {
 			.join(" · ");
 	const resource = job.resource ?? allocation?.resource;
 	return {
+		cancelRequested: job.cancel === true || job.cancel === 1,
 		cpuThreads: amount(allocation?.cpu_threads),
 		createdAt: milliseconds(job.created),
 		expectedSeconds: amount(allocation?.expected_seconds),
@@ -258,6 +262,9 @@ function jobOf(value: unknown): QueueJob[] {
 	const started = amount(job.started);
 	return [
 		{
+			...(job.cancel === true || job.cancel === 1
+				? { cancelRequested: true }
+				: {}),
 			id,
 			// A private job is never named here, even by a queue that still sends its name.
 			name: hidden ? ANONYMOUS : text(job.name).slice(0, NAME_LIMIT) || id,
@@ -644,6 +651,22 @@ export class Queue {
 			timeoutMs: READ_TIMEOUT_MS,
 		});
 		return jobDetailsOf(answer, id);
+	}
+
+	/** A queued cancellation must remain safe even if the scheduler starts it before this request arrives. */
+	cancelJob(id: string, state: unknown): Promise<void> {
+		if (!JOB_ID.test(id)) {
+			return Promise.reject(new QueueError("Неверный ID задания", 400));
+		}
+		if (state !== "queued" && state !== "running") {
+			return Promise.reject(
+				new QueueError("Нужно состояние задания queued или running", 400)
+			);
+		}
+		return this.send(
+			"queue",
+			`/api/jobs/${id}/cancel?require_unstarted=${state === "queued"}`
+		);
 	}
 
 	private async send(
