@@ -161,6 +161,26 @@ code {
 	white-space: nowrap;
 }
 
+.reload-notice {
+	position: fixed;
+	right: 16px;
+	bottom: 16px;
+	z-index: 20;
+	display: grid;
+	gap: 12px;
+	justify-items: start;
+	width: min(380px, calc(100vw - 32px));
+	padding: 16px;
+	background: var(--panel);
+	border: 1px solid var(--accent);
+	border-radius: 12px;
+	box-shadow: 0 16px 48px rgb(0 0 0 / 0.5);
+}
+
+.reload-notice p {
+	margin: 4px 0 0;
+}
+
 .header-status {
 	display: flex;
 	gap: 16px;

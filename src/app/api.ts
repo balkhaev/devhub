@@ -7,9 +7,14 @@ import type { ProjectMode } from "../workflow-policy";
 
 /** The page's line to the hub: its state as server-sent events, a service's log as it grows, and the actions. */
 
-export function useHub(): { connected: boolean; view: HubView | null } {
+export function useHub(): {
+	connected: boolean;
+	reloadAvailable: boolean;
+	view: HubView | null;
+} {
 	const [view, setView] = useState<HubView | null>(null);
 	const [connected, setConnected] = useState(false);
+	const [reloadAvailable, setReloadAvailable] = useState(false);
 	useEffect(() => {
 		const source = new EventSource("/api/events");
 		let run: number | null = null;
@@ -17,17 +22,20 @@ export function useHub(): { connected: boolean; view: HubView | null } {
 		source.onerror = () => setConnected(false);
 		source.onmessage = (message) => {
 			const next = JSON.parse(message.data) as HubView;
-			// The hub was restarted, perhaps with a new version of this page: load it.
-			if (run !== null && next.hub !== run) {
-				window.location.reload();
+			// The startup snapshot has no projects yet: keep the open page until the hub is ready.
+			if (next.updatedAt === 0) {
 				return;
+			}
+			// Keep following live data; loading a new interface is the owner's choice.
+			if (run !== null && next.hub !== run) {
+				setReloadAvailable(true);
 			}
 			run = next.hub;
 			setView(next);
 		};
 		return () => source.close();
 	}, []);
-	return { connected, view };
+	return { connected, reloadAvailable, view };
 }
 
 const LOG_LIMIT = 400_000;

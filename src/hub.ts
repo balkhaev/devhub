@@ -119,7 +119,7 @@ export interface PortView {
 
 export interface HubView {
 	docker: DockerView;
-	/** When this run of the hub began: an open page that sees it change reloads, to get the new version. */
+	/** When this run began: an open page offers to reload its interface when this changes. */
 	hub: number;
 	ports: PortView[];
 	projects: ProjectView[];
