@@ -21,6 +21,24 @@ import { isUp } from "./words";
 
 const STATIC_ROUTES = new Set(["new", "prod", "tidy"]);
 
+const reloadPage = () => window.location.reload();
+
+function ReloadNotice() {
+	return (
+		<aside aria-label="Обновление пульта" className="reload-notice">
+			<div role="status">
+				<strong>Пульт перезапущен</strong>
+				<p className="muted">
+					Перезагрузите страницу, чтобы открыть обновлённый интерфейс.
+				</p>
+			</div>
+			<button className="button" onClick={reloadPage} type="button">
+				Перезагрузить страницу
+			</button>
+		</aside>
+	);
+}
+
 function Main({
 	onDeleted,
 	route,
@@ -83,7 +101,7 @@ function Main({
 }
 
 export function App() {
-	const { connected, view } = useHub();
+	const { connected, reloadAvailable, view } = useHub();
 	const [route, go] = useRoute();
 	const deleted = useCallback(() => go(null), [go]);
 	useEffect(() => {
@@ -129,6 +147,7 @@ export function App() {
 							<p className="muted pad">Загрузка…</p>
 						)}
 					</main>
+					{reloadAvailable ? <ReloadNotice /> : null}
 				</div>
 			</QueueProvider>
 		</ProjectPreferencesProvider>
