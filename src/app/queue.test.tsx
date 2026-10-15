@@ -294,6 +294,111 @@ test("the header uses authoritative counts and offers a disclosure without expos
 	expect(markup).not.toContain("Private job name");
 });
 
+test("one running generation shows measured phase and zero steps in the header, card and expanded widget", () => {
+	const view = queue({
+		jobs: [
+			{
+				id: "neutral-generation",
+				name: "Private prompt",
+				private: true,
+				progress: {
+					percent: 0,
+					phase: "sampling",
+					phaseTitle: "Генерация",
+					scope: "node",
+					step: 0,
+					totalSteps: 8,
+					updatedAt: 1,
+				},
+				resource: "gpu",
+				startedAt: null,
+			},
+		],
+		running: 1,
+		state: "working",
+	});
+	for (const markup of [
+		renderToStaticMarkup(<InferenceStatus available queue={view} />),
+		card(view),
+		renderToStaticMarkup(<QueueList available queue={view} />),
+	]) {
+		expect(markup).toContain("Генерация · 0% текущей операции · шаг 0 из 8");
+		expect(markup).toContain('max="100" value="0"');
+		expect(markup).not.toContain("Private prompt");
+	}
+});
+
+test("unknown generation progress is indeterminate while the owner's stop remains visible", () => {
+	const view = queue({
+		jobs: [
+			{
+				id: "neutral-generation",
+				name: "Neutral clip",
+				private: false,
+				progress: {
+					percent: null,
+					phase: "decode",
+					phaseTitle: "Декодирование",
+					scope: "stage",
+					step: null,
+					totalSteps: null,
+					updatedAt: null,
+				},
+				resource: "gpu",
+				startedAt: null,
+			},
+		],
+		running: 1,
+		state: "stopped",
+	});
+	const markup = renderToStaticMarkup(
+		<InferenceStatus available queue={view} />
+	);
+	expect(markup).toContain("Остановлена");
+	expect(markup).toContain("Декодирование");
+	expect(markup).toContain('max="100"></progress>');
+	expect(markup).not.toContain('value="');
+	expect(markup).not.toContain("% текущего этапа");
+});
+
+test("the header never presents one job's percentage as progress of several running jobs", () => {
+	const job = {
+		id: "neutral-generation",
+		name: "Neutral clip",
+		private: false,
+		progress: {
+			percent: 50,
+			phase: "sampling",
+			phaseTitle: "Генерация",
+			scope: "node" as const,
+			step: 4,
+			totalSteps: 8,
+			updatedAt: 1,
+		},
+		resource: "gpu" as const,
+		startedAt: null,
+	};
+	const view = queue({
+		jobs: [job, { ...job, id: "other-generation" }],
+		running: 2,
+		state: "working",
+	});
+	expect(
+		renderToStaticMarkup(<InferenceStatus available queue={view} />)
+	).not.toContain("50%");
+	expect(renderToStaticMarkup(<QueueList available queue={view} />)).toContain(
+		"50% текущей операции"
+	);
+	expect(
+		renderToStaticMarkup(
+			<InferenceStatus
+				available={false}
+				queue={queue({ ...view, jobs: [job], running: 1 })}
+			/>
+		)
+	).not.toContain("50%");
+});
+
 test.each([
 	["paused", "На паузе"],
 	["stopped", "Остановлена"],

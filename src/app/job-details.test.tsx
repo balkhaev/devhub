@@ -65,6 +65,28 @@ test("details retain zero readings and omit unknown fields", () => {
 	expect(markup).not.toContain("Позиция в очереди");
 });
 
+test("generation details show measured progress with its actual scope", () => {
+	const markup = renderToStaticMarkup(
+		<JobFacts
+			detail={{
+				...detail,
+				progress: {
+					percent: 100,
+					phase: "sampling",
+					phaseTitle: "Генерация",
+					scope: "node",
+					step: 8,
+					totalSteps: 8,
+					updatedAt: 1,
+				},
+			}}
+		/>
+	);
+	expect(markup).toContain("100% текущей операции · шаг 8 из 8");
+	expect(markup).toContain("Выполняется");
+	expect(markup).not.toContain("Готово");
+});
+
 test("queued details explain the wait and private dialogs do not expose titles", () => {
 	const markup = renderToStaticMarkup(
 		<JobFacts

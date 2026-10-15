@@ -256,6 +256,43 @@ code {
 	color: var(--muted);
 }
 
+.queue-progress {
+	display: grid;
+	gap: 4px;
+	margin-top: 4px;
+	font-size: 11px;
+	color: var(--muted);
+}
+
+.queue-progress__label {
+	overflow-wrap: anywhere;
+	white-space: normal;
+}
+
+.queue-progress progress {
+	display: block;
+	width: 100%;
+	height: 4px;
+	accent-color: var(--running);
+}
+
+.queue-status .queue-progress {
+	max-width: 260px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.queue-progress progress:indeterminate {
+		appearance: none;
+		background: var(--line-strong);
+		border: 0;
+	}
+
+	.queue-progress progress:indeterminate::-webkit-progress-bar,
+	.queue-progress progress:indeterminate::-moz-progress-bar {
+		background: var(--line-strong);
+	}
+}
+
 .queue-status__chevron {
 	font-size: 11px;
 	color: var(--muted);

@@ -15,6 +15,7 @@ import {
 	canCancelJob,
 	useJobCancellation,
 } from "./job-cancel";
+import { JobProgress } from "./job-progress";
 import { useQueue } from "./queue";
 
 const STATES: Record<string, string> = {
@@ -83,6 +84,7 @@ export function JobFacts({ detail }: { detail: QueueJobDetails }) {
 	];
 	return (
 		<>
+			<JobProgress progress={detail.progress} />
 			{detail.waitingFor ? <p className="note">{detail.waitingFor}</p> : null}
 			<dl className="queue-detail__facts">
 				{facts
