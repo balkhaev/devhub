@@ -14,11 +14,22 @@ import {
  * on every request and goes only to that service on this computer. A queue that is silent, starting or broken is
  * never an error here: it is the state "offline".
  *
- * Of a job only its id, name, resource and start are passed on, never its command, workflow, result or error:
- * jobs can be private.
+ * Job progress is a bounded numeric observation with known phase labels. Commands, workflows, results and
+ * errors never pass through: jobs can be private.
  */
 
 export type QueueState = "ready" | "working" | "paused" | "stopped" | "offline";
+
+export interface QueueProgress {
+	percent: number | null;
+	phase: string;
+	phaseTitle: string;
+	scope: "node" | "stage" | "job";
+	step: number | null;
+	totalSteps: number | null;
+	/** Milliseconds since the epoch, or null when no observation time is known. */
+	updatedAt: number | null;
+}
 
 export interface QueueJob {
 	/** An active cancellation was already requested; absent before any request. */
@@ -26,6 +37,7 @@ export interface QueueJob {
 	id: string;
 	name: string;
 	private: boolean;
+	progress?: QueueProgress;
 	resource: "gpu" | "cpu" | null;
 	/** Milliseconds since the epoch, like every other time on the page. */
 	startedAt: number | null;
@@ -47,6 +59,7 @@ export interface QueueJobDetails {
 	position: number | null;
 	priority: number | null;
 	profile: string | null;
+	progress?: QueueProgress;
 	queuedSeconds: number | null;
 	quietSeconds: number | null;
 	ramMb: number | null;
@@ -205,6 +218,68 @@ const milliseconds = (value: unknown): number | null => {
 	return seconds === null ? null : Math.round(seconds * 1000);
 };
 
+const PROGRESS_PHASES: Record<string, string> = {
+	cancelled: "Отменено",
+	collecting: "Сохранение результата",
+	conditioning: "Подготовка сцены",
+	decode: "Декодирование",
+	failed: "Ошибка",
+	interrupted: "Прервано",
+	loading: "Загрузка модели",
+	needs_attention: "Нужна проверка",
+	queued: "В очереди",
+	refinement: "Уточнение изображения",
+	running: "Выполняется",
+	sampling: "Генерация",
+	saving: "Сохранение результата",
+	succeeded: "Готово",
+};
+
+/** No upstream strings are displayed: even a private job's forged title stays private. */
+function progressOf(value: unknown): QueueProgress | undefined {
+	const raw = record(value);
+	if (!raw) {
+		return undefined;
+	}
+	const phase = Object.hasOwn(PROGRESS_PHASES, text(raw.phase))
+		? text(raw.phase)
+		: "running";
+	const scope =
+		raw.scope === "node" || raw.scope === "job" ? raw.scope : "stage";
+	const measuredScope =
+		raw.scope === "node" || raw.scope === "stage" || raw.scope === "job";
+	const percent = amount(raw.percent);
+	const step = amount(raw.step),
+		total = amount(raw.total_steps);
+	const stepsValid =
+		step !== null &&
+		total !== null &&
+		Number.isInteger(step) &&
+		Number.isInteger(total) &&
+		step >= 0 &&
+		total > 0 &&
+		step <= total &&
+		total <= 1_000_000;
+	const updated = amount(raw.updated_at);
+	return {
+		percent:
+			measuredScope && percent !== null && percent >= 0 && percent <= 100
+				? percent
+				: null,
+		phase,
+		phaseTitle: PROGRESS_PHASES[phase] ?? "Выполняется",
+		scope,
+		step: measuredScope && stepsValid ? step : null,
+		totalSteps: measuredScope && stepsValid ? total : null,
+		updatedAt:
+			updated !== null &&
+			updated >= 0 &&
+			updated <= Number.MAX_SAFE_INTEGER / 1000
+				? milliseconds(updated)
+				: null,
+	};
+}
+
 function jobDetailsOf(value: unknown, id: string): QueueJobDetails {
 	const job = record(record(value)?.job);
 	if (!job || text(job.id).toLowerCase() !== id.toLowerCase()) {
@@ -224,6 +299,7 @@ function jobDetailsOf(value: unknown, id: string): QueueJobDetails {
 			.flatMap((reason) => (typeof reason === "string" ? [reason] : []))
 			.join(" · ");
 	const resource = job.resource ?? allocation?.resource;
+	const progress = progressOf(job.progress);
 	return {
 		cancelRequested: job.cancel === true || job.cancel === 1,
 		cpuThreads: amount(allocation?.cpu_threads),
@@ -239,6 +315,7 @@ function jobDetailsOf(value: unknown, id: string): QueueJobDetails {
 		position: amount(decision?.position),
 		priority: amount(job.priority),
 		profile: text(job.profile).slice(0, NAME_LIMIT) || null,
+		...(progress ? { progress } : {}),
 		queuedSeconds: amount(job.queued_seconds),
 		quietSeconds: amount(output?.quiet_seconds),
 		ramMb: amount(allocation?.ram_mb),
@@ -260,6 +337,7 @@ function jobOf(value: unknown): QueueJob[] {
 	const hidden = job.private === true;
 	const resource = record(job.spec)?.resource;
 	const started = amount(job.started);
+	const progress = progressOf(job.progress);
 	return [
 		{
 			...(job.cancel === true || job.cancel === 1
@@ -269,6 +347,7 @@ function jobOf(value: unknown): QueueJob[] {
 			// A private job is never named here, even by a queue that still sends its name.
 			name: hidden ? ANONYMOUS : text(job.name).slice(0, NAME_LIMIT) || id,
 			private: hidden,
+			...(progress ? { progress } : {}),
 			resource: resource === "gpu" || resource === "cpu" ? resource : null,
 			startedAt: started === null ? null : Math.round(started * 1000),
 		},

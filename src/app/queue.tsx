@@ -14,12 +14,13 @@ import type { HubView, ServiceStatus } from "../hub";
 import type { QueueExecutor, QueueJob, QueueState, QueueView } from "../queue";
 import { useAction } from "./actions";
 import { readHub } from "./api";
+import { JobProgress } from "./job-progress";
 import { cx, since } from "./words";
 
 /**
  * The shared GPU/CPU queue on the overview: what runs and what waits, how loaded the video card and the computer
  * are, the owner's stop, pause and continue, and the queue's remote executors. The hub reads all of it from the
- * queue's own service; a job shows only its name, resource and age.
+ * queue's own service; a job shows its name, resource, age and safe measured progress.
  */
 
 const POLL_MS = 3000;
@@ -201,7 +202,10 @@ function Jobs({ queue }: { queue: QueueView }) {
 					{queue.jobs.map((job) => (
 						<li className="card__service" key={job.id}>
 							<span className="dot dot--running" />
-							<span className="queue__job">{job.name}</span>
+							<span className="queue__job">
+								{job.private ? "Анонимное задание" : job.name}
+								<JobProgress progress={job.progress} />
+							</span>
 							<span className="muted small">{jobWords(job)}</span>
 						</li>
 					))}

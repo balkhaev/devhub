@@ -14,6 +14,7 @@ import {
 	useJobCancellation,
 } from "./job-cancel";
 import { JobDetailDialog } from "./job-details";
+import { JobProgress } from "./job-progress";
 import { QueueMeters, useQueue } from "./queue";
 import { cx, since } from "./words";
 
@@ -98,6 +99,7 @@ export function QueueList({
 												.filter(Boolean)
 												.join(" · ")}
 										</span>
+										<JobProgress progress={job.progress} />
 									</button>
 									{cancellation && onCancel ? (
 										<CancelJobButton
@@ -229,6 +231,9 @@ export function InferenceStatus({
 						<span className="queue-status__state">{STATE_WORDS[state]}</span>
 					</span>
 					<span className="queue-status__counts">{counts}</span>
+					{online && queue.running === 1 && queue.jobs.length === 1 ? (
+						<JobProgress progress={queue.jobs[0]?.progress} />
+					) : null}
 				</span>
 				<span aria-hidden="true" className="queue-status__chevron">
 					{open ? "▴" : "▾"}

@@ -138,7 +138,7 @@ const item = (items: TrayItem[], text: string) => {
 	return found;
 };
 
-test("only a job's id, name, resource and start leave the hub, and a private job is never named", () => {
+test("job metadata omits runtime payloads and keeps private names hidden", () => {
 	const view = queueView(
 		SERVICES,
 		status({
@@ -212,6 +212,173 @@ test("only a job's id, name, resource and start leave the hub, and a private job
 		state: "working",
 		waitingFor: ["Видеопамять занята: нужно 9 ГБ"],
 	});
+});
+
+test("generation progress retains measured counters and rebuilds private phase labels", () => {
+	const view = queueView(
+		SERVICES,
+		status({
+			active_jobs: [
+				{
+					id: JOB,
+					name: "private prompt",
+					private: true,
+					progress: {
+						node: "private node",
+						path: "private path",
+						percent: 50,
+						phase: "sampling",
+						phase_title: "private worker text",
+						scope: "node",
+						step: 4,
+						total_steps: 8,
+						updated_at: 1_790_000_000,
+					},
+					spec: { resource: "gpu" },
+				},
+			],
+		}),
+		null
+	);
+	expect(view.jobs[0]).toEqual({
+		id: JOB,
+		name: "Анонимное задание",
+		private: true,
+		progress: {
+			percent: 50,
+			phase: "sampling",
+			phaseTitle: "Генерация",
+			scope: "node",
+			step: 4,
+			totalSteps: 8,
+			updatedAt: 1_790_000_000_000,
+		},
+		resource: "gpu",
+		startedAt: null,
+	});
+	expect(JSON.stringify(view)).not.toContain("private prompt");
+	expect(JSON.stringify(view)).not.toContain("private worker");
+	expect(JSON.stringify(view)).not.toContain("private node");
+	expect(JSON.stringify(view)).not.toContain("private path");
+});
+
+test.each(
+	[
+		0,
+		1,
+		100,
+		null,
+		true,
+		"50",
+		[],
+		{},
+		Number.NaN,
+		Number.POSITIVE_INFINITY,
+		-1,
+		101,
+	].map((percent) => ({ percent }))
+)(
+	"progress validates finite percentages without estimating unknown values: %p",
+	({ percent }) => {
+		const view = queueView(
+			SERVICES,
+			status({
+				active_jobs: [
+					{
+						id: JOB,
+						progress: {
+							percent,
+							phase: "private path",
+							phase_title: "private text",
+							scope: "node",
+							step: 0,
+							total_steps: 8,
+							updated_at: Number.MAX_VALUE,
+						},
+					},
+				],
+			}),
+			null
+		);
+		const progress = view.jobs[0]?.progress;
+		expect(progress).toEqual({
+			percent:
+				typeof percent === "number" &&
+				Number.isFinite(percent) &&
+				percent >= 0 &&
+				percent <= 100
+					? percent
+					: null,
+			phase: "running",
+			phaseTitle: "Выполняется",
+			scope: "node",
+			step: 0,
+			totalSteps: 8,
+			updatedAt: null,
+		});
+	}
+);
+
+test("malformed scopes and counters stay indeterminate without forwarding raw values", () => {
+	const view = queueView(
+		SERVICES,
+		status({
+			active_jobs: [
+				{
+					id: JOB,
+					progress: {
+						percent: 40,
+						phase: "sampling",
+						scope: ["private text"],
+						step: 10,
+						total_steps: 8,
+						updated_at: -1,
+					},
+				},
+			],
+		}),
+		null
+	);
+	expect(view.jobs[0]?.progress).toEqual({
+		percent: null,
+		phase: "sampling",
+		phaseTitle: "Генерация",
+		scope: "stage",
+		step: null,
+		totalSteps: null,
+		updatedAt: null,
+	});
+});
+
+test("selected diagnostics include the same safe progress contract without fetching private data", async () => {
+	const { queue, calls } = fixture({
+		[`GET 8765/api/jobs/${JOB}/diagnostics`]: () =>
+			Response.json({
+				job: {
+					id: JOB,
+					progress: {
+						percent: null,
+						phase: "decode",
+						phase_title: "private text",
+						scope: "stage",
+						step: null,
+						total_steps: null,
+					},
+					state: "running",
+				},
+			}),
+	});
+	expect((await queue.job(JOB)).progress).toEqual({
+		percent: null,
+		phase: "decode",
+		phaseTitle: "Декодирование",
+		scope: "stage",
+		step: null,
+		totalSteps: null,
+		updatedAt: null,
+	});
+	expect(calls).toHaveLength(1);
+	expect(calls[0]?.url).toEndWith(`/api/jobs/${JOB}/diagnostics`);
 });
 
 test("waiting jobs keep the scheduler's order and privacy without duplicating active or launched jobs", () => {
