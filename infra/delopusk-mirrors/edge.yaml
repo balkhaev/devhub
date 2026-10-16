@@ -3,14 +3,14 @@
 http:
   routers:
     delopusk-mirrors-https:
-      rule: Host(`crm.balkhaev.com`) || Host(`api.crm.balkhaev.com`) || Host(`ggpick.balkhaev.com`) || Host(`altay-mirror.balkhaev.com`)
+      rule: Host(`crm.balkhaev.com`) || Host(`api.crm.balkhaev.com`) || Host(`ggpick.balkhaev.com`) || Host(`altay-mirror.balkhaev.com`) || Host(`app.balkhaev.com`)
       entryPoints: [https]
       priority: 60000
       service: delopusk-mirrors
       tls:
         certResolver: letsencrypt
     delopusk-mirrors-http:
-      rule: Host(`crm.balkhaev.com`) || Host(`api.crm.balkhaev.com`) || Host(`ggpick.balkhaev.com`) || Host(`altay-mirror.balkhaev.com`)
+      rule: Host(`crm.balkhaev.com`) || Host(`api.crm.balkhaev.com`) || Host(`ggpick.balkhaev.com`) || Host(`altay-mirror.balkhaev.com`) || Host(`app.balkhaev.com`)
       entryPoints: [http]
       priority: 60000
       service: noop@internal

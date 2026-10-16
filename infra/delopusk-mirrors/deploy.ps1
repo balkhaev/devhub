@@ -16,7 +16,7 @@ function Invoke-Remote([string] $command) {
 Invoke-Remote @'
 set -eu
 test "$(docker inspect coolify-proxy --format '{{(index .NetworkSettings.Networks "coolify").IPAddress}}')" = '10.0.1.7'
-for domain in crm.balkhaev.com api.crm.balkhaev.com ggpick.balkhaev.com altay-mirror.balkhaev.com; do
+for domain in crm.balkhaev.com api.crm.balkhaev.com ggpick.balkhaev.com altay-mirror.balkhaev.com app.balkhaev.com; do
   test "$(getent ahostsv4 "$domain" | head -1 | awk '{print $1}')" = '49.13.216.63'
 done
 mkdir -p /data/devhub/delopusk-mirrors

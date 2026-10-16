@@ -9,6 +9,7 @@ HTTPS-прокси на управляющем сервере `deploy.balkhaev.c
 | --- | --- | --- |
 | CRM Земстрой | https://crm.balkhaev.com | https://crm.delopusk.ru |
 | API для работы CRM | https://api.crm.balkhaev.com | https://api.crm.delopusk.ru |
+| Кабинет агентов Земстрой | https://app.balkhaev.com | https://agent.xn--80aaphjkeh3cyi.xn--p1ai |
 | Алтай | https://altay-mirror.balkhaev.com | https://altay.delopusk.ru |
 | GameRadar | https://ggpick.balkhaev.com | https://ggpick.club — приложение на том же сервере, также обслуживает `ggpick.delopusk.ru` |
 | Общая Grafana | https://grafana.balkhaev.com | Уже существующий прокси к `81.90.31.214`, Host `grafana.balkhaev.com`, TLS SNI `crm.delopusk.ru` |
@@ -39,7 +40,7 @@ DNS A/AAAA и явное добавление этих имён в конфиг�
 
 Traefik Coolify завершает публичный TLS и отправляет запрос в контейнер
 `delopusk-resource-mirrors`, Nginx на порту 8080 в приватной Docker-сети `coolify`.
-Порт контейнера на хосте не публикуется. Только четыре явно перечисленных имени
+Порт контейнера на хосте не публикуется. Только пять явно перечисленных имён
 маршрутизируются сюда; неизвестный Host получает 421.
 
 Nginx подключается к фиксированному `https://81.90.31.214`, передавая нужные
@@ -54,6 +55,16 @@ Nginx подключается к фиксированному `https://81.90.31
 `.crm.balkhaev.com`, общий только для веба и его API; существующие Secure,
 HttpOnly и SameSite сохраняются. Вход на зеркале создаёт собственную браузерную
 сессию тех же пользователей; cookie исходного домена автоматически не переносится.
+
+Кабинет агентов использует свой same-origin API-посредник. Его hostname в JS
+переводится в `app.balkhaev.com`, а Origin/Referer — только для этого точного
+зеркала. Сессионные cookie остаются host-only, общий домен `.balkhaev.com` не
+выдаётся. Переходы администратора в CRM ведут на `crm.balkhaev.com`.
+Клиентские `/agents/book/…` до подписания и оплаты перенаправляются на основной
+домен с `Referrer-Policy: no-referrer` и без кеширования: банк возвращает туда же,
+где хранится cookie бронирования. Прямой `/api/agent-booking` на зеркале закрыт
+с кодом 409; выдаваемые агентом ссылки внутри JSON остаются каноническими.
+Занятый другим сервисом `agent.balkhaev.com` в маршруты не входит.
 
 Location и ссылки в HTML/JS/CSS переводятся на адрес зеркала. JSON API,
 бинарные файлы и тела входящих запросов не переписываются. WebSocket и потоки
@@ -81,7 +92,7 @@ URL внутри JSON могут требовать отдельной наст�
 powershell -NoProfile -ExecutionPolicy Bypass -File infra/delopusk-mirrors/deploy.ps1
 ```
 
-Скрипт проверяет SSH host key, адрес Traefik и DNS всех четырёх имён,
+Скрипт проверяет SSH host key, адрес Traefik и DNS всех пяти имён,
 загружает только свои конфиги, валидирует Nginx и Compose, запускает только
 контейнер зеркала и атомарно устанавливает свой маршрут Traefik. Traefik
 подхватывает файл автоматически; перезапуск Coolify, его proxy или production
