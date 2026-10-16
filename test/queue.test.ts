@@ -643,6 +643,7 @@ test("tray hover observations retain the widget's safe per-job progress and load
 		jobs: [{ ...job, name: "Анонимное задание" }],
 		label: view.label,
 		queued: 4,
+		queuedJobs: null,
 		running: 1,
 		state: "working",
 	});
@@ -667,6 +668,76 @@ test("tray hover observations retain the widget's safe per-job progress and load
 	]) {
 		expect(JSON.stringify(menu)).not.toContain(secret);
 	}
+});
+
+test("tray hover lists every waiting job in scheduler order with private titles stripped", () => {
+	const view = queueView(
+		SERVICES,
+		status({
+			active_jobs: [{ id: "active", name: "Running render" }],
+			queued_count: 6,
+		}),
+		null,
+		{
+			jobs: Array.from({ length: 6 }, (_, index) => ({
+				command: "private queued command",
+				estimate: { resource: index % 2 === 0 ? "gpu" : "cpu" },
+				job_id: `waiting-${6 - index}`,
+				name: index === 3 ? "private queued title" : `Render ${index + 1}`,
+				private: index === 3,
+				progress: { phase_title: "private queued phase title" },
+			})),
+		}
+	);
+	const hidden = view.queuedJobs?.[3];
+	if (!hidden) {
+		throw new Error("missing private waiting job");
+	}
+	Object.assign(hidden, {
+		command: "private injected command",
+		name: "private renamed queued title",
+	});
+	const menu = trayMenu(view, HUB);
+	expect(menu.status?.queued).toBe(6);
+	expect(menu.status?.queuedJobs?.map((job) => job.id)).toEqual([
+		"waiting-6",
+		"waiting-5",
+		"waiting-4",
+		"waiting-3",
+		"waiting-2",
+		"waiting-1",
+	]);
+	expect(menu.status?.queuedJobs?.map((job) => job.name)).toEqual([
+		"Render 1",
+		"Render 2",
+		"Render 3",
+		"Анонимное задание",
+		"Render 5",
+		"Render 6",
+	]);
+	expect(menu.status?.jobs.map((job) => job.id)).toEqual(["active"]);
+	expect(menu.items).toHaveLength(5);
+	expect(JSON.stringify(menu)).not.toContain("private queued");
+	expect(JSON.stringify(menu)).not.toContain("private renamed queued title");
+	expect(JSON.stringify(menu)).not.toContain("private injected command");
+});
+
+test("tray hover retains unavailable, empty and incomplete waiting listings without guessing counts", () => {
+	const hover = (answer: unknown, plan: unknown = null) =>
+		trayMenu(queueView(SERVICES, answer, null, plan), HUB).status;
+	expect(hover(status({ queued_count: 4 }))?.queuedJobs).toBeNull();
+	expect(hover(status())?.queuedJobs).toEqual([]);
+	expect(hover(null, { jobs: [] })?.queuedJobs).toBeNull();
+	const partial = hover(status({ queued_count: 9 }), {
+		jobs: [{ job_id: "listed", name: "Only known waiting job" }],
+	});
+	expect(partial?.queued).toBe(9);
+	expect(partial?.queuedJobs).toHaveLength(1);
+	expect(partial?.queuedJobs?.[0]?.name).toBe("Only known waiting job");
+	expect(hover(status({ queued_count: 9 }), { jobs: [] })).toMatchObject({
+		queued: 9,
+		queuedJobs: [],
+	});
 });
 
 test("tray tips show real zero or unknown progress and retain the owner's hold", () => {

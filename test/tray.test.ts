@@ -91,3 +91,23 @@ windowsTest(
 		});
 	}
 );
+
+windowsTest(
+	"the hover popup shows the full waiting queue and scrolls to its final job",
+	async () => {
+		await run(executable, ["full-queue", root], {
+			timeout: 10_000,
+			windowsHide: true,
+		});
+	}
+);
+
+windowsTest(
+	"the hover popup avoids notification flyouts on every monitor edge",
+	async () => {
+		await run(executable, ["placement", root], {
+			timeout: 10_000,
+			windowsHide: true,
+		});
+	}
+);

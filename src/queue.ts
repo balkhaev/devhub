@@ -144,7 +144,14 @@ export interface TrayMenu {
 	/** Safe queue observations for the tray's hover card, with the same progress as the page widget. */
 	status?: Pick<
 		QueueView,
-		"gpu" | "host" | "jobs" | "label" | "queued" | "running" | "state"
+		| "gpu"
+		| "host"
+		| "jobs"
+		| "label"
+		| "queued"
+		| "queuedJobs"
+		| "running"
+		| "state"
 	>;
 	/** A few words for the icon's tooltip. */
 	tip: string;
@@ -540,6 +547,19 @@ function trayProgressWords(progress: QueueProgress): string {
 		.join(" · ");
 }
 
+/** Both lists keep the same whitelist and reassert private names at the tray boundary. */
+function trayJobOf(job: QueueJob): QueueJob {
+	return {
+		...(job.cancelRequested ? { cancelRequested: true } : {}),
+		id: job.id,
+		name: job.private ? ANONYMOUS : job.name,
+		private: job.private,
+		...(job.progress ? { progress: job.progress } : {}),
+		resource: job.resource,
+		startedAt: job.startedAt,
+	};
+}
+
 /**
  * The queue's part of the tray menu. Its wording is the owner's: the stop, pause and continue items are named in
  * the rules agents follow, and must stay as they are.
@@ -596,17 +616,10 @@ export function trayMenu(view: QueueView | null, hubUrl: string): TrayMenu {
 		status: {
 			gpu: view.gpu,
 			host: view.host,
-			jobs: view.jobs.map((job) => ({
-				...(job.cancelRequested ? { cancelRequested: true } : {}),
-				id: job.id,
-				name: job.private ? ANONYMOUS : job.name,
-				private: job.private,
-				...(job.progress ? { progress: job.progress } : {}),
-				resource: job.resource,
-				startedAt: job.startedAt,
-			})),
+			jobs: view.jobs.map(trayJobOf),
 			label: view.label,
 			queued: view.queued,
+			queuedJobs: view.queuedJobs?.map(trayJobOf) ?? null,
 			running: view.running,
 			state: view.state,
 		},
