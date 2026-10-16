@@ -317,8 +317,17 @@ test("one running generation shows measured phase and zero steps in the header, 
 		running: 1,
 		state: "working",
 	});
+	const header = renderToStaticMarkup(
+		<InferenceStatus available queue={view} />
+	);
+	expect(header).toContain('class="queue-status__percent">0%</span>');
+	expect(header).toContain('class="queue-status__steps">0/8</span>');
+	expect(header).toContain(
+		'aria-label="Очередь Inference. В работе. 1 выполняется · 0 в очереди. Генерация · 0% текущей операции · шаг 0 из 8"'
+	);
+	expect(header).not.toContain('class="queue-progress"');
 	for (const markup of [
-		renderToStaticMarkup(<InferenceStatus available queue={view} />),
+		header,
 		card(view),
 		renderToStaticMarkup(<QueueList available queue={view} />),
 	]) {

@@ -7,14 +7,14 @@ import {
 	useState,
 } from "react";
 
-import type { QueueJob, QueueState, QueueView } from "../queue";
+import type { QueueJob, QueueProgress, QueueState, QueueView } from "../queue";
 import {
 	CancelJobButton,
 	canCancelJob,
 	useJobCancellation,
 } from "./job-cancel";
 import { JobDetailDialog } from "./job-details";
-import { JobProgress } from "./job-progress";
+import { JobProgress, progressWords } from "./job-progress";
 import { QueueMeters, useQueue } from "./queue";
 import { cx, since } from "./words";
 
@@ -25,6 +25,34 @@ const STATE_WORDS: Record<QueueState, string> = {
 	stopped: "Остановлена",
 	working: "В работе",
 };
+
+function CompactJobProgress({ progress }: { progress: QueueProgress }) {
+	return (
+		<span className="queue-status__generation">
+			<span className="queue-status__phase">{progress.phaseTitle}</span>
+			{progress.percent === null ? null : (
+				<span className="queue-status__percent">
+					{progress.percent.toLocaleString("ru-RU", {
+						maximumFractionDigits: 1,
+					})}
+					%
+				</span>
+			)}
+			{progress.step === null || progress.totalSteps === null ? null : (
+				<span className="queue-status__steps">
+					{progress.step}/{progress.totalSteps}
+				</span>
+			)}
+			<progress
+				aria-label={progress.phaseTitle}
+				aria-valuetext={progressWords(progress)}
+				className="queue-status__meter"
+				max={100}
+				value={progress.percent ?? undefined}
+			/>
+		</span>
+	);
+}
 
 export function QueueList({
 	available,
@@ -213,15 +241,27 @@ export function InferenceStatus({
 	const counts = online
 		? `${queue.running} выполняется · ${queue.queued ?? "?"} в очереди`
 		: "Нет данных об очереди";
+	const progress =
+		online && queue.running === 1 && queue.jobs.length === 1
+			? queue.jobs[0]?.progress
+			: undefined;
+	const description = [
+		STATE_WORDS[state],
+		counts,
+		progress && progressWords(progress),
+	]
+		.filter(Boolean)
+		.join(". ");
 	return (
 		<div className="queue-widget" ref={root}>
 			<button
 				aria-controls={open ? listId : undefined}
 				aria-expanded={open}
+				aria-label={`Очередь Inference. ${description}`}
 				className={cx("queue-status", `queue-status--${state}`)}
 				onClick={toggle}
 				ref={button}
-				title="Показать очередь Inference"
+				title={`Показать очередь Inference. ${description}`}
 				type="button"
 			>
 				<span aria-hidden="true" className="queue-status__dot" />
@@ -230,10 +270,11 @@ export function InferenceStatus({
 						<strong>Inference</strong>
 						<span className="queue-status__state">{STATE_WORDS[state]}</span>
 					</span>
-					<span className="queue-status__counts">{counts}</span>
-					{online && queue.running === 1 && queue.jobs.length === 1 ? (
-						<JobProgress progress={queue.jobs[0]?.progress} />
-					) : null}
+					{progress ? (
+						<CompactJobProgress progress={progress} />
+					) : (
+						<span className="queue-status__counts">{counts}</span>
+					)}
 				</span>
 				<span aria-hidden="true" className="queue-status__chevron">
 					{open ? "▴" : "▾"}

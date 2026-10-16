@@ -183,21 +183,29 @@ code {
 
 .header-status {
 	display: flex;
+	flex-shrink: 0;
 	gap: 16px;
 	align-items: center;
+	max-width: 100%;
 	margin-left: auto;
 }
 
 .queue-widget {
 	position: relative;
+	min-width: 0;
+	max-width: 100%;
 }
 
 .queue-status {
 	--queue-color: var(--running);
+	position: relative;
 	display: flex;
 	gap: 8px;
 	align-items: center;
-	padding: 3px 10px;
+	width: 252px;
+	max-width: 100%;
+	height: 40px;
+	padding: 3px 10px 5px;
 	color: var(--text);
 	white-space: nowrap;
 	text-decoration: none;
@@ -235,6 +243,8 @@ code {
 
 .queue-status__body {
 	display: grid;
+	flex: 1;
+	min-width: 0;
 }
 
 .queue-status__head {
@@ -243,6 +253,7 @@ code {
 	align-items: center;
 	justify-content: space-between;
 	font-size: 12px;
+	line-height: 14px;
 }
 
 .queue-status__state {
@@ -251,9 +262,58 @@ code {
 }
 
 .queue-status__counts {
+	overflow: hidden;
+	text-overflow: ellipsis;
 	font-size: 11px;
 	font-variant-numeric: tabular-nums;
+	line-height: 13px;
 	color: var(--muted);
+}
+
+.queue-status__generation {
+	display: flex;
+	gap: 8px;
+	align-items: center;
+	min-width: 0;
+	font-size: 11px;
+	font-variant-numeric: tabular-nums;
+	line-height: 13px;
+	color: var(--muted);
+}
+
+.queue-status__phase {
+	flex: 1;
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.queue-status__percent {
+	flex-shrink: 0;
+	color: var(--text);
+}
+
+.queue-status__steps {
+	min-width: 0;
+	max-width: 80px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.queue-status__meter {
+	position: absolute;
+	right: 10px;
+	bottom: 3px;
+	left: 10px;
+	display: block;
+	width: calc(100% - 20px);
+	height: 2px;
+	margin: 0;
+	overflow: hidden;
+	accent-color: var(--running);
+	pointer-events: none;
+	border: 0;
+	border-radius: 1px;
 }
 
 .queue-progress {
@@ -276,24 +336,24 @@ code {
 	accent-color: var(--running);
 }
 
-.queue-status .queue-progress {
-	max-width: 260px;
-}
-
 @media (prefers-reduced-motion: reduce) {
-	.queue-progress progress:indeterminate {
+	.queue-progress progress:indeterminate,
+	.queue-status__meter:indeterminate {
 		appearance: none;
 		background: var(--line-strong);
 		border: 0;
 	}
 
 	.queue-progress progress:indeterminate::-webkit-progress-bar,
-	.queue-progress progress:indeterminate::-moz-progress-bar {
+	.queue-progress progress:indeterminate::-moz-progress-bar,
+	.queue-status__meter:indeterminate::-webkit-progress-bar,
+	.queue-status__meter:indeterminate::-moz-progress-bar {
 		background: var(--line-strong);
 	}
 }
 
 .queue-status__chevron {
+	flex-shrink: 0;
 	font-size: 11px;
 	color: var(--muted);
 }
