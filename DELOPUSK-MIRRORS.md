@@ -74,6 +74,19 @@ upstream, в том числе 429, остаются действующими. O
 URL внутри JSON могут требовать отдельной настройки провайдера/приложения;
 их универсальная совместимость без изменения upstream не предполагается.
 
+Upstream получает `Accept-Encoding: ''`, чтобы подстановка адресов выполнялась
+над несжатым ответом. После подстановки Nginx сжимает ответы для браузера gzip
+(уровень 5, минимум 1024 байта): HTML, JavaScript, CSS, RSC и JSON. Заголовок
+`Vary: Accept-Encoding` сохраняет корректный выбор представления. JSON только
+сжимается, его ссылки и данные не меняются. `text/event-stream` не входит в
+типы gzip; SSE продолжает передаваться без сжатия и буферизации.
+
+При проверке скорости сравнивать `Content-Encoding` и число переданных байтов
+с `Accept-Encoding: identity` и `gzip`, а не только код 200. До включения gzip
+страница входа агента загружала 16 JS-файлов общим объёмом 1 168 600 байт без
+сжатия; один из файлов занимал 283 476 байт против 64 648 байт gzip на основном
+домене. Это замер без входа, он не подтверждает защищённые рабочие сценарии.
+
 В access log не записываются URL, параметры, cookie или данные авторизации.
 Реальный IP берётся только от текущего адреса Traefik `10.0.1.7`; скрипт
 перед выкладкой проверяет этот адрес. Если Coolify пересоздал proxy с другим IP,
@@ -136,4 +149,5 @@ API, API `/api/auth/get-session`, CORS preflight с Origin зеркала и ч�
 
 Директивы прокси и подстановки описаны в документации
 [Nginx proxy module](https://nginx.org/en/docs/http/ngx_http_proxy_module.html) и
-[sub module](https://nginx.org/en/docs/http/ngx_http_sub_module.html).
+[sub module](https://nginx.org/en/docs/http/ngx_http_sub_module.html), сжатие — в
+[gzip module](https://nginx.org/en/docs/http/ngx_http_gzip_module.html).
