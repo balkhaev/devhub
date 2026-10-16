@@ -141,6 +141,11 @@ export type TrayItem =
 /** The queue's part of the tray menu, ready to draw: the tray program knows nothing about the queue. */
 export interface TrayMenu {
 	items: TrayItem[];
+	/** Safe queue observations for the tray's hover card, with the same progress as the page widget. */
+	status?: Pick<
+		QueueView,
+		"gpu" | "host" | "jobs" | "label" | "queued" | "running" | "state"
+	>;
 	/** A few words for the icon's tooltip. */
 	tip: string;
 }
@@ -520,31 +525,19 @@ export function queueView(
 	};
 }
 
-function executorItems(executor: QueueExecutor): TrayItem[] {
-	const address = `/api/queue/executors/${executor.id}`;
-	const items: TrayItem[] = [
-		{ separator: true },
-		{ enabled: false, text: `${executor.name} · ${executor.label}` },
-	];
-	if (executor.note) {
-		items.push({ enabled: false, text: executor.note });
-	}
-	for (const command of executor.commands) {
-		items.push({
-			enabled: command.enabled,
-			post: `${address}/${command.id}`,
-			text: command.text,
-		});
-	}
-	if (executor.acceptOnStart) {
-		items.push({
-			checked: executor.acceptOnStart.enabled,
-			enabled: true,
-			post: `${address}/${executor.acceptOnStart.enabled ? "accept-off" : "accept-on"}`,
-			text: executor.acceptOnStart.text,
-		});
-	}
-	return items;
+function trayProgressWords(progress: QueueProgress): string {
+	const scopes = { job: "задания", node: "операции", stage: "этапа" };
+	return [
+		progress.phaseTitle,
+		progress.percent === null
+			? null
+			: `${progress.percent.toLocaleString("ru-RU", { maximumFractionDigits: 1 })}% ${scopes[progress.scope]}`,
+		progress.step === null || progress.totalSteps === null
+			? null
+			: `${progress.step}/${progress.totalSteps}`,
+	]
+		.filter(Boolean)
+		.join(" · ");
 }
 
 /**
@@ -586,16 +579,39 @@ export function trayMenu(view: QueueView | null, hubUrl: string): TrayMenu {
 			text: "Продолжить общую очередь",
 		},
 	];
-	for (const executor of view.executors ?? []) {
-		if (executor.paired) {
-			items.push(...executorItems(executor));
-		}
-	}
 	const words =
 		view.state === "working"
 			? `выполняется ${view.running}`
 			: TIP_WORDS[view.state];
-	return { items, tip: `очередь: ${words}${gpuWords(view.gpu)}` };
+	// A job's measured operation is never presented as progress of several running jobs.
+	const progress =
+		!offline && view.running === 1 && view.jobs.length === 1
+			? view.jobs[0]?.progress
+			: undefined;
+	const detail = progress
+		? `${trayProgressWords(progress)}${held ? ` · ${words}` : ""}`
+		: `${words}${gpuWords(view.gpu)}`;
+	return {
+		items,
+		status: {
+			gpu: view.gpu,
+			host: view.host,
+			jobs: view.jobs.map((job) => ({
+				...(job.cancelRequested ? { cancelRequested: true } : {}),
+				id: job.id,
+				name: job.private ? ANONYMOUS : job.name,
+				private: job.private,
+				...(job.progress ? { progress: job.progress } : {}),
+				resource: job.resource,
+				startedAt: job.startedAt,
+			})),
+			label: view.label,
+			queued: view.queued,
+			running: view.running,
+			state: view.state,
+		},
+		tip: `очередь: ${detail}`,
+	};
 }
 
 export class Queue {

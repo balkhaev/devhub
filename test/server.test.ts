@@ -230,10 +230,6 @@ test("the queue's state and commands go through the hub for its page and its tra
 			"Стоп общей очереди",
 			"Пауза общей очереди",
 			"Продолжить общую очередь",
-			"—",
-			"Modeler · Принимает заказы",
-			"Modeler: пауза",
-			"Modeler: при запуске",
 		]);
 		expect(menu.items[1]?.open).toBe(`${url.origin}/#/inference/queue`);
 

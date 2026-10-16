@@ -130,14 +130,6 @@ function fixture(
 
 const texts = (items: TrayItem[]): string[] =>
 	items.map((entry) => ("separator" in entry ? "—" : entry.text));
-const item = (items: TrayItem[], text: string) => {
-	const found = items.find((entry) => "text" in entry && entry.text === text);
-	if (!(found && "text" in found)) {
-		throw new Error(`no menu item ${text}`);
-	}
-	return found;
-};
-
 test("job metadata omits runtime payloads and keeps private names hidden", () => {
 	const view = queueView(
 		SERVICES,
@@ -572,7 +564,7 @@ test("the tray menu keeps the owner's wording and offers only what the queue's s
 	expect(trayMenu(null, HUB)).toEqual({ items: [], tip: "" });
 });
 
-test("paired executors get their own block of the tray menu, with their commands and a switch", () => {
+test("the tray omits every executor section, command and switch while the page keeps them", () => {
 	const view = queueView(SERVICES, status(), [
 		modeler(),
 		modeler({ id: "unpaired", name: "Unpaired", paired: false }),
@@ -594,55 +586,148 @@ test("paired executors get their own block of the tray menu, with their commands
 		"unpaired",
 		"montage",
 	]);
-	const { items } = trayMenu(view, HUB);
-	expect(texts(items).slice(5)).toEqual([
-		"—",
-		"Modeler · На паузе · приём выключен",
-		"Последний заказ выполнен",
-		"Modeler: принимать заказы",
-		"Modeler: пауза после текущего заказа",
-		"Modeler: остановить",
-		"Modeler: принимать заказы при запуске",
-		"—",
-		"Montage · Принимает заказы",
-		"Montage: принимать заказы при запуске",
-	]);
-	expect(item(items, "Modeler · На паузе · приём выключен").enabled).toBe(
-		false
+	const menu = trayMenu(view, HUB);
+	expect(menu.items).toEqual(
+		trayMenu(queueView(SERVICES, status(), null), HUB).items
 	);
-	expect(item(items, "Последний заказ выполнен").enabled).toBe(false);
-	expect(item(items, "Modeler: принимать заказы")).toEqual({
-		enabled: true,
-		post: "/api/queue/executors/modeler/enable",
-		text: "Modeler: принимать заказы",
+	expect(menu.items).toHaveLength(5);
+	for (const word of [
+		"modeler",
+		"Modeler",
+		"Montage",
+		"executors",
+		"accept-",
+	]) {
+		expect(JSON.stringify(menu)).not.toContain(word);
+	}
+});
+
+test("tray hover observations retain the widget's safe per-job progress and load", () => {
+	const view = queueView(
+		SERVICES,
+		status({
+			active_jobs: [
+				{
+					command: "private command",
+					id: JOB,
+					name: "private prompt",
+					private: true,
+					progress: {
+						percent: 37.5,
+						phase: "sampling",
+						phase_title: "private worker text",
+						scope: "node",
+						step: 3,
+						total_steps: 8,
+						updated_at: 1_790_000_000,
+					},
+					spec: { resource: "gpu", workflow: "private workflow" },
+					started: 1_790_000_000,
+				},
+			],
+			queued_count: 4,
+		}),
+		[modeler()]
+	);
+	// Re-assert anonymity in the tray projection even if another consumer changes a public row.
+	const [job] = view.jobs;
+	if (!job) {
+		throw new Error("missing active job");
+	}
+	job.name = "private renamed title";
+	const menu = trayMenu(view, HUB);
+	expect(menu.tip).toBe("очередь: Генерация · 37,5% операции · 3/8");
+	expect(menu.status).toEqual({
+		gpu: view.gpu,
+		host: view.host,
+		jobs: [{ ...job, name: "Анонимное задание" }],
+		label: view.label,
+		queued: 4,
+		running: 1,
+		state: "working",
 	});
-	expect(item(items, "Modeler: остановить")).toEqual({
-		enabled: false,
-		post: "/api/queue/executors/modeler/stop",
-		text: "Modeler: остановить",
+	expect(menu.status?.jobs[0]?.progress).toEqual({
+		percent: 37.5,
+		phase: "sampling",
+		phaseTitle: "Генерация",
+		scope: "node",
+		step: 3,
+		totalSteps: 8,
+		updatedAt: 1_790_000_000_000,
 	});
-	// The switch sends whatever changes it.
-	expect(item(items, "Modeler: принимать заказы при запуске")).toEqual({
-		checked: true,
-		enabled: true,
-		post: "/api/queue/executors/modeler/accept-off",
-		text: "Modeler: принимать заказы при запуске",
-	});
-	expect(item(items, "Montage: принимать заказы при запуске")).toEqual({
-		checked: false,
-		enabled: true,
-		post: "/api/queue/executors/montage/accept-on",
-		text: "Montage: принимать заказы при запуске",
-	});
+	for (const secret of [
+		"private command",
+		"private prompt",
+		"private worker text",
+		"private workflow",
+		"private renamed title",
+		"Modeler",
+		"workflow",
+		"command",
+	]) {
+		expect(JSON.stringify(menu)).not.toContain(secret);
+	}
+});
+
+test("tray tips show real zero or unknown progress and retain the owner's hold", () => {
+	const view = (progress: unknown, changes: Record<string, unknown> = {}) =>
+		queueView(
+			SERVICES,
+			status({ active_jobs: [{ id: JOB, progress }], ...changes }),
+			null
+		);
 	expect(
-		texts(trayMenu(queueView(SERVICES, status(), null), HUB).items)
-	).toHaveLength(5);
+		trayMenu(view({ percent: 0, phase: "loading", scope: "job" }), HUB).tip
+	).toBe("очередь: Загрузка модели · 0% задания");
 	expect(
-		texts(
-			trayMenu(queueView(SERVICES, status(), [modeler({ paired: false })]), HUB)
-				.items
-		)
-	).toHaveLength(5);
+		trayMenu(view({ percent: null, phase: "decode", scope: "stage" }), HUB).tip
+	).toBe("очередь: Декодирование");
+	const stopped = trayMenu(
+		view(
+			{
+				percent: 50,
+				phase: "sampling",
+				scope: "stage",
+				step: 4,
+				total_steps: 8,
+			},
+			{ stopped: true }
+		),
+		HUB
+	);
+	expect(stopped.tip).toBe(
+		"очередь: Генерация · 50% этапа · 4/8 · остановлена"
+	);
+	expect(stopped.status?.state).toBe("stopped");
+	expect(stopped.status?.jobs[0]?.progress?.percent).toBe(50);
+});
+
+test("several active jobs keep individual hover progress without an invented combined percentage", () => {
+	const view = queueView(
+		SERVICES,
+		status({
+			active_jobs: [
+				{
+					id: "gpu-job",
+					progress: { percent: 20, phase: "sampling", scope: "node" },
+				},
+				{
+					id: "cpu-job",
+					progress: { percent: 70, phase: "saving", scope: "job" },
+				},
+			],
+		}),
+		null
+	);
+	const menu = trayMenu(view, HUB);
+	expect(menu.tip).toBe("очередь: выполняется 2 · GPU 12%");
+	expect(menu.status?.jobs.map((job) => job.progress?.percent)).toEqual([
+		20, 70,
+	]);
+	// The queue may know about jobs missing from its active listing: one listed job is still not the whole queue.
+	expect(trayMenu({ ...view, jobs: view.jobs.slice(0, 1) }, HUB).tip).toBe(
+		"очередь: выполняется 2 · GPU 12%"
+	);
 });
 
 test("the hub reads both services and the cached queue plan with the project's token, and only on this computer", async () => {
@@ -682,7 +767,7 @@ test("the hub reads both services and the cached queue plan with the project's t
 		calls.every((call) => call.authorization === "Bearer secret-token")
 	).toBe(true);
 	expect(new Set(reads)).toEqual(new Set([TOKEN_FILE]));
-	expect((await queue.tray(HUB)).items.length).toBeGreaterThan(5);
+	expect((await queue.tray(HUB)).items).toHaveLength(5);
 
 	const remote = fixture(
 		{ "GET 8765/api/status": () => Response.json(status()) },
