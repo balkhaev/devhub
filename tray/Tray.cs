@@ -1,4 +1,4 @@
-// «Пульт» в трее: значок, который открывает пульт в браузере, держит его запущенным и включает автозапуск.
+// «Пульт» в трее: значок открывает небольшое окно управления, держит пульт запущенным и включает автозапуск.
 // Пока пульт работает, в меню есть и общая очередь GPU/CPU: её состояние, «Стоп», «Пауза», «Продолжить»
 // Эти пункты пульт присылает готовыми (GET api/queue/tray), значок их только рисует
 // и отправляет нажатия обратно в пульт: об очереди он сам ничего не знает.
@@ -41,7 +41,7 @@ namespace Devhub
         private static extern bool SetProcessDPIAware();
 
         /// <summary>
-        /// Without arguments: the tray, and the page once the hub answers. <c>--background</c>: the tray alone (at
+        /// Without arguments: the tray and its control window. <c>--background</c>: the tray alone (at
         /// sign-in). A second copy passes its wish to the running one: open the page, <c>--close</c> the tray
         /// (the hub keeps running), <c>--stop</c> the tray and the hub, or <c>--restart</c> the hub alone.
         /// <c>--write-icon file.ico</c> draws the icon.
@@ -390,136 +390,8 @@ namespace Devhub
         }
     }
 
-    /// <summary>The shell surface hosting the icon, and passive placement outside its flyout.</summary>
-    internal static class TrayWindows
-    {
-        [StructLayout(LayoutKind.Sequential)]
-        private struct NativeRectangle
-        {
-            public int Left, Top, Right, Bottom;
-        }
-
-        [DllImport("user32.dll")]
-        private static extern IntPtr WindowFromPoint(Point point);
-
-        [DllImport("user32.dll")]
-        private static extern IntPtr GetAncestor(IntPtr window, uint flags);
-
-        [DllImport("user32.dll")]
-        private static extern IntPtr GetParent(IntPtr window);
-
-        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-        private static extern int GetClassName(IntPtr window, StringBuilder name, int count);
-
-        [DllImport("user32.dll")]
-        private static extern bool GetWindowRect(IntPtr window, out NativeRectangle rectangle);
-
-        [DllImport("user32.dll")]
-        private static extern bool SetWindowPos(IntPtr window, IntPtr after, int x, int y,
-            int width, int height, uint flags);
-
-        private static Rectangle ShellBounds(IntPtr window, Point point)
-        {
-            if (window == IntPtr.Zero) { return Rectangle.Empty; }
-            var name = new StringBuilder(128);
-            GetClassName(window, name, name.Capacity);
-            string kind = name.ToString();
-            if (kind != "NotifyIconOverflowWindow" && kind != "TopLevelWindowForOverflowXamlIsland"
-                && kind != "Shell_TrayWnd" && kind != "Shell_SecondaryTrayWnd")
-            {
-                return Rectangle.Empty;
-            }
-            NativeRectangle bounds;
-            if (!GetWindowRect(window, out bounds)) { return Rectangle.Empty; }
-            Rectangle rectangle = Rectangle.FromLTRB(bounds.Left, bounds.Top, bounds.Right, bounds.Bottom);
-            return rectangle.Width > 0 && rectangle.Height > 0 && rectangle.Contains(point)
-                ? rectangle : Rectangle.Empty;
-        }
-
-        internal static Rectangle HostAt(Point point)
-        {
-            IntPtr window = WindowFromPoint(point);
-            Rectangle host = ShellBounds(GetAncestor(window, 2), point); // GA_ROOT
-            if (!host.IsEmpty) { return host; }
-            // Older shells expose the icon as nested toolbar windows; inspect only its own parent chain.
-            for (int depth = 0; window != IntPtr.Zero && depth < 16; depth++, window = GetParent(window))
-            {
-                host = ShellBounds(window, point);
-                if (!host.IsEmpty) { return host; }
-            }
-            return Rectangle.Empty;
-        }
-
-        private static Rectangle Space(int left, int top, int right, int bottom)
-        {
-            return right > left && bottom > top
-                ? Rectangle.FromLTRB(left, top, right, bottom) : Rectangle.Empty;
-        }
-
-        private static int Clamp(int value, int minimum, int maximum)
-        {
-            return Math.Max(minimum, Math.Min(value, maximum));
-        }
-
-        private static Rectangle Within(Rectangle space, Point anchor, Size size, int direction, int gap)
-        {
-            int x = Clamp(anchor.X + gap, space.Left, space.Right - size.Width);
-            int y = Clamp(anchor.Y - size.Height, space.Top, space.Bottom - size.Height);
-            if (direction == 0) { y = space.Bottom - size.Height; }
-            else if (direction == 1) { x = space.Right - size.Width; }
-            else if (direction == 2) { x = space.Left; }
-            else { y = space.Top; }
-            return new Rectangle(x, y, size.Width, size.Height);
-        }
-
-        internal static Rectangle Position(Rectangle work, Rectangle tray, Point anchor, Size size, int gap)
-        {
-            if (work.Width <= 0 || work.Height <= 0) { return Rectangle.Empty; }
-            gap = Math.Max(0, gap);
-            size = new Size(Math.Max(1, Math.Min(size.Width, work.Width)),
-                Math.Max(1, Math.Min(size.Height, work.Height)));
-            if (tray.Width <= 0 || tray.Height <= 0) { tray = new Rectangle(anchor, new Size(1, 1)); }
-            // Each region is already clear of the shell window. Clamping stays within that region,
-            // so a tall queue switches to the side instead of falling back on top of the icon flyout.
-            Rectangle[] spaces = {
-                Space(work.Left, work.Top, work.Right, Math.Min(work.Bottom, tray.Top - gap)),
-                Space(work.Left, work.Top, Math.Min(work.Right, tray.Left - gap), work.Bottom),
-                Space(Math.Max(work.Left, tray.Right + gap), work.Top, work.Right, work.Bottom),
-                Space(work.Left, Math.Max(work.Top, tray.Bottom + gap), work.Right, work.Bottom)
-            };
-            for (int i = 0; i < spaces.Length; i++)
-            {
-                if (spaces[i].Width >= size.Width && spaces[i].Height >= size.Height)
-                {
-                    return Within(spaces[i], anchor, size, i, gap);
-                }
-            }
-            int best = -1;
-            long largest = 0;
-            Size fitted = Size.Empty;
-            for (int i = 0; i < spaces.Length; i++)
-            {
-                if (spaces[i].IsEmpty) { continue; }
-                var available = new Size(Math.Min(size.Width, spaces[i].Width), Math.Min(size.Height, spaces[i].Height));
-                long area = (long)available.Width * available.Height;
-                if (area > largest) { largest = area; best = i; fitted = available; }
-            }
-            if (best >= 0) { return Within(spaces[best], anchor, fitted, best, gap); }
-            // A host covering the entire work area has no outside space at all.
-            return new Rectangle(Clamp(anchor.X, work.Left, work.Right - size.Width),
-                Clamp(anchor.Y, work.Top, work.Bottom - size.Height), size.Width, size.Height);
-        }
-
-        internal static void KeepAbove(Form popup)
-        {
-            if (!popup.IsHandleCreated || popup.IsDisposed) { return; }
-            SetWindowPos(popup.Handle, new IntPtr(-1), 0, 0, 0, 0,
-                0x0001 | 0x0002 | 0x0010); // HWND_TOPMOST, SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE
-        }
-    }
-
-    /// <summary>A compact passive card with the queue widget's measured progress; never takes focus.</summary>
-    internal sealed class QueuePopup : Form
+    /// <summary>The full queue and measured progress, embedded in the tray's persistent control window.</summary>
+    internal sealed class QueueView : Control
     {
         private const int HeaderHeight = 40;
         private const int JobHeight = 54;
@@ -535,14 +407,12 @@ namespace Devhub
         private readonly List<Dictionary<string, object>> jobs = new List<Dictionary<string, object>>();
         private readonly List<Dictionary<string, object>> waiting = new List<Dictionary<string, object>>();
         private readonly List<QueueRow> rows = new List<QueueRow>();
-        private Point anchor;
         private int contentHeight;
         private int viewportHeight;
         private int scrollOffset;
         private bool draggingScroll;
         private int dragY;
         private int dragOffset;
-        private bool layingOut;
 
         private sealed class QueueRow
         {
@@ -554,32 +424,19 @@ namespace Devhub
             public int Index;
         }
 
-        public QueuePopup()
+        public QueueView()
         {
-            FormBorderStyle = FormBorderStyle.None;
-            ShowInTaskbar = false;
-            TopMost = true;
-            StartPosition = FormStartPosition.Manual;
             BackColor = Background;
             ForeColor = Color.FromArgb(235, 240, 247);
             Font = new Font("Segoe UI", 9);
             heading = new Font(Font, FontStyle.Bold);
             small = new Font("Segoe UI", 8);
             using (Graphics graphics = CreateGraphics()) { scale = graphics.DpiX / 96f; }
-            DoubleBuffered = true;
-        }
-
-        protected override bool ShowWithoutActivation { get { return true; } }
-
-        protected override CreateParams CreateParams
-        {
-            get
-            {
-                CreateParams parameters = base.CreateParams;
-                parameters.ExStyle |= 0x08000000 | 0x00000080; // WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW
-                parameters.ClassStyle |= 0x00020000; // CS_DROPSHADOW
-                return parameters;
-            }
+            SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint
+                | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw | ControlStyles.Selectable, true);
+            TabStop = true;
+            Size = new Size(Px(400), Px(360));
+            UpdateStatus(null);
         }
 
         public bool Busy { get { return Number(snapshot, "running") > 0 || Number(snapshot, "queued") > 0 || jobs.Count + waiting.Count > 0; } }
@@ -657,8 +514,7 @@ namespace Devhub
             ReadJobs(jobs, Value(status, "jobs"));
             ReadJobs(waiting, Value(status, "queuedJobs"));
             BuildRows();
-            if (!Busy) { Hide(); }
-            LayoutNear(Visible ? anchor : Cursor.Position);
+            MeasureViewport();
             Invalidate();
         }
 
@@ -688,6 +544,11 @@ namespace Devhub
         {
             rows.Clear();
             contentHeight = 0;
+            if (snapshot == null || Word(snapshot, "state") == "offline")
+            {
+                AddRow(new QueueRow { Label = snapshot == null ? "Состояние очереди пока недоступно" : "Нет связи с Inference" }, 32);
+                return;
+            }
             foreach (var job in jobs) { AddRow(new QueueRow { Job = job }, JobHeight); }
             if (Number(snapshot, "running") > jobs.Count)
             {
@@ -715,23 +576,6 @@ namespace Devhub
         {
             int rows = (Value(snapshot, "gpu") == null ? 0 : 1) + (Value(snapshot, "host") == null ? 0 : 1);
             return rows > 0 ? rows * 20 + 14 : 0;
-        }
-
-        private void LayoutNear(Point point)
-        {
-            Rectangle area = Screen.FromPoint(point).WorkingArea;
-            int fixedHeight = HeaderHeight + FooterHeight() + 6;
-            int height = Math.Min(Px(fixedHeight + contentHeight), Math.Min(Px(520), area.Height - Px(24)));
-            // The shell may leave less room than the requested size. Clamp the reading position only once,
-            // after placement, so polling cannot reset a long queue's scroll in the intermediate larger window.
-            layingOut = true;
-            try
-            {
-                ClientSize = new Size(Math.Min(Px(360), area.Width), Math.Max(Px(fixedHeight + 24), height));
-                Place(point);
-            }
-            finally { layingOut = false; }
-            MeasureViewport();
         }
 
         private void MeasureViewport()
@@ -763,27 +607,7 @@ namespace Devhub
         {
             base.OnSizeChanged(e);
             if (scale <= 0 || Width <= 0 || Height <= 0) { return; }
-            if (!layingOut) { MeasureViewport(); }
-            using (GraphicsPath shape = Rounded(new RectangleF(0, 0, Width, Height), Px(11)))
-            {
-                Region old = Region;
-                Region = new Region(shape);
-                if (old != null) { old.Dispose(); }
-            }
-        }
-
-        private void Place(Point point)
-        {
-            Rectangle area = Screen.FromPoint(point).WorkingArea;
-            Bounds = TrayWindows.Position(area, TrayWindows.HostAt(point), point, Size, Px(10));
-            if (Visible) { TrayWindows.KeepAbove(this); }
-        }
-
-        public void ShowNear(Point point)
-        {
-            if (!Busy) { return; }
-            if (!Visible) { anchor = point; LayoutNear(point); Show(); }
-            TrayWindows.KeepAbove(this);
+            MeasureViewport();
         }
 
         private void TextLine(Graphics graphics, string text, Font font, Color color,
@@ -882,6 +706,7 @@ namespace Devhub
         protected override void OnMouseDown(MouseEventArgs e)
         {
             base.OnMouseDown(e);
+            Focus();
             if (e.Button != MouseButtons.Left || MaximumScroll == 0) { return; }
             Rectangle target = ScrollTrack;
             target.Inflate(Px(5), 0);
@@ -915,12 +740,6 @@ namespace Devhub
             if (!Capture) { draggingScroll = false; }
         }
 
-        protected override void WndProc(ref Message message)
-        {
-            if (message.Msg == 0x0021) { message.Result = new IntPtr(3); return; } // WM_MOUSEACTIVATE: MA_NOACTIVATE
-            base.WndProc(ref message);
-        }
-
         protected override void OnPaint(PaintEventArgs e)
         {
             base.OnPaint(e);
@@ -931,14 +750,16 @@ namespace Devhub
             int width = (int)Math.Round(ClientSize.Width / scale);
             string state = Word(snapshot, "state");
             bool held = state == "paused" || state == "stopped";
-            using (var dot = new SolidBrush(held ? Color.FromArgb(236, 184, 95) : Accent))
+            bool unavailable = snapshot == null || state == "offline";
+            using (var dot = new SolidBrush(unavailable ? Muted : held ? Color.FromArgb(236, 184, 95) : Accent))
             {
                 graphics.FillEllipse(dot, Px(14), Px(18), Px(5), Px(5));
             }
-            TextLine(graphics, "Inference", heading, ForeColor, 26, 10, 70, 20, false);
+            TextLine(graphics, "Очередь", heading, ForeColor, 26, 10, 70, 20, false);
             string summary = (held ? (state == "stopped" ? "Стоп · " : "Пауза · ") : "")
                 + Number(snapshot, "running") + " в работе · "
                 + (Value(snapshot, "queued") == null ? "?" : Number(snapshot, "queued").ToString()) + " ждут";
+            if (unavailable) { summary = snapshot == null ? "Нет данных" : "Нет связи"; }
             TextLine(graphics, summary, small, held ? Color.FromArgb(236, 184, 95) : Muted, 100, 10, width - 114, 20, true);
             GraphicsState saved = graphics.Save();
             graphics.SetClip(ListBounds, CombineMode.Intersect);
@@ -1612,7 +1433,7 @@ namespace Devhub
 
     /// <summary>
     /// The tray: the icon and its menu. It asks the hub every few seconds whether it runs, starts it when it does not
-    /// (three tries in five minutes, then it says so and waits), and opens the page when asked. While the hub runs,
+    /// (three tries in five minutes, then it says so and waits), and opens its control window when asked. While the hub runs,
     /// the menu also carries the shared queue's lines exactly as the hub words them.
     /// </summary>
     internal sealed class TrayApp : ApplicationContext
@@ -1629,8 +1450,7 @@ namespace Devhub
         private readonly Hub hub;
         private readonly NotifyIcon icon;
         private readonly ContextMenuStrip menu;
-        private readonly QueuePopup progress;
-        private readonly System.Windows.Forms.Timer hoverTimer;
+        private readonly ControlWindow window;
         private readonly List<ToolStripItem> queueItems = new List<ToolStripItem>();
         private readonly List<DateTime> starts = new List<DateTime>();
         private readonly ToolStripMenuItem status;
@@ -1641,20 +1461,20 @@ namespace Devhub
         private bool closing;
         private bool keepRunning = true;
         private Health last = new Health();
-        private bool openWhenUp;
+        private bool openWebWhenUp;
+        private bool actionPending;
+        private bool restarting;
+        private bool stopping;
+        private int readingEpoch;
+        private string commandError = "";
         private bool pollAgain;
         private QueueMenu queueLatest = new QueueMenu();
         private string queueShown = "";
         private DateTime startedAt = DateTime.MinValue;
-        private Rectangle hoverArea;
-        private string nativeTip = "";
-        private bool hovering;
-        private DateTime hoverSeenAt;
 
         public TrayApp(Hub hub, Signals signals, bool open)
         {
             this.hub = hub;
-            openWhenUp = open;
             ui = new Control();
             // Answers from other threads come back through this control: it needs its window now.
             if (ui.Handle == IntPtr.Zero)
@@ -1663,40 +1483,34 @@ namespace Devhub
             }
             upIcon = Icons.Tray(true);
             downIcon = Icons.Tray(false);
-            progress = new QueuePopup();
-            hoverTimer = new System.Windows.Forms.Timer();
-            hoverTimer.Interval = 150;
-            hoverTimer.Tick += delegate
-            {
-                Point pointer = Cursor.Position;
-                Rectangle card = progress.Bounds;
-                card.Inflate(8, 8);
-                if (hoverArea.Contains(pointer) || (progress.Visible && card.Contains(pointer)) || progress.Capture)
-                {
-                    hoverSeenAt = DateTime.UtcNow;
-                }
-                else if ((DateTime.UtcNow - hoverSeenAt).TotalMilliseconds > 700) { HideProgress(); }
-            };
+            window = new ControlWindow();
+            window.StartRequested += StartRequested;
+            window.StopRequested += StopHub;
+            window.RestartRequested += Restart;
+            window.OpenWebRequested += OpenWebPanel;
+            window.LogsRequested += OpenLogs;
+            window.RefreshRequested += Poll;
+            window.QueueCommandRequested += SendQueue;
 
             menu = new ContextMenuStrip();
             menu.ShowItemToolTips = true;
-            var openItem = new ToolStripMenuItem("Открыть пульт", null, delegate { OpenRequested(); });
+            var openItem = new ToolStripMenuItem("Управление DevHub и Inference", null, delegate { OpenRequested(); });
             openItem.Font = new Font(openItem.Font, FontStyle.Bold);
             status = new ToolStripMenuItem("Проверяю пульт…");
             status.Enabled = false;
             var restart = new ToolStripMenuItem("Перезапустить пульт", null, delegate { Restart(); });
             restart.ToolTipText = "Серверы проектов при этом продолжают работать";
             var logs = new ToolStripMenuItem("Папка с логами", null, delegate { OpenLogs(); });
+            var web = new ToolStripMenuItem("Открыть веб-панель", null, delegate { OpenWebPanel(); });
             autostart = new ToolStripMenuItem("Запускать при входе в Windows", null, delegate { ToggleAutostart(); });
             var exit = new ToolStripMenuItem("Выход", null, delegate { Exit(); });
             exit.ToolTipText = "Убрать значок и остановить пульт; серверы проектов продолжат работать";
             menu.Items.AddRange(new ToolStripItem[]
             {
-                openItem, status, new ToolStripSeparator(), restart, logs, autostart, new ToolStripSeparator(), exit,
+                openItem, status, new ToolStripSeparator(), restart, web, logs, autostart, new ToolStripSeparator(), exit,
             });
             menu.Opening += delegate
             {
-                HideProgress();
                 autostart.Checked = Autostart.Enabled;
                 Poll();
             };
@@ -1707,22 +1521,8 @@ namespace Devhub
             icon.Icon = downIcon;
             SetTip("Пульт: проверяю…");
             icon.ContextMenuStrip = menu;
-            icon.MouseMove += delegate
-            {
-                if (closing || menu.Visible) { return; }
-                Point pointer = Cursor.Position;
-                hoverArea = new Rectangle(pointer.X - 24, pointer.Y - 24, 48, 48);
-                bool entering = !hovering;
-                hovering = true;
-                hoverSeenAt = DateTime.UtcNow;
-                ShowProgress();
-                hoverTimer.Start();
-                // The cached reading shows immediately; refresh it once on entry, never on every mouse move.
-                if (entering) { Poll(); }
-            };
             icon.MouseClick += (sender, e) =>
             {
-                HideProgress();
                 if (e.Button == MouseButtons.Left)
                 {
                     OpenRequested();
@@ -1739,6 +1539,7 @@ namespace Devhub
             timer.Tick += delegate { Poll(); };
             timer.Start();
             Poll();
+            if (open) { Post(OpenRequested); }
         }
 
         protected override void Dispose(bool disposing)
@@ -1746,8 +1547,7 @@ namespace Devhub
             if (disposing)
             {
                 timer.Dispose();
-                hoverTimer.Dispose();
-                progress.Dispose();
+                window.Dispose();
                 icon.Dispose();
                 menu.Dispose();
                 ui.Dispose();
@@ -1762,26 +1562,12 @@ namespace Devhub
 
         private void SetTip(string text)
         {
-            nativeTip = Clip(text);
-            // Avoid a second Windows tooltip covering the richer hover card.
-            icon.Text = progress.Visible ? "" : nativeTip;
+            icon.Text = Clip(text);
         }
 
-        private void ShowProgress()
+        private void ApplyWindow()
         {
-            if (!progress.Busy || closing || menu.Visible) { return; }
-            progress.ShowNear(Cursor.Position);
-            icon.Text = "";
-            hoverTimer.Start();
-        }
-
-        private void HideProgress()
-        {
-            progress.Hide();
-            hoverTimer.Stop();
-            hoverArea = Rectangle.Empty;
-            hovering = false;
-            icon.Text = nativeTip;
+            window.ApplyState(last, queueLatest, status.Text, actionPending || restarting, commandError);
         }
 
         /// <summary>
@@ -1886,11 +1672,22 @@ namespace Devhub
                 return;
             }
             checking = true;
+            int epoch = readingEpoch;
             ThreadPool.QueueUserWorkItem(delegate
             {
                 Health health = hub.Check();
                 QueueMenu queue = health.Up ? hub.ReadQueueMenu() : new QueueMenu();
-                Post(() => Apply(health, queue));
+                Post(() =>
+                {
+                    if (epoch != readingEpoch)
+                    {
+                        checking = false;
+                        pollAgain = false;
+                        Poll();
+                        return;
+                    }
+                    Apply(health, queue);
+                });
             });
         }
 
@@ -1899,12 +1696,9 @@ namespace Devhub
             checking = false;
             last = health;
             queueLatest = queue;
-            bool showingProgress = progress.Visible;
-            progress.UpdateStatus(queue.Status);
             ShowQueue();
             ShowHealth(health, queue.Tip);
-            if (showingProgress && !progress.Visible) { HideProgress(); }
-            else if (!hoverArea.IsEmpty && hoverArea.Contains(Cursor.Position)) { ShowProgress(); }
+            ApplyWindow();
             if (pollAgain)
             {
                 pollAgain = false;
@@ -1975,16 +1769,25 @@ namespace Devhub
         /// <summary>Sends a queue command to the hub, says what went wrong if anything did, and reads the state anew.</summary>
         private void SendQueue(string path)
         {
+            if (actionPending || restarting) { return; }
+            actionPending = true;
+            readingEpoch++;
+            commandError = "";
+            ApplyWindow();
             ThreadPool.QueueUserWorkItem(delegate
             {
                 string error = hub.Command(path);
                 Post(() =>
                 {
+                    actionPending = false;
+                    readingEpoch++;
+                    commandError = error ?? "";
                     if (!string.IsNullOrEmpty(error))
                     {
                         string text = error.Length <= BalloonLimit ? error : error.Substring(0, BalloonLimit - 1) + "…";
                         icon.ShowBalloonTip(8000, "Общая очередь", text, ToolTipIcon.Warning);
                     }
+                    ApplyWindow();
                     Poll();
                 });
             });
@@ -2008,6 +1811,13 @@ namespace Devhub
 
         private void ShowHealth(Health health, string queueTip)
         {
+            if (restarting || stopping)
+            {
+                string words = restarting ? "Пульт перезапускается…" : "Пульт останавливается…";
+                SetTip(words);
+                status.Text = words;
+                return;
+            }
             if (health.Up)
             {
                 icon.Icon = upIcon;
@@ -2021,10 +1831,10 @@ namespace Devhub
                     SetTip(WithQueue("Пульт работает", 0, queueTip));
                     status.Text = "Пульт работает";
                 }
-                if (openWhenUp)
+                if (openWebWhenUp)
                 {
-                    openWhenUp = false;
-                    hub.OpenPage();
+                    openWebWhenUp = false;
+                    OpenWebPanel();
                 }
                 return;
             }
@@ -2078,13 +1888,26 @@ namespace Devhub
 
         private void OpenRequested()
         {
-            if (last.Up)
+            ApplyWindow();
+            window.Open();
+            Poll();
+        }
+
+        /// <summary>Only an explicit web-panel command opens a browser.</summary>
+        private void OpenWebPanel()
+        {
+            if (!last.Up)
             {
-                hub.OpenPage();
+                openWebWhenUp = true;
+                StartRequested();
                 return;
             }
-            openWhenUp = true;
-            StartRequested();
+            try { hub.OpenPage(); }
+            catch (Exception error)
+            {
+                commandError = "Не удалось открыть веб-панель: " + error.Message;
+                ApplyWindow();
+            }
         }
 
         /// <summary>
@@ -2093,6 +1916,8 @@ namespace Devhub
         /// </summary>
         private void StartRequested()
         {
+            if (restarting || actionPending) { return; }
+            commandError = "";
             if (!keepRunning)
             {
                 keepRunning = true;
@@ -2103,12 +1928,16 @@ namespace Devhub
 
         private void Restart()
         {
-            HideProgress();
+            if (restarting || actionPending) { return; }
+            restarting = true;
+            readingEpoch++;
+            commandError = "";
             // No starting on its own while it stops.
             keepRunning = false;
             Health health = last;
             SetTip("Пульт перезапускается…");
             status.Text = "Перезапускается…";
+            ApplyWindow();
             ThreadPool.QueueUserWorkItem(delegate
             {
                 hub.Stop(health);
@@ -2119,10 +1948,45 @@ namespace Devhub
                 }
                 Post(() =>
                 {
+                    last = new Health();
+                    readingEpoch++;
                     keepRunning = true;
                     starts.Clear();
                     startedAt = DateTime.MinValue;
                     StartHub();
+                    restarting = false;
+                    ApplyWindow();
+                    Poll();
+                });
+            });
+        }
+
+        private void StopHub()
+        {
+            if (restarting || actionPending) { return; }
+            keepRunning = false;
+            stopping = true;
+            actionPending = true;
+            readingEpoch++;
+            commandError = "";
+            status.Text = "Останавливается…";
+            SetTip("Пульт останавливается…");
+            ApplyWindow();
+            Health health = last;
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                hub.Stop(health);
+                Post(() =>
+                {
+                    actionPending = false;
+                    stopping = false;
+                    readingEpoch++;
+                    last = new Health();
+                    startedAt = DateTime.MinValue;
+                    queueLatest = new QueueMenu();
+                    ShowHealth(last, "");
+                    ApplyWindow();
+                    Poll();
                 });
             });
         }
@@ -2149,7 +2013,7 @@ namespace Devhub
         /// <summary>Closes the tray alone: the hub keeps running (so the program can be replaced by a new build).</summary>
         private void CloseTray()
         {
-            HideProgress();
+            window.Hide();
             closing = true;
             timer.Stop();
             icon.Visible = false;
@@ -2159,7 +2023,7 @@ namespace Devhub
         /// <summary>The menu's «Выход»: the tray goes, and the hub with it; the servers it started keep running.</summary>
         private void Exit()
         {
-            HideProgress();
+            window.Hide();
             closing = true;
             timer.Stop();
             icon.Visible = false;
