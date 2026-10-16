@@ -366,7 +366,13 @@ namespace Devhub
             try
             {
                 int number;
-                return int.TryParse(File.ReadAllText(file), out number) ? number : 0;
+                // Observing the heartbeat must never deny its writer access. A read may still catch
+                // an empty file between truncation and writing; callers wait for a complete tick.
+                using (var stream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+                using (var reader = new StreamReader(stream))
+                {
+                    return int.TryParse(reader.ReadToEnd(), out number) ? number : 0;
+                }
             }
             catch (IOException)
             {
@@ -437,6 +443,12 @@ namespace Devhub
                 child = Process.GetProcessById(childPid);
                 server = Process.GetProcessById(hubPid);
                 int before = Number(prefix + ".beat");
+                while (before == 0 && deadline.ElapsedMilliseconds < 5000)
+                {
+                    Thread.Sleep(20);
+                    before = Number(prefix + ".beat");
+                }
+                Require(before > 0, "The heartbeat needs a complete baseline before stopping the hub");
                 var hub = new Hub(root);
                 typeof(Hub).GetField("started", BindingFlags.NonPublic | BindingFlags.Instance).SetValue(hub, launcher);
                 typeof(Hub).GetField("startedBun", BindingFlags.NonPublic | BindingFlags.Instance).SetValue(hub, bun);
@@ -447,7 +459,15 @@ namespace Devhub
                 Require(!Alive(launcherPid), "The hub launcher should have stopped");
                 Require(!Alive(hubPid), "The Bun hub must stop even when health does not answer");
                 Require(Alive(childPid), "Restarting the hub killed its independent running service");
-                Require(Number(prefix + ".beat") > before, "The existing child must keep making progress after hub stop");
+                var progressWait = Stopwatch.StartNew();
+                int after = Number(prefix + ".beat");
+                while (after <= before && Alive(childPid) && progressWait.ElapsedMilliseconds < 3000)
+                {
+                    Thread.Sleep(20);
+                    after = Number(prefix + ".beat");
+                }
+                Require(Alive(childPid), "The independent service exited while observing its progress");
+                Require(after > before, "The existing child must keep making progress after hub stop (before " + before + ", after " + after + ")");
                 // A second stop has no owned process left and must remain harmless.
                 hub.Stop(new Health());
                 Require(Alive(childPid), "A repeated hub stop affected the independent service");
