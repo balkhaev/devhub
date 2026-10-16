@@ -1,6 +1,6 @@
 // «Пульт» в трее: значок, который открывает пульт в браузере, держит его запущенным и включает автозапуск.
 // Пока пульт работает, в меню есть и общая очередь GPU/CPU: её состояние, «Стоп», «Пауза», «Продолжить»
-// и исполнители. Эти пункты пульт присылает готовыми (GET api/queue/tray), значок их только рисует
+// Эти пункты пульт присылает готовыми (GET api/queue/tray), значок их только рисует
 // и отправляет нажатия обратно в пульт: об очереди он сам ничего не знает.
 // Пульт поднимает именно значок, в сеансе самого человека: клиент командной строки, заставший пульт молчащим,
 // просит об этом событием Local\DevhubTray.Start. Запущенный изнутри приложения-агента (у его процессов своя
@@ -43,7 +43,8 @@ namespace Devhub
         /// <summary>
         /// Without arguments: the tray, and the page once the hub answers. <c>--background</c>: the tray alone (at
         /// sign-in). A second copy passes its wish to the running one: open the page, <c>--close</c> the tray
-        /// (the hub keeps running), <c>--stop</c> the tray and the hub. <c>--write-icon file.ico</c> draws the icon.
+        /// (the hub keeps running), <c>--stop</c> the tray and the hub, or <c>--restart</c> the hub alone.
+        /// <c>--write-icon file.ico</c> draws the icon.
         /// A copy started from inside a packaged app starts itself again through the desktop shell (which adds
         /// <c>--outside</c>) and ends: the tray, the hub and the servers never live in that app's view.
         /// </summary>
@@ -55,7 +56,8 @@ namespace Devhub
                 Icons.WriteIco(args[1]);
                 return 0;
             }
-            bool background = Array.IndexOf(args, "--background") >= 0;
+            bool restart = Array.IndexOf(args, "--restart") >= 0;
+            bool background = Array.IndexOf(args, "--background") >= 0 || restart;
             bool close = Array.IndexOf(args, "--close") >= 0;
             bool stop = Array.IndexOf(args, "--stop") >= 0;
             bool first;
@@ -71,6 +73,10 @@ namespace Devhub
                     else if (stop)
                     {
                         Signals.Send(Signals.Stop);
+                    }
+                    else if (restart)
+                    {
+                        Signals.Send(Signals.Restart);
                     }
                     else if (!background)
                     {
@@ -237,6 +243,7 @@ namespace Devhub
         public const string Close = "Local\\DevhubTray.Close";
         public const string Stop = "Local\\DevhubTray.Stop";
         public const string Start = "Local\\DevhubTray.Start";
+        public const string Restart = "Local\\DevhubTray.Restart";
 
         public readonly EventWaitHandle[] Handles;
 
@@ -248,6 +255,7 @@ namespace Devhub
                 new EventWaitHandle(false, EventResetMode.AutoReset, Close),
                 new EventWaitHandle(false, EventResetMode.AutoReset, Stop),
                 new EventWaitHandle(false, EventResetMode.AutoReset, Start),
+                new EventWaitHandle(false, EventResetMode.AutoReset, Restart),
             };
         }
 
@@ -339,6 +347,8 @@ namespace Devhub
         public string Json = "";
         /// <summary>A few words for the icon's tooltip.</summary>
         public string Tip = "";
+        /// <summary>Safe observations shared with the page's queue widget.</summary>
+        public Dictionary<string, object> Status;
 
         public static QueueMenu Parse(string json)
         {
@@ -346,6 +356,11 @@ namespace Devhub
             try
             {
                 var data = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(json);
+                object status;
+                if (data.TryGetValue("status", out status))
+                {
+                    menu.Status = status as Dictionary<string, object>;
+                }
                 object tip;
                 if (data.TryGetValue("tip", out tip) && tip is string)
                 {
@@ -375,6 +390,244 @@ namespace Devhub
         }
     }
 
+    /// <summary>A passive hover card: the same measured job progress as the queue widget, without taking focus.</summary>
+    internal sealed class QueuePopup : Form
+    {
+        private const int MaxJobs = 5;
+        private static readonly Color Background = Color.FromArgb(24, 27, 33);
+        private static readonly Color Muted = Color.FromArgb(166, 175, 190);
+        private static readonly Color Accent = Color.FromArgb(89, 202, 170);
+        private readonly Font heading;
+        private readonly Font small;
+        private readonly float scale;
+        private Dictionary<string, object> snapshot;
+        private readonly List<Dictionary<string, object>> jobs = new List<Dictionary<string, object>>();
+        private Point anchor;
+        private int shownJobs;
+
+        public QueuePopup()
+        {
+            FormBorderStyle = FormBorderStyle.None;
+            ShowInTaskbar = false;
+            TopMost = true;
+            StartPosition = FormStartPosition.Manual;
+            BackColor = Background;
+            ForeColor = Color.WhiteSmoke;
+            Font = new Font("Segoe UI", 9);
+            heading = new Font(Font, FontStyle.Bold);
+            small = new Font("Segoe UI", 8);
+            using (Graphics graphics = CreateGraphics())
+            {
+                scale = graphics.DpiX / 96f;
+            }
+            DoubleBuffered = true;
+        }
+
+        protected override bool ShowWithoutActivation { get { return true; } }
+
+        protected override CreateParams CreateParams
+        {
+            get
+            {
+                CreateParams parameters = base.CreateParams;
+                parameters.ExStyle |= 0x08000000 | 0x00000080; // WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW
+                return parameters;
+            }
+        }
+
+        public bool Busy { get { return Number(snapshot, "running") > 0; } }
+
+        private int Px(float value) { return (int)Math.Round(value * scale); }
+
+        private static object Value(Dictionary<string, object> data, string key)
+        {
+            object value;
+            return data != null && data.TryGetValue(key, out value) ? value : null;
+        }
+
+        private static string Word(Dictionary<string, object> data, string key)
+        {
+            return Value(data, key) as string ?? "";
+        }
+
+        private static double Number(Dictionary<string, object> data, string key)
+        {
+            object value = Value(data, key);
+            if (!(value is int || value is long || value is double || value is decimal))
+            {
+                return 0;
+            }
+            return Convert.ToDouble(value);
+        }
+
+        private static string Scope(Dictionary<string, object> progress)
+        {
+            switch (Word(progress, "scope"))
+            {
+                case "job": return "задания";
+                case "stage": return "этапа";
+                default: return "операции";
+            }
+        }
+
+        internal static string ProgressWords(Dictionary<string, object> progress)
+        {
+            if (progress == null)
+            {
+                return "Ожидаем данные о прогрессе";
+            }
+            var words = new List<string>();
+            string phase = Word(progress, "phaseTitle");
+            if (phase.Length > 0) { words.Add(phase); }
+            if (Value(progress, "percent") != null)
+            {
+                words.Add(Number(progress, "percent").ToString("0.#") + "% " + Scope(progress));
+            }
+            if (Value(progress, "step") != null && Value(progress, "totalSteps") != null)
+            {
+                words.Add("шаг " + Number(progress, "step") + " из " + Number(progress, "totalSteps"));
+            }
+            return string.Join(" · ", words.ToArray());
+        }
+
+        public void UpdateStatus(Dictionary<string, object> status)
+        {
+            snapshot = status;
+            jobs.Clear();
+            var list = Value(status, "jobs") as IEnumerable;
+            if (list != null)
+            {
+                foreach (object raw in list)
+                {
+                    var job = raw as Dictionary<string, object>;
+                    if (job != null) { jobs.Add(job); }
+                }
+            }
+            if (!Busy) { Hide(); }
+            LayoutNear(Visible ? anchor : Cursor.Position);
+            Invalidate();
+        }
+
+        private void LayoutNear(Point point)
+        {
+            Rectangle area = Screen.FromPoint(point).WorkingArea;
+            int fixedHeight = 76;
+            if (Value(snapshot, "gpu") is Dictionary<string, object>) { fixedHeight += 40; }
+            if (Value(snapshot, "host") is Dictionary<string, object>) { fixedHeight += 40; }
+            int capacity = Math.Max(1, ((int)(area.Height / scale) - fixedHeight - 22) / 76);
+            shownJobs = Math.Min(Math.Min(MaxJobs, jobs.Count), capacity);
+            int height = fixedHeight + Math.Max(1, shownJobs) * 76 + (jobs.Count > shownJobs ? 22 : 0);
+            ClientSize = new Size(Math.Min(Px(460), area.Width), Px(height));
+            Place(point);
+        }
+
+        private void Place(Point point)
+        {
+            Rectangle area = Screen.FromPoint(point).WorkingArea;
+            int x = Math.Min(point.X + Px(12), area.Right - Width);
+            int y = point.Y - Height - Px(12);
+            if (y < area.Top) { y = point.Y + Px(20); }
+            Location = new Point(Math.Max(area.Left, x), Math.Max(area.Top, Math.Min(y, area.Bottom - Height)));
+        }
+
+        public void ShowNear(Point point)
+        {
+            if (!Busy) { return; }
+            if (!Visible)
+            {
+                anchor = point;
+                LayoutNear(point);
+                Show();
+            }
+        }
+
+        private void Line(Graphics graphics, string text, Font font, Color color, int y, int height)
+        {
+            TextRenderer.DrawText(graphics, text, font,
+                new Rectangle(Px(18), Px(y), ClientSize.Width - Px(36), Px(height)), color,
+                TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine);
+        }
+
+        private void Bar(Graphics graphics, Dictionary<string, object> progress, int y)
+        {
+            var rectangle = new Rectangle(Px(18), Px(y), ClientSize.Width - Px(36), Px(5));
+            using (var track = new SolidBrush(Color.FromArgb(55, 62, 74))) { graphics.FillRectangle(track, rectangle); }
+            if (progress != null && Value(progress, "percent") != null)
+            {
+                rectangle.Width = (int)(rectangle.Width * Math.Max(0, Math.Min(100, Number(progress, "percent"))) / 100);
+                using (var fill = new SolidBrush(Accent)) { graphics.FillRectangle(fill, rectangle); }
+            }
+            else
+            {
+                // Unknown progress stays unknown, never an invented percentage or elapsed-time estimate.
+                using (var fill = new HatchBrush(HatchStyle.LightDownwardDiagonal, Muted, Color.Transparent))
+                {
+                    graphics.FillRectangle(fill, rectangle);
+                }
+            }
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            base.OnPaint(e);
+            Graphics graphics = e.Graphics;
+            using (var border = new Pen(Color.FromArgb(66, 74, 88)))
+            {
+                graphics.DrawRectangle(border, 0, 0, Width - 1, Height - 1);
+            }
+            Line(graphics, "Inference · Общая очередь", heading, ForeColor, 14, 24);
+            string summary = Word(snapshot, "label");
+            if (Value(snapshot, "queued") != null) { summary += " · В очереди: " + Number(snapshot, "queued"); }
+            Line(graphics, summary, small, Muted, 40, 22);
+            int y = 76;
+            if (jobs.Count == 0)
+            {
+                Line(graphics, "Выполняется заданий: " + Number(snapshot, "running"), Font, ForeColor, y, 22);
+                Line(graphics, "Ожидаем данные о прогрессе", small, Muted, y + 25, 22);
+                y += 76;
+            }
+            for (int i = 0; i < shownJobs; i++)
+            {
+                Dictionary<string, object> job = jobs[i];
+                bool anonymous = object.Equals(Value(job, "private"), true);
+                string resource = Word(job, "resource").ToUpperInvariant();
+                string name = anonymous ? "Анонимное задание" : Word(job, "name");
+                Line(graphics, (resource.Length > 0 ? resource + " · " : "") + name, Font, ForeColor, y, 22);
+                var progress = Value(job, "progress") as Dictionary<string, object>;
+                Line(graphics, ProgressWords(progress), small, Muted, y + 25, 22);
+                Bar(graphics, progress, y + 53);
+                y += 76;
+            }
+            if (jobs.Count > shownJobs)
+            {
+                Line(graphics, "Ещё заданий: " + (jobs.Count - shownJobs) + " · Подробности в пульте", small, Muted, y, 22);
+                y += 22;
+            }
+            var gpu = Value(snapshot, "gpu") as Dictionary<string, object>;
+            if (gpu != null)
+            {
+                Line(graphics, "GPU " + Number(gpu, "utilization").ToString("0") + "% · "
+                    + Number(gpu, "temperature").ToString("0") + " °C · Видеопамять "
+                    + (Number(gpu, "usedMb") / 1024).ToString("0.0") + " / "
+                    + (Number(gpu, "totalMb") / 1024).ToString("0.0") + " ГБ", small, Muted, y, 22);
+                y += 40;
+            }
+            var host = Value(snapshot, "host") as Dictionary<string, object>;
+            if (host != null)
+            {
+                Line(graphics, "CPU " + Number(host, "cpu").ToString("0") + "% · Память: свободно "
+                    + (Number(host, "availableMb") / 1024).ToString("0.0") + " / "
+                    + (Number(host, "totalMb") / 1024).ToString("0.0") + " ГБ", small, Muted, y, 22);
+            }
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing) { heading.Dispose(); small.Dispose(); Font.Dispose(); }
+            base.Dispose(disposing);
+        }
+    }
+
     /// <summary>The hub's server: where it lives, whether it answers, starting and stopping it.</summary>
     internal sealed class Hub
     {
@@ -382,7 +635,36 @@ namespace Devhub
         public readonly string Root;
         private readonly object guard = new object();
         private Process started;
+        private string startedBun;
         private string token = "";
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        private struct ProcessEntry
+        {
+            public uint Size;
+            public uint Usage;
+            public uint Pid;
+            public IntPtr Heap;
+            public uint Module;
+            public uint Threads;
+            public uint Parent;
+            public int Priority;
+            public uint Flags;
+            [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 260)]
+            public string Executable;
+        }
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        private static extern IntPtr CreateToolhelp32Snapshot(uint flags, uint pid);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, EntryPoint = "Process32FirstW")]
+        private static extern bool Process32First(IntPtr snapshot, ref ProcessEntry entry);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Unicode, EntryPoint = "Process32NextW")]
+        private static extern bool Process32Next(IntPtr snapshot, ref ProcessEntry entry);
+
+        [DllImport("kernel32.dll")]
+        private static extern bool CloseHandle(IntPtr handle);
 
         public Hub(string root)
         {
@@ -637,60 +919,122 @@ namespace Devhub
             lock (guard)
             {
                 started = Process.Start(info);
+                startedBun = bun;
             }
         }
 
-        /// <summary>Stops the hub: the process that answers as the hub, and the one this program started.</summary>
+        /// <summary>Stops only the hub and its launcher. Project services and Inference keep running.</summary>
         public void Stop(Health health)
         {
+            Process mine;
+            string bun;
+            lock (guard)
+            {
+                mine = started;
+                bun = startedBun;
+                started = null;
+                startedBun = null;
+            }
+            // Read the direct hub child before stopping either process: a silent health endpoint must not leave
+            // Bun behind, while recursively walking the launcher would reach Inference and other services.
+            List<Process> children = DirectHubs(mine, bun ?? FindBun());
             if (health != null && health.Up && health.Pid > 0)
             {
                 try
                 {
-                    Process.GetProcessById(health.Pid).Kill();
+                    StopProcess(Process.GetProcessById(health.Pid));
                 }
                 catch (Exception)
                 {
                     // It has already ended.
                 }
             }
-            Process mine;
-            lock (guard)
+            foreach (Process child in children)
             {
-                mine = started;
-                started = null;
+                StopProcess(child);
             }
-            if (mine == null)
+            StopProcess(mine);
+        }
+
+        /// <summary>Only this launcher's direct Bun child, validated against its executable and creation time.</summary>
+        private static List<Process> DirectHubs(Process launcher, string bun)
+        {
+            var children = new List<Process>();
+            if (launcher == null || bun == null)
             {
-                return;
+                return children;
             }
             try
             {
-                if (!mine.HasExited)
+                if (launcher.HasExited) { return children; }
+                DateTime began = launcher.StartTime.ToUniversalTime();
+                int parent = launcher.Id;
+                IntPtr snapshot = CreateToolhelp32Snapshot(2, 0); // TH32CS_SNAPPROCESS
+                if (snapshot == new IntPtr(-1)) { return children; }
+                try
                 {
-                    KillTree(mine.Id);
+                    var entry = new ProcessEntry { Size = (uint)Marshal.SizeOf(typeof(ProcessEntry)) };
+                    if (!Process32First(snapshot, ref entry)) { return children; }
+                    do
+                    {
+                        if (entry.Parent != parent || !string.Equals(entry.Executable, "bun.exe", StringComparison.OrdinalIgnoreCase))
+                        {
+                            continue;
+                        }
+                        Process child = null;
+                        try
+                        {
+                            child = Process.GetProcessById((int)entry.Pid);
+                            if (!child.HasExited && child.StartTime.ToUniversalTime() >= began
+                                && string.Equals(Path.GetFullPath(child.MainModule.FileName), Path.GetFullPath(bun), StringComparison.OrdinalIgnoreCase))
+                            {
+                                children.Add(child);
+                                child = null; // The caller now owns this handle.
+                            }
+                        }
+                        catch (Exception)
+                        {
+                            // A disappeared, reused or inaccessible PID does not establish ownership.
+                        }
+                        finally
+                        {
+                            if (child != null) { child.Dispose(); }
+                        }
+                    } while (Process32Next(snapshot, ref entry));
+                }
+                finally
+                {
+                    CloseHandle(snapshot);
                 }
             }
             catch (Exception)
             {
+                // The launcher already ended or cannot be inspected: no other process may be inferred as ours.
+            }
+            return children;
+        }
+
+        private static void StopProcess(Process process)
+        {
+            if (process == null) { return; }
+            try
+            {
+                if (!process.HasExited) { process.Kill(); }
+                process.WaitForExit(5000);
+            }
+            catch (Exception)
+            {
                 // It has already ended.
+            }
+            finally
+            {
+                process.Dispose();
             }
         }
 
         public void OpenPage()
         {
             Process.Start(new ProcessStartInfo(Url) { UseShellExecute = true });
-        }
-
-        private static void KillTree(int pid)
-        {
-            var info = new ProcessStartInfo("taskkill", "/PID " + pid + " /T /F");
-            info.UseShellExecute = false;
-            info.CreateNoWindow = true;
-            using (var kill = Process.Start(info))
-            {
-                kill.WaitForExit(5000);
-            }
         }
 
         private static string FindBun()
@@ -914,7 +1258,7 @@ namespace Devhub
     {
         private const int BalloonLimit = 250;
         private const int MaxStarts = 3;
-        private const int PollMs = 5000;
+        private const int PollMs = 3000;
         private const int StartGraceSeconds = 30;
         private const int StartWindowMinutes = 5;
         private const int TipLimit = 63;
@@ -924,6 +1268,8 @@ namespace Devhub
         private readonly Hub hub;
         private readonly NotifyIcon icon;
         private readonly ContextMenuStrip menu;
+        private readonly QueuePopup progress;
+        private readonly System.Windows.Forms.Timer hoverTimer;
         private readonly List<ToolStripItem> queueItems = new List<ToolStripItem>();
         private readonly List<DateTime> starts = new List<DateTime>();
         private readonly ToolStripMenuItem status;
@@ -939,6 +1285,9 @@ namespace Devhub
         private QueueMenu queueLatest = new QueueMenu();
         private string queueShown = "";
         private DateTime startedAt = DateTime.MinValue;
+        private Rectangle hoverArea;
+        private string nativeTip = "";
+        private bool hovering;
 
         public TrayApp(Hub hub, Signals signals, bool open)
         {
@@ -952,6 +1301,16 @@ namespace Devhub
             }
             upIcon = Icons.Tray(true);
             downIcon = Icons.Tray(false);
+            progress = new QueuePopup();
+            hoverTimer = new System.Windows.Forms.Timer();
+            hoverTimer.Interval = 150;
+            hoverTimer.Tick += delegate
+            {
+                Point pointer = Cursor.Position;
+                Rectangle card = progress.Bounds;
+                card.Inflate(8, 8);
+                if (!hoverArea.Contains(pointer) && !(progress.Visible && card.Contains(pointer))) { HideProgress(); }
+            };
 
             menu = new ContextMenuStrip();
             menu.ShowItemToolTips = true;
@@ -969,16 +1328,34 @@ namespace Devhub
             {
                 openItem, status, new ToolStripSeparator(), restart, logs, autostart, new ToolStripSeparator(), exit,
             });
-            menu.Opening += delegate { autostart.Checked = Autostart.Enabled; };
+            menu.Opening += delegate
+            {
+                HideProgress();
+                autostart.Checked = Autostart.Enabled;
+                Poll();
+            };
             // What the hub said while the menu was open is drawn once it has closed and its click is handled.
             menu.Closed += delegate { Post(ShowQueue); };
 
             icon = new NotifyIcon();
             icon.Icon = downIcon;
-            icon.Text = "Пульт: проверяю…";
+            SetTip("Пульт: проверяю…");
             icon.ContextMenuStrip = menu;
+            icon.MouseMove += delegate
+            {
+                if (closing || menu.Visible) { return; }
+                Point pointer = Cursor.Position;
+                hoverArea = new Rectangle(pointer.X - 24, pointer.Y - 24, 48, 48);
+                bool entering = !hovering;
+                hovering = true;
+                ShowProgress();
+                hoverTimer.Start();
+                // The cached reading shows immediately; refresh it once on entry, never on every mouse move.
+                if (entering) { Poll(); }
+            };
             icon.MouseClick += (sender, e) =>
             {
+                HideProgress();
                 if (e.Button == MouseButtons.Left)
                 {
                     OpenRequested();
@@ -1002,6 +1379,8 @@ namespace Devhub
             if (disposing)
             {
                 timer.Dispose();
+                hoverTimer.Dispose();
+                progress.Dispose();
                 icon.Dispose();
                 menu.Dispose();
                 ui.Dispose();
@@ -1012,6 +1391,30 @@ namespace Devhub
         private static string Clip(string text)
         {
             return text.Length <= TipLimit ? text : text.Substring(0, TipLimit - 1) + "…";
+        }
+
+        private void SetTip(string text)
+        {
+            nativeTip = Clip(text);
+            // Avoid a second Windows tooltip covering the richer hover card.
+            icon.Text = progress.Visible ? "" : nativeTip;
+        }
+
+        private void ShowProgress()
+        {
+            if (!progress.Busy || closing || menu.Visible) { return; }
+            progress.ShowNear(Cursor.Position);
+            icon.Text = "";
+            hoverTimer.Start();
+        }
+
+        private void HideProgress()
+        {
+            progress.Hide();
+            hoverTimer.Stop();
+            hoverArea = Rectangle.Empty;
+            hovering = false;
+            icon.Text = nativeTip;
         }
 
         /// <summary>
@@ -1029,7 +1432,8 @@ namespace Devhub
             {
                 return full;
             }
-            return Clip((managed > 0 ? "Пульт: " + Servers(managed) : "Пульт") + "; " + tip);
+            // Active progress comes first so even the native tooltip cannot cut off its measured percentage.
+            return Clip(tip + "; " + (managed > 0 ? "Пульт: " + Servers(managed) : "Пульт"));
         }
 
         private static string Servers(int n)
@@ -1070,9 +1474,13 @@ namespace Devhub
                     {
                         Post(Exit);
                     }
-                    else
+                    else if (which == 3)
                     {
                         Post(StartRequested);
+                    }
+                    else
+                    {
+                        Post(Restart);
                     }
                 }
             }
@@ -1124,8 +1532,12 @@ namespace Devhub
             checking = false;
             last = health;
             queueLatest = queue;
+            bool showingProgress = progress.Visible;
+            progress.UpdateStatus(queue.Status);
             ShowQueue();
             ShowHealth(health, queue.Tip);
+            if (showingProgress && !progress.Visible) { HideProgress(); }
+            else if (!hoverArea.IsEmpty && hoverArea.Contains(Cursor.Position)) { ShowProgress(); }
             if (pollAgain)
             {
                 pollAgain = false;
@@ -1234,12 +1646,12 @@ namespace Devhub
                 icon.Icon = upIcon;
                 if (health.Managed > 0)
                 {
-                    icon.Text = WithQueue("Пульт работает; из него запущено " + Servers(health.Managed), health.Managed, queueTip);
+                    SetTip(WithQueue("Пульт работает; из него запущено " + Servers(health.Managed), health.Managed, queueTip));
                     status.Text = "Работает; из пульта запущено " + Servers(health.Managed);
                 }
                 else
                 {
-                    icon.Text = WithQueue("Пульт работает", 0, queueTip);
+                    SetTip(WithQueue("Пульт работает", 0, queueTip));
                     status.Text = "Пульт работает";
                 }
                 if (openWhenUp)
@@ -1252,13 +1664,13 @@ namespace Devhub
             icon.Icon = downIcon;
             if ((DateTime.Now - startedAt).TotalSeconds < StartGraceSeconds)
             {
-                icon.Text = "Пульт запускается…";
+                SetTip("Пульт запускается…");
                 status.Text = "Пульт запускается…";
                 return;
             }
             if (!keepRunning)
             {
-                icon.Text = "Пульт остановлен";
+                SetTip("Пульт остановлен");
                 status.Text = "Пульт остановлен";
                 return;
             }
@@ -1271,7 +1683,7 @@ namespace Devhub
             if (starts.Count >= MaxStarts)
             {
                 keepRunning = false;
-                icon.Text = "Пульт не запускается";
+                SetTip("Пульт не запускается");
                 status.Text = "Не запускается: смотрите лог";
                 icon.ShowBalloonTip(
                     10000,
@@ -1285,13 +1697,13 @@ namespace Devhub
                 hub.Start();
                 starts.Add(DateTime.Now);
                 startedAt = DateTime.Now;
-                icon.Text = "Пульт запускается…";
+                SetTip("Пульт запускается…");
                 status.Text = "Пульт запускается…";
             }
             catch (Exception error)
             {
                 keepRunning = false;
-                icon.Text = "Пульт не запускается";
+                SetTip("Пульт не запускается");
                 status.Text = "Не запускается";
                 icon.ShowBalloonTip(10000, "Пульт не запускается", error.Message, ToolTipIcon.Error);
             }
@@ -1324,10 +1736,11 @@ namespace Devhub
 
         private void Restart()
         {
+            HideProgress();
             // No starting on its own while it stops.
             keepRunning = false;
             Health health = last;
-            icon.Text = "Пульт перезапускается…";
+            SetTip("Пульт перезапускается…");
             status.Text = "Перезапускается…";
             ThreadPool.QueueUserWorkItem(delegate
             {
@@ -1369,6 +1782,7 @@ namespace Devhub
         /// <summary>Closes the tray alone: the hub keeps running (so the program can be replaced by a new build).</summary>
         private void CloseTray()
         {
+            HideProgress();
             closing = true;
             timer.Stop();
             icon.Visible = false;
@@ -1378,6 +1792,7 @@ namespace Devhub
         /// <summary>The menu's «Выход»: the tray goes, and the hub with it; the servers it started keep running.</summary>
         private void Exit()
         {
+            HideProgress();
             closing = true;
             timer.Stop();
             icon.Visible = false;
