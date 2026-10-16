@@ -7,6 +7,7 @@ using System.IO;
 using System.Reflection;
 using System.Threading;
 using System.Web.Script.Serialization;
+using System.Windows.Forms;
 
 namespace Devhub
 {
@@ -25,6 +26,8 @@ namespace Devhub
                     case "parser": Parser(); break;
                     case "lifecycle": Lifecycle(args[1], args[2]); break;
                     case "popup": Popup(args.Length > 2 ? args[2] : null); break;
+                    case "full-queue": FullQueue(args.Length > 2 ? args[2] : null); break;
+                    case "placement": Placement(); break;
                     default: throw new InvalidOperationException("Unknown harness mode");
                 }
                 return 0;
@@ -51,7 +54,9 @@ namespace Devhub
                 + "\"resource\":\"gpu\",\"private\":false,\"progress\":{\"percent\":37.5,\"step\":3,\"totalSteps\":8,"
                 + "\"phaseTitle\":\"Рендер\",\"scope\":\"node\"}},"
                 + "{\"id\":\"job-2\",\"name\":\"Подготовка данных\",\"resource\":\"cpu\",\"private\":false}],"
-                + "\"queued\":2,\"label\":\"Выполняется: 2\",\"state\":\"working\","
+                + "\"queued\":2,\"queuedJobs\":[{\"id\":\"wait-1\",\"name\":\"Следующая сцена\",\"resource\":\"gpu\",\"private\":false},"
+                + "{\"id\":\"wait-2\",\"name\":\"Проверка результата\",\"resource\":\"cpu\",\"private\":false}],"
+                + "\"label\":\"Выполняется: 2\",\"state\":\"working\","
                 + "\"gpu\":{\"name\":\"RTX 4090\",\"temperature\":67,\"totalMb\":24576,\"usedMb\":9216,\"utilization\":83},"
                 + "\"host\":{\"cpu\":42,\"availableMb\":24576,\"totalMb\":65536}}");
         }
@@ -83,6 +88,8 @@ namespace Devhub
             Require(!menu.Items[2].Enabled && menu.Items[2].Post == "/api/queue/stop", "Queue command changed");
             Require(menu.Status != null && Convert.ToInt32(menu.Status["running"]) == 2,
                 "The native tray discarded the widget progress snapshot");
+            Require(((IList)menu.Status["queuedJobs"]).Count == 2,
+                "The native tray discarded the waiting queue");
             foreach (string broken in new[] { "null", "{", "[]", "\"text\"" })
             {
                 QueueMenu empty = QueueMenu.Parse(broken);
@@ -97,6 +104,12 @@ namespace Devhub
         {
             using (var popup = new QueuePopup())
             {
+                var parameters = (CreateParams)typeof(QueuePopup)
+                    .GetProperty("CreateParams", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(popup, null);
+                Require((parameters.ExStyle & 0x08000000) != 0 && (parameters.ExStyle & 0x00000080) != 0,
+                    "The popup must remain a non-activating tool window");
+                Require(popup.TopMost && !popup.ShowInTaskbar,
+                    "The popup must stay above shell windows without adding a taskbar entry");
                 Dictionary<string, object> status = Status();
                 popup.UpdateStatus(status);
                 Require(popup.Busy, "Active inference must be visible on hover");
@@ -135,6 +148,189 @@ namespace Devhub
                 popup.UpdateStatus(null);
                 Require(!popup.Busy, "A missing observation must not leave stale work visible");
             }
+        }
+
+        private static Bitmap Paint(QueuePopup popup)
+        {
+            var bitmap = new Bitmap(popup.Width, popup.Height);
+            popup.DrawToBitmap(bitmap, new Rectangle(Point.Empty, bitmap.Size));
+            return bitmap;
+        }
+
+        private static bool Different(Bitmap first, Bitmap second)
+        {
+            if (first.Size != second.Size) { return true; }
+            for (int y = 0; y < first.Height; y++)
+            {
+                for (int x = 0; x < first.Width; x++)
+                {
+                    if (first.GetPixel(x, y) != second.GetPixel(x, y)) { return true; }
+                }
+            }
+            return false;
+        }
+
+        private static void RequirePinned(Bitmap first, Bitmap second, Rectangle viewport)
+        {
+            Require(first.Size == second.Size, "Scrolling must retain the popup's size");
+            for (int y = 0; y < first.Height; y++)
+            {
+                if (y >= viewport.Top && y < viewport.Bottom) { continue; }
+                for (int x = 0; x < first.Width; x++)
+                {
+                    Require(first.GetPixel(x, y) == second.GetPixel(x, y),
+                        "Scrolling jobs must leave the queue header and resource footer pinned");
+                }
+            }
+        }
+
+        private static void FullQueue(string output)
+        {
+            using (var popup = new QueuePopup())
+            {
+                var status = Status();
+                popup.UpdateStatus(status);
+                Require(popup.ListedJobs == 4 && popup.WaitingJobs == 2,
+                    "The hover popup must list both running and waiting jobs");
+                Require(!popup.QueueIncomplete, "A complete waiting list must not be called incomplete");
+                if (output != null)
+                {
+                    using (Bitmap bitmap = Paint(popup))
+                    {
+                        bitmap.Save(output, System.Drawing.Imaging.ImageFormat.Png);
+                        Console.WriteLine(output);
+                    }
+                }
+
+                // A held queue can have waiting work without a running job. It must still open on hover.
+                status["running"] = 0;
+                status["jobs"] = new object[0];
+                status["state"] = "paused";
+                popup.UpdateStatus(status);
+                Require(popup.Busy && popup.ListedJobs == 2 && popup.WaitingJobs == 2,
+                    "Waiting work must remain available on hover while no job is running");
+
+                // Missing or partial observations must not turn waiting work into an empty queue.
+                status["queued"] = null;
+                status["queuedJobs"] = null;
+                popup.UpdateStatus(status);
+                Require(popup.QueueIncomplete, "An unavailable waiting observation must remain unknown");
+                status["queued"] = 2;
+                status["queuedJobs"] = new object[]
+                {
+                    new Dictionary<string, object> { { "id", "known-waiter" }, { "name", "Известное задание" } },
+                };
+                popup.UpdateStatus(status);
+                Require(popup.Busy && popup.WaitingJobs == 1 && popup.QueueIncomplete,
+                    "A partial waiting list must retain its known job and its incomplete state");
+
+                status["queued"] = null;
+                popup.UpdateStatus(status);
+                Require(popup.Busy && popup.WaitingJobs == 1,
+                    "Known waiting jobs must open the popup even when queue totals are unavailable");
+
+                var active = new List<object>();
+                var waiting = new List<object>();
+                for (int i = 0; i < 5; i++)
+                {
+                    active.Add(new Dictionary<string, object>
+                    {
+                        { "id", "active-" + i }, { "name", "Выполняется " + (i + 1) }, { "resource", "gpu" },
+                        { "progress", new Dictionary<string, object> { { "percent", i * 17 + 3 }, { "scope", "job" } } },
+                    });
+                }
+                for (int i = 0; i < 32; i++)
+                {
+                    waiting.Add(new Dictionary<string, object>
+                    {
+                        { "id", "waiting-" + i }, { "name", "Ожидает " + (i + 1) }, { "resource", i % 2 == 0 ? "gpu" : "cpu" },
+                        { "private", i == 30 },
+                    });
+                }
+                status["running"] = active.Count;
+                status["jobs"] = active.ToArray();
+                status["queued"] = waiting.Count;
+                status["queuedJobs"] = waiting.ToArray();
+                status["state"] = "working";
+                popup.UpdateStatus(status);
+                Require(popup.ListedJobs == 37 && popup.WaitingJobs == 32,
+                    "The popup must retain every job beyond the former three-job limit");
+                Require(popup.MaximumScroll > 0 && popup.ScrollOffset == 0,
+                    "A long queue must have a bounded, initially unscrolled viewport");
+                Require(new Rectangle(Point.Empty, popup.ClientSize).Contains(popup.ListBounds),
+                    "The scrolling list must stay within the popup");
+                using (Bitmap first = Paint(popup))
+                {
+                    popup.ScrollBy(20);
+                    using (Bitmap partial = Paint(popup))
+                    {
+                        Require(Different(first, partial), "A partial row scroll must update the visible list");
+                        RequirePinned(first, partial, popup.ListBounds);
+                    }
+                    popup.ScrollBy(-100000);
+                    MethodInfo wheel = typeof(QueuePopup).GetMethod("OnMouseWheel", BindingFlags.Instance | BindingFlags.NonPublic);
+                    Require(wheel != null, "The popup must accept mouse-wheel scrolling");
+                    for (int i = 0; i < 100 && popup.ScrollOffset < popup.MaximumScroll; i++)
+                    {
+                        wheel.Invoke(popup, new object[] { new MouseEventArgs(MouseButtons.None, 0, 20, popup.ListBounds.Top + 10, -120) });
+                    }
+                    Require(popup.ScrollOffset == popup.MaximumScroll,
+                        "The mouse wheel must reach the last waiting job");
+                    using (Bitmap last = Paint(popup))
+                    {
+                        Require(Different(first, last), "Scrolling must paint a different part of the queue");
+                        RequirePinned(first, last, popup.ListBounds);
+                        if (output != null)
+                        {
+                            string end = Path.Combine(Path.GetDirectoryName(output), Path.GetFileNameWithoutExtension(output) + "-end.png");
+                            last.Save(end, System.Drawing.Imaging.ImageFormat.Png);
+                            Console.WriteLine(end);
+                        }
+                    }
+                }
+                popup.ScrollBy(-100000);
+                Require(popup.ScrollOffset == 0, "Scrolling above the first row must clamp to the start");
+                popup.ScrollBy(100000);
+                Require(popup.ScrollOffset == popup.MaximumScroll, "Scrolling past the last row must clamp to the end");
+
+                // Live updates may make the queue shorter while the user is looking at its final rows.
+                status["running"] = 0;
+                status["jobs"] = new object[0];
+                status["queued"] = 1;
+                status["queuedJobs"] = new object[] { waiting[0] };
+                popup.UpdateStatus(status);
+                Require(popup.Busy && popup.ListedJobs == 1 && popup.ScrollOffset == 0 && popup.MaximumScroll == 0,
+                    "A shrinking queue must clamp its old scroll position and keep the remaining job visible");
+            }
+        }
+
+        private static void CheckPlacement(Rectangle work, Rectangle tray, Point anchor, Size size, bool fullSize)
+        {
+            Rectangle placed = TrayWindows.Position(work, tray, anchor, size, 8);
+            Require(placed.Width > 0 && placed.Height > 0 && work.Contains(placed),
+                "The hover card must remain inside its monitor's working area");
+            Require(!placed.IntersectsWith(tray), "The hover card must not hide behind the notification flyout");
+            if (fullSize) { Require(placed.Size == size, "The card should retain its size when there is room beside the tray"); }
+        }
+
+        private static void Placement()
+        {
+            var work = new Rectangle(0, 0, 1920, 1040);
+            var card = new Size(360, 400);
+            CheckPlacement(work, new Rectangle(1620, 710, 300, 320), new Point(1770, 1000), card, true);
+            CheckPlacement(work, new Rectangle(1620, 0, 300, 320), new Point(1770, 20), card, true);
+            CheckPlacement(work, new Rectangle(0, 340, 300, 500), new Point(20, 700), card, true);
+            CheckPlacement(work, new Rectangle(1620, 340, 300, 500), new Point(1900, 700), card, true);
+            CheckPlacement(work, new Rectangle(1620, 200, 300, 840), new Point(1770, 1000), new Size(360, 900), true);
+            CheckPlacement(new Rectangle(-1920, -200, 1920, 1040), new Rectangle(-300, 510, 300, 320),
+                new Point(-150, 800), card, true);
+            CheckPlacement(new Rectangle(1920, 200, 1280, 900), new Rectangle(2900, 780, 300, 320),
+                new Point(3100, 1060), card, true);
+            CheckPlacement(new Rectangle(0, 0, 600, 500), new Rectangle(200, 120, 400, 380),
+                new Point(560, 460), card, false);
+            CheckPlacement(new Rectangle(0, 0, 120, 90), new Rectangle(20, 60, 100, 30),
+                new Point(100, 75), card, false);
+            CheckPlacement(work, Rectangle.Empty, new Point(1900, 1030), card, true);
         }
 
         private static void Heartbeat(string prefix)

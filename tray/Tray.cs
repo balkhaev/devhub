@@ -390,12 +390,140 @@ namespace Devhub
         }
     }
 
+    /// <summary>The shell surface hosting the icon, and passive placement outside its flyout.</summary>
+    internal static class TrayWindows
+    {
+        [StructLayout(LayoutKind.Sequential)]
+        private struct NativeRectangle
+        {
+            public int Left, Top, Right, Bottom;
+        }
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr WindowFromPoint(Point point);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr GetAncestor(IntPtr window, uint flags);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr GetParent(IntPtr window);
+
+        [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+        private static extern int GetClassName(IntPtr window, StringBuilder name, int count);
+
+        [DllImport("user32.dll")]
+        private static extern bool GetWindowRect(IntPtr window, out NativeRectangle rectangle);
+
+        [DllImport("user32.dll")]
+        private static extern bool SetWindowPos(IntPtr window, IntPtr after, int x, int y,
+            int width, int height, uint flags);
+
+        private static Rectangle ShellBounds(IntPtr window, Point point)
+        {
+            if (window == IntPtr.Zero) { return Rectangle.Empty; }
+            var name = new StringBuilder(128);
+            GetClassName(window, name, name.Capacity);
+            string kind = name.ToString();
+            if (kind != "NotifyIconOverflowWindow" && kind != "TopLevelWindowForOverflowXamlIsland"
+                && kind != "Shell_TrayWnd" && kind != "Shell_SecondaryTrayWnd")
+            {
+                return Rectangle.Empty;
+            }
+            NativeRectangle bounds;
+            if (!GetWindowRect(window, out bounds)) { return Rectangle.Empty; }
+            Rectangle rectangle = Rectangle.FromLTRB(bounds.Left, bounds.Top, bounds.Right, bounds.Bottom);
+            return rectangle.Width > 0 && rectangle.Height > 0 && rectangle.Contains(point)
+                ? rectangle : Rectangle.Empty;
+        }
+
+        internal static Rectangle HostAt(Point point)
+        {
+            IntPtr window = WindowFromPoint(point);
+            Rectangle host = ShellBounds(GetAncestor(window, 2), point); // GA_ROOT
+            if (!host.IsEmpty) { return host; }
+            // Older shells expose the icon as nested toolbar windows; inspect only its own parent chain.
+            for (int depth = 0; window != IntPtr.Zero && depth < 16; depth++, window = GetParent(window))
+            {
+                host = ShellBounds(window, point);
+                if (!host.IsEmpty) { return host; }
+            }
+            return Rectangle.Empty;
+        }
+
+        private static Rectangle Space(int left, int top, int right, int bottom)
+        {
+            return right > left && bottom > top
+                ? Rectangle.FromLTRB(left, top, right, bottom) : Rectangle.Empty;
+        }
+
+        private static int Clamp(int value, int minimum, int maximum)
+        {
+            return Math.Max(minimum, Math.Min(value, maximum));
+        }
+
+        private static Rectangle Within(Rectangle space, Point anchor, Size size, int direction, int gap)
+        {
+            int x = Clamp(anchor.X + gap, space.Left, space.Right - size.Width);
+            int y = Clamp(anchor.Y - size.Height, space.Top, space.Bottom - size.Height);
+            if (direction == 0) { y = space.Bottom - size.Height; }
+            else if (direction == 1) { x = space.Right - size.Width; }
+            else if (direction == 2) { x = space.Left; }
+            else { y = space.Top; }
+            return new Rectangle(x, y, size.Width, size.Height);
+        }
+
+        internal static Rectangle Position(Rectangle work, Rectangle tray, Point anchor, Size size, int gap)
+        {
+            if (work.Width <= 0 || work.Height <= 0) { return Rectangle.Empty; }
+            gap = Math.Max(0, gap);
+            size = new Size(Math.Max(1, Math.Min(size.Width, work.Width)),
+                Math.Max(1, Math.Min(size.Height, work.Height)));
+            if (tray.Width <= 0 || tray.Height <= 0) { tray = new Rectangle(anchor, new Size(1, 1)); }
+            // Each region is already clear of the shell window. Clamping stays within that region,
+            // so a tall queue switches to the side instead of falling back on top of the icon flyout.
+            Rectangle[] spaces = {
+                Space(work.Left, work.Top, work.Right, Math.Min(work.Bottom, tray.Top - gap)),
+                Space(work.Left, work.Top, Math.Min(work.Right, tray.Left - gap), work.Bottom),
+                Space(Math.Max(work.Left, tray.Right + gap), work.Top, work.Right, work.Bottom),
+                Space(work.Left, Math.Max(work.Top, tray.Bottom + gap), work.Right, work.Bottom)
+            };
+            for (int i = 0; i < spaces.Length; i++)
+            {
+                if (spaces[i].Width >= size.Width && spaces[i].Height >= size.Height)
+                {
+                    return Within(spaces[i], anchor, size, i, gap);
+                }
+            }
+            int best = -1;
+            long largest = 0;
+            Size fitted = Size.Empty;
+            for (int i = 0; i < spaces.Length; i++)
+            {
+                if (spaces[i].IsEmpty) { continue; }
+                var available = new Size(Math.Min(size.Width, spaces[i].Width), Math.Min(size.Height, spaces[i].Height));
+                long area = (long)available.Width * available.Height;
+                if (area > largest) { largest = area; best = i; fitted = available; }
+            }
+            if (best >= 0) { return Within(spaces[best], anchor, fitted, best, gap); }
+            // A host covering the entire work area has no outside space at all.
+            return new Rectangle(Clamp(anchor.X, work.Left, work.Right - size.Width),
+                Clamp(anchor.Y, work.Top, work.Bottom - size.Height), size.Width, size.Height);
+        }
+
+        internal static void KeepAbove(Form popup)
+        {
+            if (!popup.IsHandleCreated || popup.IsDisposed) { return; }
+            SetWindowPos(popup.Handle, new IntPtr(-1), 0, 0, 0, 0,
+                0x0001 | 0x0002 | 0x0010); // HWND_TOPMOST, SWP_NOSIZE | SWP_NOMOVE | SWP_NOACTIVATE
+        }
+    }
+
     /// <summary>A compact passive card with the queue widget's measured progress; never takes focus.</summary>
     internal sealed class QueuePopup : Form
     {
-        private const int MaxJobs = 3;
         private const int HeaderHeight = 40;
         private const int JobHeight = 54;
+        private const int WaitingHeight = 32;
         private static readonly Color Background = Color.FromArgb(24, 27, 33);
         private static readonly Color Muted = Color.FromArgb(154, 165, 181);
         private static readonly Color Accent = Color.FromArgb(89, 202, 170);
@@ -405,8 +533,26 @@ namespace Devhub
         private readonly float scale;
         private Dictionary<string, object> snapshot;
         private readonly List<Dictionary<string, object>> jobs = new List<Dictionary<string, object>>();
+        private readonly List<Dictionary<string, object>> waiting = new List<Dictionary<string, object>>();
+        private readonly List<QueueRow> rows = new List<QueueRow>();
         private Point anchor;
-        private int shownJobs;
+        private int contentHeight;
+        private int viewportHeight;
+        private int scrollOffset;
+        private bool draggingScroll;
+        private int dragY;
+        private int dragOffset;
+        private bool layingOut;
+
+        private sealed class QueueRow
+        {
+            public Dictionary<string, object> Job;
+            public bool Waiting;
+            public string Label;
+            public int Position;
+            public int Height;
+            public int Index;
+        }
 
         public QueuePopup()
         {
@@ -436,7 +582,13 @@ namespace Devhub
             }
         }
 
-        public bool Busy { get { return Number(snapshot, "running") > 0; } }
+        public bool Busy { get { return Number(snapshot, "running") > 0 || Number(snapshot, "queued") > 0 || jobs.Count + waiting.Count > 0; } }
+        internal int ListedJobs { get { return jobs.Count + waiting.Count; } }
+        internal int WaitingJobs { get { return waiting.Count; } }
+        internal int ScrollOffset { get { return scrollOffset; } }
+        internal int MaximumScroll { get { return Math.Max(0, contentHeight - viewportHeight); } }
+        internal Rectangle ListBounds { get { return new Rectangle(0, Px(HeaderHeight), ClientSize.Width, Px(viewportHeight)); } }
+        internal bool QueueIncomplete { get { return Value(snapshot, "queued") == null || Number(snapshot, "queued") > waiting.Count; } }
         private int Px(float value) { return (int)Math.Round(value * scale); }
 
         private static object Value(Dictionary<string, object> data, string key)
@@ -502,19 +654,61 @@ namespace Devhub
         public void UpdateStatus(Dictionary<string, object> status)
         {
             snapshot = status;
-            jobs.Clear();
-            var list = Value(status, "jobs") as IEnumerable;
+            ReadJobs(jobs, Value(status, "jobs"));
+            ReadJobs(waiting, Value(status, "queuedJobs"));
+            BuildRows();
+            if (!Busy) { Hide(); }
+            LayoutNear(Visible ? anchor : Cursor.Position);
+            Invalidate();
+        }
+
+        private static void ReadJobs(List<Dictionary<string, object>> target, object value)
+        {
+            target.Clear();
+            var list = value as IEnumerable;
             if (list != null)
             {
                 foreach (object raw in list)
                 {
                     var job = raw as Dictionary<string, object>;
-                    if (job != null) { jobs.Add(job); }
+                    if (job != null) { target.Add(job); }
                 }
             }
-            if (!Busy) { Hide(); }
-            LayoutNear(Visible ? anchor : Cursor.Position);
-            Invalidate();
+        }
+
+        private void AddRow(QueueRow row, int height)
+        {
+            row.Position = contentHeight;
+            row.Height = height;
+            rows.Add(row);
+            contentHeight += height;
+        }
+
+        private void BuildRows()
+        {
+            rows.Clear();
+            contentHeight = 0;
+            foreach (var job in jobs) { AddRow(new QueueRow { Job = job }, JobHeight); }
+            if (Number(snapshot, "running") > jobs.Count)
+            {
+                AddRow(new QueueRow { Label = "Ещё выполняется: " + (Number(snapshot, "running") - jobs.Count) + " · нет подробностей" }, 24);
+            }
+            if (waiting.Count > 0 || Number(snapshot, "queued") > 0 || Value(snapshot, "queued") == null)
+            {
+                AddRow(new QueueRow { Label = "ОЖИДАЮТ" }, 24);
+                for (int i = 0; i < waiting.Count; i++)
+                {
+                    AddRow(new QueueRow { Job = waiting[i], Waiting = true, Index = i + 1 }, WaitingHeight);
+                }
+                if (QueueIncomplete)
+                {
+                    string note = Value(snapshot, "queuedJobs") == null ? "Список ожидающих недоступен"
+                        : Value(snapshot, "queued") == null ? "Размер очереди неизвестен"
+                        : "Ещё ожидают: " + (Number(snapshot, "queued") - waiting.Count) + " · нет подробностей";
+                    AddRow(new QueueRow { Label = note }, 24);
+                }
+            }
+            if (rows.Count == 0) { AddRow(new QueueRow { Label = "Очередь пуста" }, 24); }
         }
 
         private int FooterHeight()
@@ -527,11 +721,30 @@ namespace Devhub
         {
             Rectangle area = Screen.FromPoint(point).WorkingArea;
             int fixedHeight = HeaderHeight + FooterHeight() + 6;
-            int capacity = Math.Max(1, ((int)(area.Height / scale) - fixedHeight - 18) / JobHeight);
-            shownJobs = Math.Min(Math.Min(MaxJobs, jobs.Count), capacity);
-            int height = fixedHeight + Math.Max(1, shownJobs) * JobHeight + (jobs.Count > shownJobs ? 18 : 0);
-            ClientSize = new Size(Math.Min(Px(360), area.Width), Px(height));
-            Place(point);
+            int height = Math.Min(Px(fixedHeight + contentHeight), Math.Min(Px(520), area.Height - Px(24)));
+            // The shell may leave less room than the requested size. Clamp the reading position only once,
+            // after placement, so polling cannot reset a long queue's scroll in the intermediate larger window.
+            layingOut = true;
+            try
+            {
+                ClientSize = new Size(Math.Min(Px(360), area.Width), Math.Max(Px(fixedHeight + 24), height));
+                Place(point);
+            }
+            finally { layingOut = false; }
+            MeasureViewport();
+        }
+
+        private void MeasureViewport()
+        {
+            if (scale <= 0) { return; }
+            viewportHeight = Math.Max(1, (int)Math.Floor(ClientSize.Height / scale) - HeaderHeight - FooterHeight() - 6);
+            scrollOffset = Math.Min(scrollOffset, MaximumScroll);
+        }
+
+        internal void ScrollBy(int delta)
+        {
+            scrollOffset = Math.Max(0, Math.Min(MaximumScroll, scrollOffset + delta));
+            Invalidate(ListBounds);
         }
 
         private static GraphicsPath Rounded(RectangleF rectangle, float radius)
@@ -550,6 +763,7 @@ namespace Devhub
         {
             base.OnSizeChanged(e);
             if (scale <= 0 || Width <= 0 || Height <= 0) { return; }
+            if (!layingOut) { MeasureViewport(); }
             using (GraphicsPath shape = Rounded(new RectangleF(0, 0, Width, Height), Px(11)))
             {
                 Region old = Region;
@@ -561,16 +775,15 @@ namespace Devhub
         private void Place(Point point)
         {
             Rectangle area = Screen.FromPoint(point).WorkingArea;
-            int x = Math.Min(point.X + Px(12), area.Right - Width);
-            int y = point.Y - Height - Px(12);
-            if (y < area.Top) { y = point.Y + Px(20); }
-            Location = new Point(Math.Max(area.Left, x), Math.Max(area.Top, Math.Min(y, area.Bottom - Height)));
+            Bounds = TrayWindows.Position(area, TrayWindows.HostAt(point), point, Size, Px(10));
+            if (Visible) { TrayWindows.KeepAbove(this); }
         }
 
         public void ShowNear(Point point)
         {
             if (!Busy) { return; }
             if (!Visible) { anchor = point; LayoutNear(point); Show(); }
+            TrayWindows.KeepAbove(this);
         }
 
         private void TextLine(Graphics graphics, string text, Font font, Color color,
@@ -580,6 +793,7 @@ namespace Devhub
                 new Rectangle(Px(x), Px(y), Px(width), Px(height)), color,
                 TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine
                 | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding
+                | TextFormatFlags.PreserveGraphicsClipping
                 | (right ? TextFormatFlags.Right : TextFormatFlags.Left));
         }
 
@@ -594,7 +808,7 @@ namespace Devhub
                     // Clip the exact observed width instead of rounding a tiny percentage up to a whole pill.
                     float width = rectangle.Width * (float)Math.Max(0, Math.Min(100, Number(progress, "percent"))) / 100;
                     GraphicsState saved = graphics.Save();
-                    graphics.SetClip(new RectangleF(rectangle.X, rectangle.Y, width, rectangle.Height));
+                    graphics.SetClip(new RectangleF(rectangle.X, rectangle.Y, width, rectangle.Height), CombineMode.Intersect);
                     using (var brush = new SolidBrush(Accent)) { graphics.FillPath(brush, track); }
                     graphics.Restore(saved);
                 }
@@ -628,6 +842,85 @@ namespace Devhub
             Bar(graphics, progress, y + 42);
         }
 
+        private void WaitingJob(Graphics graphics, QueueRow row, int y, int width)
+        {
+            bool anonymous = object.Equals(Value(row.Job, "private"), true);
+            string name = anonymous ? "Анонимное задание" : Word(row.Job, "name");
+            string resource = Word(row.Job, "resource").ToUpperInvariant();
+            int nameX = 14;
+            if (resource.Length > 0)
+            {
+                TextLine(graphics, resource, small, Muted, 14, y + 5, 32, 20, false);
+                nameX = 53;
+            }
+            TextLine(graphics, name, Font, ForeColor, nameX, y + 5, width - nameX - 54, 20, false);
+            TextLine(graphics, "#" + row.Index, small, Muted, width - 51, y + 5, 37, 20, true);
+        }
+
+        private Rectangle ScrollTrack
+        {
+            get { return new Rectangle(ClientSize.Width - Px(8), Px(HeaderHeight + 2), Px(5), Math.Max(1, Px(viewportHeight - 4))); }
+        }
+
+        private Rectangle ScrollThumb
+        {
+            get
+            {
+                Rectangle track = ScrollTrack;
+                int height = Math.Min(track.Height, Math.Max(Px(24), (int)((double)viewportHeight / Math.Max(1, contentHeight) * track.Height)));
+                int top = track.Top + (MaximumScroll == 0 ? 0 : (int)((double)scrollOffset / MaximumScroll * (track.Height - height)));
+                return new Rectangle(track.Left, top, track.Width, height);
+            }
+        }
+
+        protected override void OnMouseWheel(MouseEventArgs e)
+        {
+            base.OnMouseWheel(e);
+            ScrollBy(-(int)(e.Delta / 120f * 48));
+        }
+
+        protected override void OnMouseDown(MouseEventArgs e)
+        {
+            base.OnMouseDown(e);
+            if (e.Button != MouseButtons.Left || MaximumScroll == 0) { return; }
+            Rectangle target = ScrollTrack;
+            target.Inflate(Px(5), 0);
+            if (!target.Contains(e.Location)) { return; }
+            if (!ScrollThumb.Contains(e.Location)) { ScrollBy(e.Y < ScrollThumb.Top ? -viewportHeight : viewportHeight); }
+            draggingScroll = true;
+            dragY = e.Y;
+            dragOffset = scrollOffset;
+            Capture = true;
+        }
+
+        protected override void OnMouseMove(MouseEventArgs e)
+        {
+            base.OnMouseMove(e);
+            if (!draggingScroll) { return; }
+            int travel = Math.Max(1, ScrollTrack.Height - ScrollThumb.Height);
+            int wanted = dragOffset + (int)((double)(e.Y - dragY) / travel * MaximumScroll);
+            ScrollBy(wanted - scrollOffset);
+        }
+
+        protected override void OnMouseUp(MouseEventArgs e)
+        {
+            base.OnMouseUp(e);
+            draggingScroll = false;
+            Capture = false;
+        }
+
+        protected override void OnMouseCaptureChanged(EventArgs e)
+        {
+            base.OnMouseCaptureChanged(e);
+            if (!Capture) { draggingScroll = false; }
+        }
+
+        protected override void WndProc(ref Message message)
+        {
+            if (message.Msg == 0x0021) { message.Result = new IntPtr(3); return; } // WM_MOUSEACTIVATE: MA_NOACTIVATE
+            base.WndProc(ref message);
+        }
+
         protected override void OnPaint(PaintEventArgs e)
         {
             base.OnPaint(e);
@@ -647,19 +940,24 @@ namespace Devhub
                 + Number(snapshot, "running") + " в работе · "
                 + (Value(snapshot, "queued") == null ? "?" : Number(snapshot, "queued").ToString()) + " ждут";
             TextLine(graphics, summary, small, held ? Color.FromArgb(236, 184, 95) : Muted, 100, 10, width - 114, 20, true);
-            int y = HeaderHeight;
-            if (jobs.Count == 0)
+            GraphicsState saved = graphics.Save();
+            graphics.SetClip(ListBounds, CombineMode.Intersect);
+            int rowWidth = width - (MaximumScroll > 0 ? 8 : 0);
+            foreach (QueueRow row in rows)
             {
-                TextLine(graphics, "Выполняется заданий: " + Number(snapshot, "running"), Font, ForeColor, 14, y, width - 28, 18, false);
-                TextLine(graphics, "Ожидаем данные о прогрессе", small, Muted, 14, y + 20, width - 28, 18, false);
-                y += JobHeight;
+                int rowY = HeaderHeight + row.Position - scrollOffset;
+                if (rowY + row.Height <= HeaderHeight || rowY >= HeaderHeight + viewportHeight) { continue; }
+                if (row.Job == null) { TextLine(graphics, row.Label, small, Muted, 14, rowY + 2, rowWidth - 28, row.Height - 2, false); }
+                else if (row.Waiting) { WaitingJob(graphics, row, rowY, rowWidth); }
+                else { Job(graphics, row.Job, rowY, rowWidth); }
             }
-            for (int i = 0; i < shownJobs; i++) { Job(graphics, jobs[i], y, width); y += JobHeight; }
-            if (jobs.Count > shownJobs)
+            graphics.Restore(saved);
+            if (MaximumScroll > 0)
             {
-                TextLine(graphics, "Ещё " + (jobs.Count - shownJobs) + " · подробнее в пульте", small, Muted, 14, y, width - 28, 18, false);
-                y += 18;
+                using (var track = new SolidBrush(Divider)) { graphics.FillRectangle(track, ScrollTrack); }
+                using (var thumb = new SolidBrush(Muted)) { graphics.FillRectangle(thumb, ScrollThumb); }
             }
+            int y = HeaderHeight + viewportHeight;
             if (FooterHeight() > 0)
             {
                 using (var pen = new Pen(Divider)) { graphics.DrawLine(pen, Px(14), Px(y), ClientSize.Width - Px(14), Px(y)); }
@@ -1351,6 +1649,7 @@ namespace Devhub
         private Rectangle hoverArea;
         private string nativeTip = "";
         private bool hovering;
+        private DateTime hoverSeenAt;
 
         public TrayApp(Hub hub, Signals signals, bool open)
         {
@@ -1372,7 +1671,11 @@ namespace Devhub
                 Point pointer = Cursor.Position;
                 Rectangle card = progress.Bounds;
                 card.Inflate(8, 8);
-                if (!hoverArea.Contains(pointer) && !(progress.Visible && card.Contains(pointer))) { HideProgress(); }
+                if (hoverArea.Contains(pointer) || (progress.Visible && card.Contains(pointer)) || progress.Capture)
+                {
+                    hoverSeenAt = DateTime.UtcNow;
+                }
+                else if ((DateTime.UtcNow - hoverSeenAt).TotalMilliseconds > 700) { HideProgress(); }
             };
 
             menu = new ContextMenuStrip();
@@ -1411,6 +1714,7 @@ namespace Devhub
                 hoverArea = new Rectangle(pointer.X - 24, pointer.Y - 24, 48, 48);
                 bool entering = !hovering;
                 hovering = true;
+                hoverSeenAt = DateTime.UtcNow;
                 ShowProgress();
                 hoverTimer.Start();
                 // The cached reading shows immediately; refresh it once on entry, never on every mouse move.
