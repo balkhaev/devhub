@@ -390,13 +390,16 @@ namespace Devhub
         }
     }
 
-    /// <summary>A passive hover card: the same measured job progress as the queue widget, without taking focus.</summary>
+    /// <summary>A compact passive card with the queue widget's measured progress; never takes focus.</summary>
     internal sealed class QueuePopup : Form
     {
-        private const int MaxJobs = 5;
+        private const int MaxJobs = 3;
+        private const int HeaderHeight = 40;
+        private const int JobHeight = 54;
         private static readonly Color Background = Color.FromArgb(24, 27, 33);
-        private static readonly Color Muted = Color.FromArgb(166, 175, 190);
+        private static readonly Color Muted = Color.FromArgb(154, 165, 181);
         private static readonly Color Accent = Color.FromArgb(89, 202, 170);
+        private static readonly Color Divider = Color.FromArgb(48, 55, 66);
         private readonly Font heading;
         private readonly Font small;
         private readonly float scale;
@@ -412,14 +415,11 @@ namespace Devhub
             TopMost = true;
             StartPosition = FormStartPosition.Manual;
             BackColor = Background;
-            ForeColor = Color.WhiteSmoke;
+            ForeColor = Color.FromArgb(235, 240, 247);
             Font = new Font("Segoe UI", 9);
             heading = new Font(Font, FontStyle.Bold);
             small = new Font("Segoe UI", 8);
-            using (Graphics graphics = CreateGraphics())
-            {
-                scale = graphics.DpiX / 96f;
-            }
+            using (Graphics graphics = CreateGraphics()) { scale = graphics.DpiX / 96f; }
             DoubleBuffered = true;
         }
 
@@ -431,12 +431,12 @@ namespace Devhub
             {
                 CreateParams parameters = base.CreateParams;
                 parameters.ExStyle |= 0x08000000 | 0x00000080; // WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW
+                parameters.ClassStyle |= 0x00020000; // CS_DROPSHADOW
                 return parameters;
             }
         }
 
         public bool Busy { get { return Number(snapshot, "running") > 0; } }
-
         private int Px(float value) { return (int)Math.Round(value * scale); }
 
         private static object Value(Dictionary<string, object> data, string key)
@@ -453,10 +453,7 @@ namespace Devhub
         private static double Number(Dictionary<string, object> data, string key)
         {
             object value = Value(data, key);
-            if (!(value is int || value is long || value is double || value is decimal))
-            {
-                return 0;
-            }
+            if (!(value is int || value is long || value is double || value is decimal)) { return 0; }
             return Convert.ToDouble(value);
         }
 
@@ -472,10 +469,7 @@ namespace Devhub
 
         internal static string ProgressWords(Dictionary<string, object> progress)
         {
-            if (progress == null)
-            {
-                return "Ожидаем данные о прогрессе";
-            }
+            if (progress == null) { return "Ожидаем данные о прогрессе"; }
             var words = new List<string>();
             string phase = Word(progress, "phaseTitle");
             if (phase.Length > 0) { words.Add(phase); }
@@ -486,6 +480,21 @@ namespace Devhub
             if (Value(progress, "step") != null && Value(progress, "totalSteps") != null)
             {
                 words.Add("шаг " + Number(progress, "step") + " из " + Number(progress, "totalSteps"));
+            }
+            return string.Join(" · ", words.ToArray());
+        }
+
+        private static string Detail(Dictionary<string, object> progress)
+        {
+            if (progress == null) { return "Выполняется · прогресс пока неизвестен"; }
+            var words = new List<string>();
+            string phase = Word(progress, "phaseTitle");
+            words.Add(phase.Length > 0 ? phase : "Выполняется");
+            // Keep the measurement's scope beside its phase: a node's percentage is not a whole-job estimate.
+            if (Value(progress, "percent") != null) { words.Add("прогресс " + Scope(progress)); }
+            if (Value(progress, "step") != null && Value(progress, "totalSteps") != null)
+            {
+                words.Add(Number(progress, "step") + "/" + Number(progress, "totalSteps"));
             }
             return string.Join(" · ", words.ToArray());
         }
@@ -508,17 +517,45 @@ namespace Devhub
             Invalidate();
         }
 
+        private int FooterHeight()
+        {
+            int rows = (Value(snapshot, "gpu") == null ? 0 : 1) + (Value(snapshot, "host") == null ? 0 : 1);
+            return rows > 0 ? rows * 20 + 14 : 0;
+        }
+
         private void LayoutNear(Point point)
         {
             Rectangle area = Screen.FromPoint(point).WorkingArea;
-            int fixedHeight = 76;
-            if (Value(snapshot, "gpu") is Dictionary<string, object>) { fixedHeight += 40; }
-            if (Value(snapshot, "host") is Dictionary<string, object>) { fixedHeight += 40; }
-            int capacity = Math.Max(1, ((int)(area.Height / scale) - fixedHeight - 22) / 76);
+            int fixedHeight = HeaderHeight + FooterHeight() + 6;
+            int capacity = Math.Max(1, ((int)(area.Height / scale) - fixedHeight - 18) / JobHeight);
             shownJobs = Math.Min(Math.Min(MaxJobs, jobs.Count), capacity);
-            int height = fixedHeight + Math.Max(1, shownJobs) * 76 + (jobs.Count > shownJobs ? 22 : 0);
-            ClientSize = new Size(Math.Min(Px(460), area.Width), Px(height));
+            int height = fixedHeight + Math.Max(1, shownJobs) * JobHeight + (jobs.Count > shownJobs ? 18 : 0);
+            ClientSize = new Size(Math.Min(Px(360), area.Width), Px(height));
             Place(point);
+        }
+
+        private static GraphicsPath Rounded(RectangleF rectangle, float radius)
+        {
+            var path = new GraphicsPath();
+            float diameter = Math.Min(radius * 2, Math.Min(rectangle.Width, rectangle.Height));
+            path.AddArc(rectangle.Left, rectangle.Top, diameter, diameter, 180, 90);
+            path.AddArc(rectangle.Right - diameter, rectangle.Top, diameter, diameter, 270, 90);
+            path.AddArc(rectangle.Right - diameter, rectangle.Bottom - diameter, diameter, diameter, 0, 90);
+            path.AddArc(rectangle.Left, rectangle.Bottom - diameter, diameter, diameter, 90, 90);
+            path.CloseFigure();
+            return path;
+        }
+
+        protected override void OnSizeChanged(EventArgs e)
+        {
+            base.OnSizeChanged(e);
+            if (scale <= 0 || Width <= 0 || Height <= 0) { return; }
+            using (GraphicsPath shape = Rounded(new RectangleF(0, 0, Width, Height), Px(11)))
+            {
+                Region old = Region;
+                Region = new Region(shape);
+                if (old != null) { old.Dispose(); }
+            }
         }
 
         private void Place(Point point)
@@ -533,91 +570,116 @@ namespace Devhub
         public void ShowNear(Point point)
         {
             if (!Busy) { return; }
-            if (!Visible)
-            {
-                anchor = point;
-                LayoutNear(point);
-                Show();
-            }
+            if (!Visible) { anchor = point; LayoutNear(point); Show(); }
         }
 
-        private void Line(Graphics graphics, string text, Font font, Color color, int y, int height)
+        private void TextLine(Graphics graphics, string text, Font font, Color color,
+            int x, int y, int width, int height, bool right)
         {
             TextRenderer.DrawText(graphics, text, font,
-                new Rectangle(Px(18), Px(y), ClientSize.Width - Px(36), Px(height)), color,
-                TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine);
+                new Rectangle(Px(x), Px(y), Px(width), Px(height)), color,
+                TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine
+                | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding
+                | (right ? TextFormatFlags.Right : TextFormatFlags.Left));
         }
 
         private void Bar(Graphics graphics, Dictionary<string, object> progress, int y)
         {
-            var rectangle = new Rectangle(Px(18), Px(y), ClientSize.Width - Px(36), Px(5));
-            using (var track = new SolidBrush(Color.FromArgb(55, 62, 74))) { graphics.FillRectangle(track, rectangle); }
-            if (progress != null && Value(progress, "percent") != null)
+            var rectangle = new RectangleF(Px(14), Px(y), ClientSize.Width - Px(28), Px(3));
+            using (GraphicsPath track = Rounded(rectangle, Px(2)))
             {
-                rectangle.Width = (int)(rectangle.Width * Math.Max(0, Math.Min(100, Number(progress, "percent"))) / 100);
-                using (var fill = new SolidBrush(Accent)) { graphics.FillRectangle(fill, rectangle); }
-            }
-            else
-            {
-                // Unknown progress stays unknown, never an invented percentage or elapsed-time estimate.
-                using (var fill = new HatchBrush(HatchStyle.LightDownwardDiagonal, Muted, Color.Transparent))
+                using (var brush = new SolidBrush(Divider)) { graphics.FillPath(brush, track); }
+                if (progress != null && Value(progress, "percent") != null)
                 {
-                    graphics.FillRectangle(fill, rectangle);
+                    // Clip the exact observed width instead of rounding a tiny percentage up to a whole pill.
+                    float width = rectangle.Width * (float)Math.Max(0, Math.Min(100, Number(progress, "percent"))) / 100;
+                    GraphicsState saved = graphics.Save();
+                    graphics.SetClip(new RectangleF(rectangle.X, rectangle.Y, width, rectangle.Height));
+                    using (var brush = new SolidBrush(Accent)) { graphics.FillPath(brush, track); }
+                    graphics.Restore(saved);
+                }
+                else
+                {
+                    using (var brush = new HatchBrush(HatchStyle.Percent10, Muted, Divider)) { graphics.FillPath(brush, track); }
                 }
             }
+        }
+
+        private void Job(Graphics graphics, Dictionary<string, object> job, int y, int width)
+        {
+            bool anonymous = object.Equals(Value(job, "private"), true);
+            string resource = Word(job, "resource").ToUpperInvariant();
+            string name = anonymous ? "Анонимное задание" : Word(job, "name");
+            Color color = resource == "GPU" ? Accent : Color.FromArgb(155, 181, 240);
+            int nameX = 14;
+            if (resource.Length > 0)
+            {
+                using (GraphicsPath badge = Rounded(new RectangleF(Px(14), Px(y + 1), Px(31), Px(16)), Px(4)))
+                using (var brush = new SolidBrush(Color.FromArgb(36, 44, 54))) { graphics.FillPath(brush, badge); }
+                TextLine(graphics, resource, small, color, 18, y, 27, 18, false);
+                nameX = 53;
+            }
+            var progress = Value(job, "progress") as Dictionary<string, object>;
+            bool measured = Value(progress, "percent") != null;
+            TextLine(graphics, name, Font, ForeColor, nameX, y, width - nameX - 78, 18, false);
+            TextLine(graphics, measured ? Number(progress, "percent").ToString("0.#") + "%" : "—",
+                heading, measured ? Accent : Muted, width - 76, y, 62, 18, true);
+            TextLine(graphics, Detail(progress), small, Muted, 14, y + 20, width - 28, 18, false);
+            Bar(graphics, progress, y + 42);
         }
 
         protected override void OnPaint(PaintEventArgs e)
         {
             base.OnPaint(e);
             Graphics graphics = e.Graphics;
-            using (var border = new Pen(Color.FromArgb(66, 74, 88)))
+            graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            using (GraphicsPath border = Rounded(new RectangleF(0.5f, 0.5f, Width - 1, Height - 1), Px(11)))
+            using (var pen = new Pen(Color.FromArgb(62, 71, 85))) { graphics.DrawPath(pen, border); }
+            int width = (int)Math.Round(ClientSize.Width / scale);
+            string state = Word(snapshot, "state");
+            bool held = state == "paused" || state == "stopped";
+            using (var dot = new SolidBrush(held ? Color.FromArgb(236, 184, 95) : Accent))
             {
-                graphics.DrawRectangle(border, 0, 0, Width - 1, Height - 1);
+                graphics.FillEllipse(dot, Px(14), Px(18), Px(5), Px(5));
             }
-            Line(graphics, "Inference · Общая очередь", heading, ForeColor, 14, 24);
-            string summary = Word(snapshot, "label");
-            if (Value(snapshot, "queued") != null) { summary += " · В очереди: " + Number(snapshot, "queued"); }
-            Line(graphics, summary, small, Muted, 40, 22);
-            int y = 76;
+            TextLine(graphics, "Inference", heading, ForeColor, 26, 10, 70, 20, false);
+            string summary = (held ? (state == "stopped" ? "Стоп · " : "Пауза · ") : "")
+                + Number(snapshot, "running") + " в работе · "
+                + (Value(snapshot, "queued") == null ? "?" : Number(snapshot, "queued").ToString()) + " ждут";
+            TextLine(graphics, summary, small, held ? Color.FromArgb(236, 184, 95) : Muted, 100, 10, width - 114, 20, true);
+            int y = HeaderHeight;
             if (jobs.Count == 0)
             {
-                Line(graphics, "Выполняется заданий: " + Number(snapshot, "running"), Font, ForeColor, y, 22);
-                Line(graphics, "Ожидаем данные о прогрессе", small, Muted, y + 25, 22);
-                y += 76;
+                TextLine(graphics, "Выполняется заданий: " + Number(snapshot, "running"), Font, ForeColor, 14, y, width - 28, 18, false);
+                TextLine(graphics, "Ожидаем данные о прогрессе", small, Muted, 14, y + 20, width - 28, 18, false);
+                y += JobHeight;
             }
-            for (int i = 0; i < shownJobs; i++)
-            {
-                Dictionary<string, object> job = jobs[i];
-                bool anonymous = object.Equals(Value(job, "private"), true);
-                string resource = Word(job, "resource").ToUpperInvariant();
-                string name = anonymous ? "Анонимное задание" : Word(job, "name");
-                Line(graphics, (resource.Length > 0 ? resource + " · " : "") + name, Font, ForeColor, y, 22);
-                var progress = Value(job, "progress") as Dictionary<string, object>;
-                Line(graphics, ProgressWords(progress), small, Muted, y + 25, 22);
-                Bar(graphics, progress, y + 53);
-                y += 76;
-            }
+            for (int i = 0; i < shownJobs; i++) { Job(graphics, jobs[i], y, width); y += JobHeight; }
             if (jobs.Count > shownJobs)
             {
-                Line(graphics, "Ещё заданий: " + (jobs.Count - shownJobs) + " · Подробности в пульте", small, Muted, y, 22);
-                y += 22;
+                TextLine(graphics, "Ещё " + (jobs.Count - shownJobs) + " · подробнее в пульте", small, Muted, 14, y, width - 28, 18, false);
+                y += 18;
+            }
+            if (FooterHeight() > 0)
+            {
+                using (var pen = new Pen(Divider)) { graphics.DrawLine(pen, Px(14), Px(y), ClientSize.Width - Px(14), Px(y)); }
+                y += 6;
             }
             var gpu = Value(snapshot, "gpu") as Dictionary<string, object>;
             if (gpu != null)
             {
-                Line(graphics, "GPU " + Number(gpu, "utilization").ToString("0") + "% · "
-                    + Number(gpu, "temperature").ToString("0") + " °C · Видеопамять "
-                    + (Number(gpu, "usedMb") / 1024).ToString("0.0") + " / "
-                    + (Number(gpu, "totalMb") / 1024).ToString("0.0") + " ГБ", small, Muted, y, 22);
-                y += 40;
+                TextLine(graphics, "GPU  " + Number(gpu, "utilization").ToString("0") + "% · "
+                    + Number(gpu, "temperature").ToString("0") + "°", small, Muted, 14, y, 140, 20, false);
+                TextLine(graphics, "VRAM  " + (Number(gpu, "usedMb") / 1024).ToString("0.#") + " / "
+                    + (Number(gpu, "totalMb") / 1024).ToString("0.#") + " ГБ", small, Muted, 154, y, width - 168, 20, true);
+                y += 20;
             }
             var host = Value(snapshot, "host") as Dictionary<string, object>;
             if (host != null)
             {
-                Line(graphics, "CPU " + Number(host, "cpu").ToString("0") + "% · Память: свободно "
-                    + (Number(host, "availableMb") / 1024).ToString("0.0") + " / "
-                    + (Number(host, "totalMb") / 1024).ToString("0.0") + " ГБ", small, Muted, y, 22);
+                TextLine(graphics, "CPU  " + Number(host, "cpu").ToString("0") + "%", small, Muted, 14, y, 140, 20, false);
+                TextLine(graphics, "RAM  " + ((Number(host, "totalMb") - Number(host, "availableMb")) / 1024).ToString("0.#") + " / "
+                    + (Number(host, "totalMb") / 1024).ToString("0.#") + " ГБ", small, Muted, 154, y, width - 168, 20, true);
             }
         }
 
@@ -627,6 +689,7 @@ namespace Devhub
             base.Dispose(disposing);
         }
     }
+
 
     /// <summary>The hub's server: where it lives, whether it answers, starting and stopping it.</summary>
     internal sealed class Hub
