@@ -24,6 +24,8 @@ $icon = Join-Path $bin 'pult.ico'
 
 $source = Join-Path $root 'tray\Tray.cs'
 
+$windowSource = Join-Path $root 'tray\ControlWindow.cs'
+
 $name = 'Пульт'
 
 # Development wrappers outside F:\code find this hub through the per-user registration.
@@ -67,7 +69,7 @@ function Build([string[]]$More) {
 
         '/r:System.Core.dll', '/r:Microsoft.CSharp.dll'
 
-    ) + $More + @($source)
+    ) + $More + @($source, $windowSource)
 
     & $csc @arguments
 
@@ -117,8 +119,8 @@ Write-Output "Ярлык «$name» на рабочем столе; запуск 
 
 if (-not $NoStart) {
 
-    Start-Process -FilePath $exe -ArgumentList '--background'
+    Start-Process -FilePath $exe -ArgumentList '--background' -WindowStyle Hidden
 
-    Write-Output 'Значок пульта в трее: щелчок по нему открывает пульт.'
+    Write-Output 'Значок пульта в трее: щелчок открывает окно управления DevHub и Inference.'
 
 }

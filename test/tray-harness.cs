@@ -25,9 +25,10 @@ namespace Devhub
                     case "heartbeat": Heartbeat(args[1]); break;
                     case "parser": Parser(); break;
                     case "lifecycle": Lifecycle(args[1], args[2]); break;
-                    case "popup": Popup(args.Length > 2 ? args[2] : null); break;
+                    case "queue-view": View(args.Length > 2 ? args[2] : null); break;
                     case "full-queue": FullQueue(args.Length > 2 ? args[2] : null); break;
-                    case "placement": Placement(); break;
+                    case "window": Window(args.Length > 2 ? args[2] : null); break;
+                    case "actions": Actions(); break;
                     default: throw new InvalidOperationException("Unknown harness mode");
                 }
                 return 0;
@@ -100,29 +101,23 @@ namespace Devhub
                 "An invalid progress snapshot must be ignored");
         }
 
-        private static void Popup(string output)
+        private static void View(string output)
         {
-            using (var popup = new QueuePopup())
+            using (var view = new QueueView())
             {
-                var parameters = (CreateParams)typeof(QueuePopup)
-                    .GetProperty("CreateParams", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(popup, null);
-                Require((parameters.ExStyle & 0x08000000) != 0 && (parameters.ExStyle & 0x00000080) != 0,
-                    "The popup must remain a non-activating tool window");
-                Require(popup.TopMost && !popup.ShowInTaskbar,
-                    "The popup must stay above shell windows without adding a taskbar entry");
                 Dictionary<string, object> status = Status();
-                popup.UpdateStatus(status);
-                Require(popup.Busy, "Active inference must be visible on hover");
+                view.UpdateStatus(status);
+                Require(view.Busy, "Active inference must be visible in the window");
                 var jobs = (IList)status["jobs"];
                 var progress = (Dictionary<string, object>)((Dictionary<string, object>)jobs[0])["progress"];
-                string words = QueuePopup.ProgressWords(progress);
+                string words = QueueView.ProgressWords(progress);
                 Require(words.Contains((37.5).ToString("0.#") + "% операции") && words.Contains("шаг 3 из 8"),
-                    "The hover popup must show the measured percentage, its scope and its steps");
-                Require(QueuePopup.ProgressWords(null) == "Ожидаем данные о прогрессе",
+                    "The queue view must show the measured percentage, its scope and its steps");
+                Require(QueueView.ProgressWords(null) == "Ожидаем данные о прогрессе",
                     "Unknown progress must remain unknown");
-                using (var bitmap = new Bitmap(popup.Width, popup.Height))
+                using (var bitmap = new Bitmap(view.Width, view.Height))
                 {
-                    popup.DrawToBitmap(bitmap, new Rectangle(Point.Empty, bitmap.Size));
+                    view.DrawToBitmap(bitmap, new Rectangle(Point.Empty, bitmap.Size));
                     bool filled = false;
                     for (int y = 0; y < bitmap.Height && !filled; y++)
                     {
@@ -131,29 +126,38 @@ namespace Devhub
                             filled = bitmap.GetPixel(x, y).ToArgb() == Color.FromArgb(89, 202, 170).ToArgb();
                         }
                     }
-                    Require(filled, "The native popup did not paint the measured progress bar");
+                    Require(filled, "The native queue view did not paint the measured progress bar");
                     if (output != null)
                     {
                         bitmap.Save(output, System.Drawing.Imaging.ImageFormat.Png);
                         Console.WriteLine(output);
                     }
                 }
-                popup.UpdateStatus(new Dictionary<string, object>
+                view.UpdateStatus(new Dictionary<string, object>
                 {
                     { "running", 0 },
                     { "jobs", new object[0] },
                     { "queued", 0 },
                 });
-                Require(!popup.Busy, "An idle queue must dismiss its progress popup");
-                popup.UpdateStatus(null);
-                Require(!popup.Busy, "A missing observation must not leave stale work visible");
+                Require(!view.Busy && view.Visible, "An idle queue must keep its embedded view available");
+                using (Bitmap idle = Paint(view))
+                {
+                    view.UpdateStatus(null);
+                    Require(!view.Busy && view.Visible, "An offline queue must keep its embedded view available");
+                    using (Bitmap offline = Paint(view))
+                    {
+                        Require(Different(idle, offline), "An offline queue must not look like a confirmed empty queue");
+                    }
+                }
+                view.UpdateStatus(null);
+                Require(!view.Busy, "A missing observation must not leave stale work visible");
             }
         }
 
-        private static Bitmap Paint(QueuePopup popup)
+        private static Bitmap Paint(QueueView view)
         {
-            var bitmap = new Bitmap(popup.Width, popup.Height);
-            popup.DrawToBitmap(bitmap, new Rectangle(Point.Empty, bitmap.Size));
+            var bitmap = new Bitmap(view.Width, view.Height);
+            view.DrawToBitmap(bitmap, new Rectangle(Point.Empty, bitmap.Size));
             return bitmap;
         }
 
@@ -172,7 +176,7 @@ namespace Devhub
 
         private static void RequirePinned(Bitmap first, Bitmap second, Rectangle viewport)
         {
-            Require(first.Size == second.Size, "Scrolling must retain the popup's size");
+            Require(first.Size == second.Size, "Scrolling must retain the queue view's size");
             for (int y = 0; y < first.Height; y++)
             {
                 if (y >= viewport.Top && y < viewport.Bottom) { continue; }
@@ -186,48 +190,48 @@ namespace Devhub
 
         private static void FullQueue(string output)
         {
-            using (var popup = new QueuePopup())
+            using (var view = new QueueView())
             {
                 var status = Status();
-                popup.UpdateStatus(status);
-                Require(popup.ListedJobs == 4 && popup.WaitingJobs == 2,
-                    "The hover popup must list both running and waiting jobs");
-                Require(!popup.QueueIncomplete, "A complete waiting list must not be called incomplete");
+                view.UpdateStatus(status);
+                Require(view.ListedJobs == 4 && view.WaitingJobs == 2,
+                    "The queue view must list both running and waiting jobs");
+                Require(!view.QueueIncomplete, "A complete waiting list must not be called incomplete");
                 if (output != null)
                 {
-                    using (Bitmap bitmap = Paint(popup))
+                    using (Bitmap bitmap = Paint(view))
                     {
                         bitmap.Save(output, System.Drawing.Imaging.ImageFormat.Png);
                         Console.WriteLine(output);
                     }
                 }
 
-                // A held queue can have waiting work without a running job. It must still open on hover.
+                // A held queue can have waiting work without a running job. It must remain visible in the window.
                 status["running"] = 0;
                 status["jobs"] = new object[0];
                 status["state"] = "paused";
-                popup.UpdateStatus(status);
-                Require(popup.Busy && popup.ListedJobs == 2 && popup.WaitingJobs == 2,
-                    "Waiting work must remain available on hover while no job is running");
+                view.UpdateStatus(status);
+                Require(view.Busy && view.ListedJobs == 2 && view.WaitingJobs == 2,
+                    "Waiting work must remain available in the window while no job is running");
 
                 // Missing or partial observations must not turn waiting work into an empty queue.
                 status["queued"] = null;
                 status["queuedJobs"] = null;
-                popup.UpdateStatus(status);
-                Require(popup.QueueIncomplete, "An unavailable waiting observation must remain unknown");
+                view.UpdateStatus(status);
+                Require(view.QueueIncomplete, "An unavailable waiting observation must remain unknown");
                 status["queued"] = 2;
                 status["queuedJobs"] = new object[]
                 {
                     new Dictionary<string, object> { { "id", "known-waiter" }, { "name", "Известное задание" } },
                 };
-                popup.UpdateStatus(status);
-                Require(popup.Busy && popup.WaitingJobs == 1 && popup.QueueIncomplete,
+                view.UpdateStatus(status);
+                Require(view.Busy && view.WaitingJobs == 1 && view.QueueIncomplete,
                     "A partial waiting list must retain its known job and its incomplete state");
 
                 status["queued"] = null;
-                popup.UpdateStatus(status);
-                Require(popup.Busy && popup.WaitingJobs == 1,
-                    "Known waiting jobs must open the popup even when queue totals are unavailable");
+                view.UpdateStatus(status);
+                Require(view.Busy && view.WaitingJobs == 1,
+                    "Known waiting jobs must open the queue view even when queue totals are unavailable");
 
                 var active = new List<object>();
                 var waiting = new List<object>();
@@ -252,34 +256,34 @@ namespace Devhub
                 status["queued"] = waiting.Count;
                 status["queuedJobs"] = waiting.ToArray();
                 status["state"] = "working";
-                popup.UpdateStatus(status);
-                Require(popup.ListedJobs == 37 && popup.WaitingJobs == 32,
-                    "The popup must retain every job beyond the former three-job limit");
-                Require(popup.MaximumScroll > 0 && popup.ScrollOffset == 0,
+                view.UpdateStatus(status);
+                Require(view.ListedJobs == 37 && view.WaitingJobs == 32,
+                    "The queue view must retain every job beyond the former three-job limit");
+                Require(view.MaximumScroll > 0 && view.ScrollOffset == 0,
                     "A long queue must have a bounded, initially unscrolled viewport");
-                Require(new Rectangle(Point.Empty, popup.ClientSize).Contains(popup.ListBounds),
-                    "The scrolling list must stay within the popup");
-                using (Bitmap first = Paint(popup))
+                Require(new Rectangle(Point.Empty, view.ClientSize).Contains(view.ListBounds),
+                    "The scrolling list must stay within the queue view");
+                using (Bitmap first = Paint(view))
                 {
-                    popup.ScrollBy(20);
-                    using (Bitmap partial = Paint(popup))
+                    view.ScrollBy(20);
+                    using (Bitmap partial = Paint(view))
                     {
                         Require(Different(first, partial), "A partial row scroll must update the visible list");
-                        RequirePinned(first, partial, popup.ListBounds);
+                        RequirePinned(first, partial, view.ListBounds);
                     }
-                    popup.ScrollBy(-100000);
-                    MethodInfo wheel = typeof(QueuePopup).GetMethod("OnMouseWheel", BindingFlags.Instance | BindingFlags.NonPublic);
-                    Require(wheel != null, "The popup must accept mouse-wheel scrolling");
-                    for (int i = 0; i < 100 && popup.ScrollOffset < popup.MaximumScroll; i++)
+                    view.ScrollBy(-100000);
+                    MethodInfo wheel = typeof(QueueView).GetMethod("OnMouseWheel", BindingFlags.Instance | BindingFlags.NonPublic);
+                    Require(wheel != null, "The queue view must accept mouse-wheel scrolling");
+                    for (int i = 0; i < 100 && view.ScrollOffset < view.MaximumScroll; i++)
                     {
-                        wheel.Invoke(popup, new object[] { new MouseEventArgs(MouseButtons.None, 0, 20, popup.ListBounds.Top + 10, -120) });
+                        wheel.Invoke(view, new object[] { new MouseEventArgs(MouseButtons.None, 0, 20, view.ListBounds.Top + 10, -120) });
                     }
-                    Require(popup.ScrollOffset == popup.MaximumScroll,
+                    Require(view.ScrollOffset == view.MaximumScroll,
                         "The mouse wheel must reach the last waiting job");
-                    using (Bitmap last = Paint(popup))
+                    using (Bitmap last = Paint(view))
                     {
                         Require(Different(first, last), "Scrolling must paint a different part of the queue");
-                        RequirePinned(first, last, popup.ListBounds);
+                        RequirePinned(first, last, view.ListBounds);
                         if (output != null)
                         {
                             string end = Path.Combine(Path.GetDirectoryName(output), Path.GetFileNameWithoutExtension(output) + "-end.png");
@@ -288,49 +292,232 @@ namespace Devhub
                         }
                     }
                 }
-                popup.ScrollBy(-100000);
-                Require(popup.ScrollOffset == 0, "Scrolling above the first row must clamp to the start");
-                popup.ScrollBy(100000);
-                Require(popup.ScrollOffset == popup.MaximumScroll, "Scrolling past the last row must clamp to the end");
+                view.ScrollBy(-100000);
+                Require(view.ScrollOffset == 0, "Scrolling above the first row must clamp to the start");
+                view.ScrollBy(100000);
+                Require(view.ScrollOffset == view.MaximumScroll, "Scrolling past the last row must clamp to the end");
 
                 // Live updates may make the queue shorter while the user is looking at its final rows.
                 status["running"] = 0;
                 status["jobs"] = new object[0];
                 status["queued"] = 1;
                 status["queuedJobs"] = new object[] { waiting[0] };
-                popup.UpdateStatus(status);
-                Require(popup.Busy && popup.ListedJobs == 1 && popup.ScrollOffset == 0 && popup.MaximumScroll == 0,
+                view.UpdateStatus(status);
+                Require(view.Busy && view.ListedJobs == 1 && view.ScrollOffset == 0 && view.MaximumScroll == 0,
                     "A shrinking queue must clamp its old scroll position and keep the remaining job visible");
             }
         }
 
-        private static void CheckPlacement(Rectangle work, Rectangle tray, Point anchor, Size size, bool fullSize)
+        private static QueueMenu Menu(Dictionary<string, object> status, bool held)
         {
-            Rectangle placed = TrayWindows.Position(work, tray, anchor, size, 8);
-            Require(placed.Width > 0 && placed.Height > 0 && work.Contains(placed),
-                "The hover card must remain inside its monitor's working area");
-            Require(!placed.IntersectsWith(tray), "The hover card must not hide behind the notification flyout");
-            if (fullSize) { Require(placed.Size == size, "The card should retain its size when there is room beside the tray"); }
+            var menu = new QueueMenu { Status = status };
+            menu.Items.Add(new QueueItem { Text = "Пауза", Post = "/api/queue/pause", Enabled = !held });
+            menu.Items.Add(new QueueItem { Text = "Стоп", Post = "/api/queue/stop", Enabled = !held });
+            menu.Items.Add(new QueueItem { Text = "Продолжить", Post = "/api/queue/continue", Enabled = held });
+            return menu;
         }
 
-        private static void Placement()
+        private static Dictionary<string, object> Idle()
         {
-            var work = new Rectangle(0, 0, 1920, 1040);
-            var card = new Size(360, 400);
-            CheckPlacement(work, new Rectangle(1620, 710, 300, 320), new Point(1770, 1000), card, true);
-            CheckPlacement(work, new Rectangle(1620, 0, 300, 320), new Point(1770, 20), card, true);
-            CheckPlacement(work, new Rectangle(0, 340, 300, 500), new Point(20, 700), card, true);
-            CheckPlacement(work, new Rectangle(1620, 340, 300, 500), new Point(1900, 700), card, true);
-            CheckPlacement(work, new Rectangle(1620, 200, 300, 840), new Point(1770, 1000), new Size(360, 900), true);
-            CheckPlacement(new Rectangle(-1920, -200, 1920, 1040), new Rectangle(-300, 510, 300, 320),
-                new Point(-150, 800), card, true);
-            CheckPlacement(new Rectangle(1920, 200, 1280, 900), new Rectangle(2900, 780, 300, 320),
-                new Point(3100, 1060), card, true);
-            CheckPlacement(new Rectangle(0, 0, 600, 500), new Rectangle(200, 120, 400, 380),
-                new Point(560, 460), card, false);
-            CheckPlacement(new Rectangle(0, 0, 120, 90), new Rectangle(20, 60, 100, 30),
-                new Point(100, 75), card, false);
-            CheckPlacement(work, Rectangle.Empty, new Point(1900, 1030), card, true);
+            return new Dictionary<string, object>
+            {
+                { "running", 0 }, { "jobs", new object[0] },
+                { "queued", 0 }, { "queuedJobs", new object[0] },
+                { "state", "ready" }, { "label", "Очередь пуста" },
+            };
+        }
+
+        private static Button Button(ControlWindow window, string name)
+        {
+            Control[] controls = window.Controls.Find(name, true);
+            Require(controls.Length == 1 && controls[0] is Button,
+                "The control window is missing its " + name + " button");
+            return (Button)controls[0];
+        }
+
+        private static QueueView Queue(Control parent)
+        {
+            foreach (Control child in parent.Controls)
+            {
+                QueueView view = child as QueueView;
+                if (view != null) { return view; }
+                view = Queue(child);
+                if (view != null) { return view; }
+            }
+            return null;
+        }
+
+        private static bool HasText(Control parent, string text)
+        {
+            if (parent.Visible && parent.Text.Contains(text)) { return true; }
+            foreach (Control child in parent.Controls)
+            {
+                if (HasText(child, text)) { return true; }
+            }
+            return false;
+        }
+
+        private static void PrepareWindow(ControlWindow window)
+        {
+            // Exercise the real form without presenting the fixture on the user's desktop.
+            window.StartPosition = FormStartPosition.Manual;
+            window.Location = new Point(-32000, -32000);
+            window.ShowInTaskbar = false;
+        }
+
+        private static void RequireButtonsFit(ControlWindow window)
+        {
+            foreach (string name in new[] { "start", "restart", "stop", "web", "logs", "refresh", "queue-pause", "queue-stop", "queue-continue" })
+            {
+                Button button = Button(window, name);
+                if (!button.Visible) { continue; }
+                Rectangle bounds = button.RectangleToScreen(button.ClientRectangle);
+                for (Control parent = button.Parent; parent != null; parent = parent.Parent)
+                {
+                    Require(parent.RectangleToScreen(parent.ClientRectangle).Contains(bounds),
+                        "The " + name + " button must fit its row so its label and hit target are not clipped");
+                }
+            }
+        }
+
+        private static void Window(string output)
+        {
+            using (var window = new ControlWindow())
+            {
+                PrepareWindow(window);
+                var parameters = (CreateParams)typeof(ControlWindow)
+                    .GetProperty("CreateParams", BindingFlags.Instance | BindingFlags.NonPublic).GetValue(window, null);
+                Require((parameters.ExStyle & 0x08000000) == 0 && !window.TopMost,
+                    "The control window must be a normal activating window");
+                Require(window.FormBorderStyle != FormBorderStyle.None,
+                    "The control window needs a normal title bar and close button");
+                int web = 0;
+                window.OpenWebRequested += delegate { web++; };
+                window.ApplyState(new Health(), new QueueMenu(), "Пульт недоступен", false, "");
+                window.Open();
+                Application.DoEvents();
+                Require(window.Visible && !window.IsDisposed,
+                    "The window must open even while the hub and inference are offline");
+                QueueView queue = Queue(window);
+                Require(queue != null && queue.Visible && !queue.Busy,
+                    "An offline control window must include its available queue view");
+                Require(Button(window, "start").Enabled && !Button(window, "restart").Enabled && !Button(window, "stop").Enabled,
+                    "An offline hub should offer start without restart or stop");
+                RequireButtonsFit(window);
+                window.Close();
+                Require(!window.Visible && !window.IsDisposed,
+                    "Closing the control window must hide it without disposing the tray's view");
+
+                window.ApplyState(new Health { Up = true }, Menu(Idle(), false), "Работает", false, "");
+                window.Open();
+                Application.DoEvents();
+                Require(window.Visible && queue.Visible && !queue.Busy,
+                    "The same window must reopen with an idle queue");
+                window.ApplyState(new Health { Up = true }, Menu(Status(), false), "Работает", false, "");
+                Require(window.Visible && queue.Busy && queue.ListedJobs == 4,
+                    "The existing window must receive the full running and waiting queue");
+                RequireButtonsFit(window);
+                Size normal = window.Size;
+                window.Size = window.MinimumSize;
+                Application.DoEvents();
+                RequireButtonsFit(window);
+                Require(queue.ClientRectangle.Contains(queue.ListBounds),
+                    "Resizing to the compact minimum must retain the queue inside its viewport");
+                window.Size = normal;
+                Application.DoEvents();
+                if (output != null)
+                {
+                    using (var bitmap = new Bitmap(window.Width, window.Height))
+                    {
+                        window.DrawToBitmap(bitmap, new Rectangle(Point.Empty, bitmap.Size));
+                        bitmap.Save(output, System.Drawing.Imaging.ImageFormat.Png);
+                        Console.WriteLine(output);
+                    }
+                }
+                Require(web == 0, "Opening or refreshing the control window must never open a browser");
+                window.Close();
+                window.Open();
+                Require(window.Visible && ReferenceEquals(queue, Queue(window)),
+                    "Reopening must retain the same embedded queue control");
+                window.Close();
+            }
+        }
+
+        private static void Actions()
+        {
+            using (var window = new ControlWindow())
+            {
+                PrepareWindow(window);
+                int start = 0, restart = 0, stop = 0, web = 0, logs = 0, refresh = 0;
+                var commands = new List<string>();
+                window.StartRequested += delegate { start++; };
+                window.RestartRequested += delegate { restart++; };
+                window.StopRequested += delegate { stop++; };
+                window.OpenWebRequested += delegate { web++; };
+                window.LogsRequested += delegate { logs++; };
+                window.RefreshRequested += delegate { refresh++; };
+                // These callbacks record intent only: tests never alter the owner's real queue or services.
+                window.QueueCommandRequested += delegate(string command) { commands.Add(command); };
+                window.ApplyState(null, new QueueMenu(), "Проверяем", false, "");
+                window.Open();
+                Application.DoEvents();
+                Require(!Button(window, "start").Enabled,
+                    "An unobserved hub must not offer an unverified start action");
+                window.ApplyState(new Health(), new QueueMenu(), "Недоступен", false, "");
+                Button(window, "start").PerformClick();
+                Button(window, "restart").PerformClick();
+                Require(start == 1 && restart == 0,
+                    "The offline start button must route only its own enabled action");
+
+                QueueMenu menu = Menu(Status(), false);
+                window.ApplyState(new Health { Up = true }, menu, "Работает", false, "");
+                Button(window, "restart").PerformClick();
+                Button(window, "stop").PerformClick();
+                Button(window, "logs").PerformClick();
+                Button(window, "refresh").PerformClick();
+                Require(restart == 1 && stop == 1 && logs == 1 && refresh == 1 && web == 0,
+                    "Local control actions must route independently without opening the web panel");
+                Button(window, "web").PerformClick();
+                Require(web == 1, "The explicit web button must route its browser action once");
+                Button(window, "queue-pause").PerformClick();
+                Button(window, "queue-continue").PerformClick();
+                Require(commands.Count == 1 && commands[0] == "/api/queue/pause",
+                    "Only an enabled explicit queue action may be forwarded");
+
+                window.StopConfirmation = delegate { return false; };
+                Button(window, "queue-stop").PerformClick();
+                Require(commands.Count == 1, "Declining the owner's stop must not forward a command");
+                window.StopConfirmation = delegate { return true; };
+                Button(window, "queue-stop").PerformClick();
+                Require(commands.Count == 2 && commands[1] == "/api/queue/stop",
+                    "Confirmed explicit stop should reach the fake callback exactly once");
+
+                window.ApplyState(new Health { Up = true }, menu, "Перезапускаем", true, "");
+                foreach (string name in new[] { "start", "restart", "stop", "logs", "refresh", "queue-pause", "queue-stop", "queue-continue" })
+                {
+                    Require(!Button(window, name).Enabled, "A pending command must disable " + name);
+                    Button(window, name).PerformClick();
+                }
+                Require(start == 1 && restart == 1 && stop == 1 && logs == 1 && refresh == 1 && commands.Count == 2,
+                    "Repeated clicks while pending must not submit duplicate actions");
+
+                window.ApplyState(new Health { Up = true }, Menu(Status(), true), "Работает", false, "Fixture operation failed");
+                Require(HasText(window, "Fixture operation failed") && Button(window, "restart").Enabled,
+                    "A failed operation must be shown and allow the user to try again");
+                Require(!Button(window, "queue-pause").Enabled && Button(window, "queue-continue").Enabled,
+                    "A held queue must retain the observed menu's allowed controls");
+                Button(window, "queue-pause").PerformClick();
+                Button(window, "queue-continue").PerformClick();
+                Require(commands.Count == 3 && commands[2] == "/api/queue/continue",
+                    "Only the explicit enabled continue button may forward the owner's continuation");
+
+                window.ApplyState(new Health(), menu, "Недоступен", false, "");
+                Require(!Button(window, "queue-pause").Enabled && !Button(window, "queue-stop").Enabled && !Button(window, "queue-continue").Enabled,
+                    "A lost hub connection must not leave stale queue controls enabled");
+                Require(!HasText(window, "Fixture operation failed"),
+                    "A fresh error-free observation must clear the operation error");
+                window.Close();
+            }
         }
 
         private static void Heartbeat(string prefix)

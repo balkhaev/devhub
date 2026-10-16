@@ -42,6 +42,7 @@ beforeAll(async () => {
 			"/r:System.Core.dll",
 			"/r:Microsoft.CSharp.dll",
 			join(import.meta.dir, "..", "tray", "Tray.cs"),
+			join(import.meta.dir, "..", "tray", "ControlWindow.cs"),
 			join(import.meta.dir, "tray-harness.cs"),
 		],
 		{ timeout: 20_000, windowsHide: true }
@@ -83,9 +84,9 @@ windowsTest(
 );
 
 windowsTest(
-	"the hover popup follows live queue activity and paints its progress",
+	"the queue view paints live progress and remains visible while idle or offline",
 	async () => {
-		await run(executable, ["popup", root], {
+		await run(executable, ["queue-view", root], {
 			timeout: 10_000,
 			windowsHide: true,
 		});
@@ -93,7 +94,7 @@ windowsTest(
 );
 
 windowsTest(
-	"the hover popup shows the full waiting queue and scrolls to its final job",
+	"the queue view shows the full waiting queue and scrolls to its final job",
 	async () => {
 		await run(executable, ["full-queue", root], {
 			timeout: 10_000,
@@ -103,9 +104,19 @@ windowsTest(
 );
 
 windowsTest(
-	"the hover popup avoids notification flyouts on every monitor edge",
+	"the control window opens when idle or offline and hides without being disposed",
 	async () => {
-		await run(executable, ["placement", root], {
+		await run(executable, ["window", root], {
+			timeout: 10_000,
+			windowsHide: true,
+		});
+	}
+);
+
+windowsTest(
+	"control buttons route explicit actions and honor pending, errors and queue holds",
+	async () => {
+		await run(executable, ["actions", root], {
 			timeout: 10_000,
 			windowsHide: true,
 		});
