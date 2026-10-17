@@ -309,11 +309,13 @@ export class Processes {
 	private readonly root: string;
 	private readonly stateFile: string;
 	private readonly running = new Map<string, Managed>();
+	private readonly stopTree: typeof killTree;
 	private saving: Promise<void> = Promise.resolve();
 
-	constructor(root: string, frameOrigin = "") {
+	constructor(root: string, frameOrigin = "", stopTree = killTree) {
 		this.root = resolve(root);
 		this.stateFile = join(this.root, ".state", "processes.json");
+		this.stopTree = stopTree;
 		if (frameOrigin) {
 			this.setFrameOrigin(frameOrigin);
 		}
@@ -336,6 +338,14 @@ export class Processes {
 
 	private exitFileOf(key: string): string {
 		return join(this.root, ".state", "exit", `${key.replace("/", "-")}.txt`);
+	}
+
+	private exitCode(key: string): number | null {
+		const file = this.exitFileOf(key);
+		const written = existsSync(file)
+			? Number.parseInt(readFileSync(file, "utf8").trim(), 10)
+			: Number.NaN;
+		return Number.isNaN(written) ? null : written;
 	}
 
 	/**
@@ -361,7 +371,7 @@ export class Processes {
 		} catch {
 			// A damaged state file: the processes it named are found again by their ports.
 		}
-		const living = Object.entries(saved).filter(
+		const known = Object.entries(saved).filter(
 			([key, entry]) =>
 				SERVICE_KEY.test(key) &&
 				entry !== null &&
@@ -372,12 +382,17 @@ export class Processes {
 				typeof entry.cwd === "string" &&
 				typeof entry.log === "string" &&
 				Number.isFinite(entry.startedAt) &&
-				alive(entry.pid)
+				typeof entry.stopping === "boolean" &&
+				(entry.exit === null ||
+					(entry.exit &&
+						Number.isFinite(entry.exit.at) &&
+						(entry.exit.code === null || Number.isInteger(entry.exit.code))))
 		);
+		const living = known.filter(([, entry]) => alive(entry.pid));
 		const info = WINDOWS
 			? await processInfo(living.map(([, entry]) => entry.pid))
 			: null;
-		for (const [key, entry] of living) {
+		for (const [key, entry] of known) {
 			const command = info?.get(entry.pid)?.command ?? "";
 			const batch = join(
 				this.root,
@@ -385,10 +400,14 @@ export class Processes {
 				"run",
 				`${key.replace("/", "-")}.cmd`
 			);
-			const ours = !info || commandNamesBatch(command, batch);
-			if (ours) {
-				this.running.set(key, { ...entry, exit: null, stopping: false });
-			}
+			const ours =
+				alive(entry.pid) && (!info || commandNamesBatch(command, batch));
+			this.running.set(key, {
+				...entry,
+				exit: ours
+					? null
+					: (entry.exit ?? { at: Date.now(), code: this.exitCode(key) }),
+			});
 		}
 		await this.save();
 	}
@@ -411,11 +430,7 @@ export class Processes {
 			if (entry.exit || alive(entry.pid)) {
 				continue;
 			}
-			const exitFile = this.exitFileOf(key);
-			const written = existsSync(exitFile)
-				? Number.parseInt(readFileSync(exitFile, "utf8").trim(), 10)
-				: Number.NaN;
-			const code = Number.isNaN(written) ? null : written;
+			const code = this.exitCode(key);
 			entry.exit = { at: Date.now(), code };
 			let words = "процесс завершился";
 			if (entry.stopping) {
@@ -505,13 +520,22 @@ export class Processes {
 	/** Stops the process the hub started for a service. */
 	async stop(service: Service): Promise<boolean> {
 		const entry = this.get(service.key);
-		if (!entry || entry.exit || !alive(entry.pid)) {
+		if (!entry) {
 			return false;
 		}
 		entry.stopping = true;
-		await killTree(entry.pid);
-		this.sweep();
-		return true;
+		let stopped = false;
+		try {
+			await this.save();
+		} finally {
+			// A storage failure must not prevent an explicit stop of our live process.
+			if (!entry.exit && alive(entry.pid)) {
+				await this.stopTree(entry.pid);
+				stopped = true;
+			}
+			this.sweep();
+		}
+		return stopped;
 	}
 
 	/** A service's log from an offset on (its last part when there is none), and the offset to read on from. */
@@ -549,10 +573,8 @@ export class Processes {
 	}
 
 	private save(): Promise<void> {
-		const live = Object.fromEntries(
-			[...this.running.entries()].filter(([, entry]) => !entry.exit)
-		);
-		const snapshot = `${JSON.stringify(live, null, 2)}\n`;
+		// Keep exit and stop intent across hub restarts, including an unexpectedly dead launcher.
+		const snapshot = `${JSON.stringify(Object.fromEntries(this.running), null, 2)}\n`;
 		const saving = this.saving
 			.catch(() => undefined)
 			.then(async () => {

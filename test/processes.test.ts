@@ -1,5 +1,11 @@
 import { afterAll, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+	mkdirSync,
+	mkdtempSync,
+	readFileSync,
+	rmSync,
+	writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -9,6 +15,7 @@ import {
 	commandNamesBatch,
 	detachedCommand,
 	logFileOf,
+	type Managed,
 	Processes,
 	shellLaunchScript,
 } from "../src/processes";
@@ -168,6 +175,95 @@ test("damaged process state is discarded safely", async () => {
 	const processes = new Processes(isolated);
 	await processes.adopt();
 	expect(processes.liveCount()).toBe(0);
+});
+
+test("a launcher that died while the hub was away retains its exit and explicit stop intent across adoption", async () => {
+	const isolated = mkdtempSync(join(root, "dead-launcher-"));
+	const state = join(isolated, ".state", "processes.json");
+	mkdirSync(join(isolated, ".state"));
+	writeFileSync(
+		state,
+		JSON.stringify({
+			"altay/site": {
+				command: "neutral-fixture",
+				cwd: isolated,
+				exit: null,
+				log: join(isolated, "fixture.log"),
+				pid: 2_147_483_647,
+				startedAt: 1,
+				stopping: false,
+			},
+		})
+	);
+	const first = new Processes(isolated);
+	await first.adopt();
+	expect(first.get("altay/site")?.exit?.code).toBeNull();
+	expect(first.get("altay/site")?.stopping).toBe(false);
+	const saved = JSON.parse(readFileSync(state, "utf8"));
+	expect(saved["altay/site"].exit.at).toBeGreaterThan(1);
+	expect(await first.stop(serviceWith({ command: "neutral-fixture" }))).toBe(
+		false
+	);
+	const second = new Processes(isolated);
+	await second.adopt();
+	expect(second.get("altay/site")?.exit).toEqual(first.get("altay/site")?.exit);
+	expect(second.get("altay/site")?.stopping).toBe(true);
+	expect(second.liveCount()).toBe(0);
+});
+
+test("a normal launcher exit discovered during adoption retains its recorded zero exit code", async () => {
+	const isolated = mkdtempSync(join(root, "normal-launcher-"));
+	mkdirSync(join(isolated, ".state", "exit"), { recursive: true });
+	writeFileSync(join(isolated, ".state", "exit", "altay-site.txt"), "0\n");
+	writeFileSync(
+		join(isolated, ".state", "processes.json"),
+		JSON.stringify({
+			"altay/site": {
+				command: "neutral-fixture",
+				cwd: isolated,
+				exit: null,
+				log: join(isolated, "fixture.log"),
+				pid: 2_147_483_647,
+				startedAt: 1,
+				stopping: false,
+			},
+		})
+	);
+	const processes = new Processes(isolated);
+	await processes.adopt();
+	expect(processes.get("altay/site")?.exit?.code).toBe(0);
+});
+
+test("a failed state write still attempts the explicit stop and reports the persistence error", async () => {
+	const isolated = mkdtempSync(join(root, "failed-stop-state-"));
+	writeFileSync(
+		join(isolated, ".state"),
+		"a file prevents the state directory"
+	);
+	const stopped: number[] = [];
+	const entry: Managed = {
+		command: "neutral-fixture",
+		cwd: isolated,
+		exit: null,
+		log: join(isolated, "fixture.log"),
+		pid: process.pid,
+		startedAt: 1,
+		stopping: false,
+	};
+	class StopFixture extends Processes {
+		override get(): Managed {
+			return entry;
+		}
+	}
+	const processes = new StopFixture(isolated, "", async (pid) => {
+		stopped.push(pid);
+		await Promise.resolve();
+	});
+	await expect(
+		processes.stop(serviceWith({ command: "neutral-fixture" }))
+	).rejects.toThrow();
+	expect(entry.stopping).toBe(true);
+	expect(stopped).toEqual([process.pid]);
 });
 
 test("adoption requires the exact launcher path, including hub location", () => {
