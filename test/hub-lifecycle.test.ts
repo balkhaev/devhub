@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { afterEach, expect, test } from "bun:test";
 import { sleep } from "bun";
 
 import { catalogueSchema, type Service } from "../src/config";
@@ -45,11 +45,14 @@ class FakeProcesses extends Processes {
 
 	override async stop(service: Service): Promise<boolean> {
 		const entry = this.entries.get(service.key);
-		if (!entry || entry.exit) {
+		if (!entry) {
+			return false;
+		}
+		entry.stopping = true;
+		if (entry.exit) {
 			return false;
 		}
 		this.stops.push(service.key);
-		entry.stopping = true;
 		entry.exit = { at: Date.now(), code: 0 };
 		await Promise.resolve();
 		return true;
@@ -100,6 +103,295 @@ const configService = (id: string, extra: Record<string, unknown> = {}) => ({
 	id,
 	name: id,
 	...extra,
+});
+
+const recoveringHubs = new Set<Hub>();
+afterEach(() => {
+	for (const hub of recoveringHubs) {
+		hub.stop();
+	}
+	recoveringHubs.clear();
+});
+
+async function recoveryFixture(services: unknown[], runtime: HubRuntime = {}) {
+	let now = Date.now();
+	const result = await fixture(services, { ...runtime, now: () => now });
+	await result.hub.start();
+	recoveringHubs.add(result.hub);
+	result.processes.onStart = async (service) => {
+		if (service.port) {
+			result.ports.set(service.port, process.pid);
+		}
+		await Promise.resolve();
+	};
+	return {
+		...result,
+		advance: (milliseconds: number) => {
+			now += milliseconds;
+		},
+		crash: (key: string, code: number | null = null) => {
+			const entry = result.processes.get(key);
+			if (!entry) {
+				throw new Error(`No test launcher for ${key}`);
+			}
+			entry.exit = { at: now, code };
+			const port = result.hub.service(key)?.port;
+			if (port) {
+				result.ports.delete(port);
+			}
+		},
+	};
+}
+
+const recoveringService = (id: string, extra: Record<string, unknown> = {}) =>
+	configService(id, { restart: "on-failure", restartDelayMs: 100, ...extra });
+
+test("a dead launcher recovers after its delay and concurrent manual and automatic starts share one launch", async () => {
+	const { hub, processes, crash, advance } = await recoveryFixture([
+		recoveringService("queue", { port: 8765 }),
+	]);
+	await hub.startService("app/queue");
+	crash("app/queue");
+	advance(99);
+	await hub.recoverExited();
+	expect(processes.launches).toEqual(["app/queue"]);
+	advance(1);
+	const recovery = hub.recoverExited();
+	await Promise.all([
+		recovery,
+		hub.recoverExited(),
+		hub.startService("app/queue"),
+	]);
+	expect(processes.launches).toEqual(["app/queue", "app/queue"]);
+	expect(processes.stops).toEqual([]);
+});
+
+test("the background monitor recovers a failed launcher with no page subscribed", async () => {
+	const { hub, processes, crash, advance } = await recoveryFixture([
+		recoveringService("queue"),
+	]);
+	await hub.startService("app/queue");
+	crash("app/queue", 75);
+	advance(100);
+	const deadline = Date.now() + 3000;
+	while (processes.launches.length < 2 && Date.now() < deadline) {
+		// biome-ignore lint/performance/noAwaitInLoops: observe the real background tick without launching any process
+		await sleep(20);
+	}
+	expect(processes.launches).toEqual(["app/queue", "app/queue"]);
+});
+
+test("a stop during retry backoff, including a project stop, cancels recovery until an explicit start", async () => {
+	const { hub, processes, crash, advance } = await recoveryFixture([
+		recoveringService("queue"),
+	]);
+	await hub.startService("app/queue");
+	crash("app/queue");
+	const stopped = hub.stopService("app/queue");
+	advance(100);
+	await Promise.all([stopped, hub.recoverExited()]);
+	expect(processes.launches).toHaveLength(1);
+	expect(processes.get("app/queue")?.stopping).toBe(true);
+	await hub.startService("app/queue");
+	crash("app/queue");
+	await hub.refresh();
+	await hub.stopProject("app");
+	advance(100);
+	await hub.recoverExited();
+	expect(processes.launches).toHaveLength(2);
+});
+
+test("normal on-failure exits and never policies stay stopped; always still retries a normal exit", async () => {
+	const { hub, processes, crash, advance } = await recoveryFixture([
+		recoveringService("normal", { autostart: true }),
+		recoveringService("manual", { restart: "never" }),
+		recoveringService("always", { restart: "always" }),
+	]);
+	for (const key of ["app/normal", "app/manual", "app/always"]) {
+		// biome-ignore lint/performance/noAwaitInLoops: finish each neutral fixture launch before recording its exit
+		await hub.startService(key);
+		crash(key, key === "app/manual" ? 2 : 0);
+	}
+	advance(100);
+	await hub.recoverExited();
+	expect(processes.launches).toEqual([
+		"app/normal",
+		"app/manual",
+		"app/always",
+		"app/always",
+	]);
+});
+
+test("an occupied port is preserved and failed recovery waits another delay before retrying", async () => {
+	const { hub, processes, ports, crash, advance } = await recoveryFixture([
+		recoveringService("queue", { port: 8765 }),
+	]);
+	await hub.startService("app/queue");
+	crash("app/queue");
+	ports.set(8765, process.pid + 999_999);
+	advance(100);
+	await hub.recoverExited();
+	expect(processes.launches).toHaveLength(1);
+	expect(processes.stops).toEqual([]);
+	ports.delete(8765);
+	advance(99);
+	await hub.recoverExited();
+	expect(processes.launches).toHaveLength(1);
+	advance(1);
+	await hub.recoverExited();
+	expect(processes.launches).toHaveLength(2);
+});
+
+test("automatic dependent recovery respects an explicitly stopped dependency, while manual start can restore it", async () => {
+	const { hub, processes, crash, advance } = await recoveryFixture([
+		recoveringService("queue"),
+		recoveringService("executor", { needs: ["app/queue"] }),
+	]);
+	await hub.startService("app/executor");
+	crash("app/executor");
+	await hub.stopService("app/queue");
+	advance(100);
+	await hub.recoverExited();
+	expect(processes.launches).toEqual(["app/queue", "app/executor"]);
+	await hub.startService("app/executor");
+	expect(processes.launches).toEqual([
+		"app/queue",
+		"app/executor",
+		"app/queue",
+		"app/executor",
+	]);
+});
+
+test.each([
+	{ code: 0, restart: "on-failure" },
+	{ code: 2, restart: "never" },
+])(
+	"automatic dependencies preserve $restart after exit $code",
+	async ({ code, restart }) => {
+		const { hub, processes, crash, advance } = await recoveryFixture([
+			recoveringService("backend", { restart }),
+			recoveringService("worker", { needs: ["app/backend"] }),
+		]);
+		await hub.startService("app/worker");
+		crash("app/backend", code);
+		crash("app/worker", 2);
+		advance(100);
+		await hub.recoverExited();
+		expect(processes.launches).toEqual(["app/backend", "app/worker"]);
+		await hub.startService("app/worker");
+		expect(processes.launches).toEqual([
+			"app/backend",
+			"app/worker",
+			"app/backend",
+			"app/worker",
+		]);
+	}
+);
+
+test("automatic dependencies cannot bypass their exit delay or failed-attempt cooldown", async () => {
+	const { hub, processes, ports, crash, advance } = await recoveryFixture([
+		recoveringService("backend", { port: 3100, restartDelayMs: 500 }),
+		recoveringService("worker", { needs: ["app/backend"] }),
+	]);
+	await hub.startService("app/worker");
+	crash("app/backend", 2);
+	crash("app/worker", 2);
+	advance(100);
+	await hub.recoverExited();
+	expect(processes.launches).toHaveLength(2);
+	ports.set(3100, process.pid + 999_999);
+	advance(400);
+	await hub.recoverExited();
+	expect(processes.launches).toHaveLength(2);
+	ports.delete(3100);
+	advance(100);
+	await hub.recoverExited();
+	expect(processes.launches).toHaveLength(2);
+	advance(400);
+	await hub.recoverExited();
+	expect(processes.launches).toEqual([
+		"app/backend",
+		"app/worker",
+		"app/backend",
+		"app/worker",
+	]);
+	expect(processes.stops).toEqual([]);
+});
+
+test("one recovery waiting for readiness does not block a later unrelated recovery", async () => {
+	let firstReady = true;
+	const { hub, processes, crash, advance } = await recoveryFixture(
+		[
+			recoveringService("first", { health: "/health", port: 3100 }),
+			recoveringService("second", { port: 3101 }),
+		],
+		{
+			healthy: async (url) => !url.includes(":3100/") || firstReady,
+			startupTimeoutMs: 1000,
+		}
+	);
+	await hub.startService("app/first");
+	await hub.startService("app/second");
+	firstReady = false;
+	crash("app/first", 2);
+	advance(100);
+	let firstFinished = false;
+	const firstRecovery = hub.recoverExited().then(() => {
+		firstFinished = true;
+	});
+	await sleep(5);
+	expect(processes.launches).toEqual(["app/first", "app/second", "app/first"]);
+	crash("app/second", 2);
+	advance(100);
+	await hub.recoverExited();
+	expect(firstFinished).toBe(false);
+	expect(processes.launches).toEqual([
+		"app/first",
+		"app/second",
+		"app/first",
+		"app/second",
+	]);
+	firstReady = true;
+	await firstRecovery;
+});
+
+test("a stop while automatic recovery waits on dependency readiness prevents the pending dependent launch", async () => {
+	let ready = true;
+	const { hub, processes, crash, advance } = await recoveryFixture(
+		[
+			recoveringService("queue", { health: "/health", port: 8765 }),
+			recoveringService("executor", { needs: ["app/queue"] }),
+		],
+		{ healthy: async () => ready }
+	);
+	await hub.startService("app/executor");
+	crash("app/executor");
+	ready = false;
+	advance(100);
+	const recovery = hub.recoverExited();
+	await sleep(5);
+	const stop = hub.stopService("app/executor");
+	ready = true;
+	await Promise.all([recovery, stop]);
+	advance(100);
+	await hub.recoverExited();
+	expect(processes.launches).toEqual(["app/queue", "app/executor"]);
+});
+
+test("stopping the hub or removing the service prevents pending recovery", async () => {
+	const { hub, processes, crash, advance } = await recoveryFixture([
+		recoveringService("queue"),
+	]);
+	await hub.startService("app/queue");
+	crash("app/queue");
+	advance(100);
+	hub.stop();
+	await hub.recoverExited();
+	expect(processes.launches).toHaveLength(1);
+	await hub.start();
+	await hub.replaceCatalogue(catalogueSchema.parse({ projects: [] }));
+	await hub.recoverExited();
+	expect(processes.launches).toHaveLength(1);
 });
 
 test("concurrent requests share a launch and resolve after health becomes ready", async () => {

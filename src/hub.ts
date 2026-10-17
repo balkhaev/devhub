@@ -313,6 +313,7 @@ export interface HubRuntime {
 	listeningPorts?: typeof listeningPorts;
 	listeningPortsV6?: typeof listeningPortsV6;
 	noPortWarmupMs?: number;
+	now?: () => number;
 	processes?: Processes;
 	processInfo?: typeof processInfo;
 	startPollMs?: number;
@@ -329,6 +330,10 @@ export class Hub {
 	private readonly runtime: Required<HubRuntime>;
 	private readonly starting = new Map<string, Promise<void>>();
 	private readonly cancelledStarts = new Set<string>();
+	private readonly stoppedServices = new Set<string>();
+	private readonly recoveryAfter = new Map<string, number>();
+	private readonly recoveries = new Map<string, Promise<void>>();
+	private recoveryEnabled = false;
 	private readonly composing = new Map<string, Promise<void>>();
 	private readonly composeOperations = new Map<string, Promise<void>>();
 	private readonly operations = new Map<string, Promise<void>>();
@@ -383,6 +388,7 @@ export class Hub {
 			listeningPorts,
 			listeningPortsV6,
 			noPortWarmupMs: NO_PORT_WARMUP_MS,
+			now: Date.now,
 			processes: this.processes,
 			processInfo,
 			startPollMs: START_POLL_MS,
@@ -401,6 +407,7 @@ export class Hub {
 	async start(): Promise<void> {
 		await this.processes.adopt();
 		await this.refresh(true);
+		this.recoveryEnabled = true;
 		this.timer = setInterval(() => this.tick(), TICK_MS);
 	}
 
@@ -410,8 +417,9 @@ export class Hub {
 	 */
 	private tick(): void {
 		this.ticks += 1;
+		this.processes.sweep();
+		this.recoverExited().catch(() => undefined);
 		if (this.listeners.size === 0) {
-			this.processes.sweep();
 			return;
 		}
 		if (!this.reading) {
@@ -420,9 +428,59 @@ export class Hub {
 	}
 
 	stop(): void {
+		this.recoveryEnabled = false;
 		if (this.timer) {
 			clearInterval(this.timer);
 		}
+	}
+
+	/** Recover a dead launcher outside refresh: starting a service itself waits for fresh ownership checks. */
+	recoverExited(): Promise<void> {
+		if (!this.recoveryEnabled) {
+			return Promise.resolve();
+		}
+		const candidates = this.services.filter(
+			(service) =>
+				this.restartDue(service) &&
+				!this.recoveries.has(service.key) &&
+				!this.starting.has(service.key) &&
+				!this.deleting.has(service.project.id)
+		);
+		return Promise.all(
+			candidates.map((service) => {
+				const work = this.requestStart(service.key, [], true)
+					.then(() => {
+						this.recoveryAfter.delete(service.key);
+					})
+					.catch(() => {
+						// An occupied port or unavailable dependency remains untouched. Back off before another attempt.
+						this.recoveryAfter.set(
+							service.key,
+							this.runtime.now() + service.restartDelayMs
+						);
+					})
+					.finally(() => {
+						this.recoveries.delete(service.key);
+					});
+				this.recoveries.set(service.key, work);
+				return work;
+			})
+		).then(() => undefined);
+	}
+
+	private restartDue(service: Service): boolean {
+		const managed = this.processes.get(service.key);
+		const now = this.runtime.now();
+		return Boolean(
+			service.command &&
+				service.restart !== "never" &&
+				managed?.exit &&
+				!managed.stopping &&
+				!this.stoppedServices.has(service.key) &&
+				(service.restart === "always" || managed.exit.code !== 0) &&
+				now >= managed.exit.at + service.restartDelayMs &&
+				now >= (this.recoveryAfter.get(service.key) ?? 0)
+		);
 	}
 
 	get current(): HubView {
@@ -950,6 +1008,14 @@ export class Hub {
 
 	/** Starts once, after ready managed dependencies, and resolves only once this service is ready. */
 	startService(key: string, chain: string[] = []): Promise<void> {
+		return this.requestStart(key, chain, false);
+	}
+
+	private requestStart(
+		key: string,
+		chain: string[],
+		automatic: boolean
+	): Promise<void> {
 		const service = this.service(key);
 		if (!service) {
 			return Promise.reject(new Error(`нет сервиса ${key}`));
@@ -970,7 +1036,13 @@ export class Hub {
 		if (current) {
 			return current;
 		}
-		const starting = this.serialize(key, () => this.startReady(service, chain));
+		if (!automatic) {
+			this.stoppedServices.delete(key);
+			this.recoveryAfter.delete(key);
+		}
+		const starting = this.serialize(key, () =>
+			this.startReady(service, chain, automatic)
+		);
 		this.starting.set(key, starting);
 		starting
 			.finally(() => {
@@ -1011,9 +1083,13 @@ export class Hub {
 		);
 	}
 
-	private async startReady(service: Service, chain: string[]): Promise<void> {
+	private async startReady(
+		service: Service,
+		chain: string[],
+		automatic: boolean
+	): Promise<void> {
 		await this.refresh(true);
-		this.assertStartWanted(service.key);
+		this.assertStartWanted(service.key, automatic);
 		const current = this.processes.get(service.key);
 		const alreadyRunning = current && !current.exit && alive(current.pid);
 		if (!alreadyRunning) {
@@ -1026,39 +1102,58 @@ export class Hub {
 				continue;
 			}
 			// A foreign process cannot satisfy a managed development dependency.
-			await this.startService(need, [...chain, service.key]);
+			await this.requestStart(need, [...chain, service.key], automatic);
 		}
 		if (alreadyRunning) {
-			await this.waitReady(service);
+			await this.waitReady(service, automatic);
 			return;
 		}
 		const launching = this.launching
 			.catch(() => undefined)
 			.then(async () => {
 				await this.refresh();
-				this.assertStartWanted(service.key);
+				this.assertStartWanted(service.key, automatic);
 				this.assertPortFree(service);
 				await this.processes.start(service);
 			});
 		this.launching = launching;
 		await launching;
-		await this.waitReady(service);
+		await this.waitReady(service, automatic);
 	}
 
-	private assertStartWanted(key: string): void {
-		if (this.deleting.has(this.service(key)?.project.id ?? "")) {
+	private assertStartWanted(key: string, automatic = false): void {
+		const service = this.service(key);
+		if (!service) {
+			throw new Error(`нет сервиса ${key}`);
+		}
+		if (this.deleting.has(service.project.id)) {
 			throw new Error(`${key}: проект удаляется`);
 		}
-		if (this.cancelledStarts.has(key)) {
+		if (
+			this.cancelledStarts.has(key) ||
+			(automatic &&
+				(!this.recoveryEnabled ||
+					this.stoppedServices.has(key) ||
+					this.processes.get(key)?.stopping))
+		) {
 			throw new Error(`${key}: запуск отменён запросом на остановку`);
+		}
+		if (
+			automatic &&
+			this.processes.get(key)?.exit &&
+			!this.restartDue(service)
+		) {
+			throw new Error(
+				`${key}: политика или задержка повторного запуска ещё не разрешает восстановление`
+			);
 		}
 	}
 
-	private async waitReady(service: Service): Promise<void> {
+	private async waitReady(service: Service, automatic: boolean): Promise<void> {
 		const began = Date.now();
 		const deadline = began + this.runtime.startupTimeoutMs;
 		do {
-			this.assertStartWanted(service.key);
+			this.assertStartWanted(service.key, automatic);
 			// biome-ignore lint/performance/noAwaitInLoops: startup waits on the next real health reading
 			await this.refresh();
 			const managed = this.processes.get(service.key);
@@ -1093,6 +1188,9 @@ export class Hub {
 		if (!service) {
 			throw new Error(`нет сервиса ${key}`);
 		}
+		// A stop also cancels a delayed retry, before the serialized operation reaches a dead launcher.
+		this.stoppedServices.add(key);
+		this.recoveryAfter.delete(key);
 		if (this.starting.has(key)) {
 			this.cancelledStarts.add(key);
 		}
@@ -1203,7 +1301,12 @@ export class Hub {
 		}
 		await Promise.all(
 			(project?.services ?? [])
-				.filter((service) => service.managed)
+				.filter(
+					(service) =>
+						service.managed ||
+						this.processes.get(service.key) ||
+						this.starting.has(service.key)
+				)
 				.map((service) => this.stopService(service.key))
 		);
 	}
