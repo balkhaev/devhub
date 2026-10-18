@@ -194,9 +194,11 @@ export async function bringUp(
 	);
 }
 
-export async function ensureHub(): Promise<string> {
-	const catalogue = await loadCatalogue(join(ROOT, "services.json"));
-	const address = `http://127.0.0.1:${catalogue.port}/`;
+/** `port` spares a caller that has already read the catalogue a second, slower reading. */
+export async function ensureHub(port?: number): Promise<string> {
+	const hubPort =
+		port ?? (await loadCatalogue(join(ROOT, "services.json"))).port;
+	const address = `http://127.0.0.1:${hubPort}/`;
 	const up = await bringUp({
 		askTray,
 		start: startHiddenHub,

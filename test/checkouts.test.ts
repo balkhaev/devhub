@@ -14,6 +14,7 @@ import { spawn } from "bun";
 
 import {
 	developmentSourceIssue,
+	headBranch,
 	isInsideProject,
 	primaryCheckout,
 	sameSourcePath,
@@ -246,5 +247,55 @@ test("a canonical project with stage policy refuses dev on another branch and ac
 	} finally {
 		rmSync(policyFile, { force: true });
 		git(["switch", "main"]);
+	}
+});
+
+test("the primary checkout and its branch are read from .git exactly as Git reports them", () => {
+	const gitAnswer = (folder: string, args: string[]) =>
+		spawnSync("git", ["-C", folder, ...args], {
+			encoding: "utf8",
+			windowsHide: true,
+		});
+	for (const folder of [
+		main,
+		join(main, "apps/web"),
+		worktree,
+		join(worktree, "apps/web"),
+		legacy,
+	]) {
+		const common = gitAnswer(folder, [
+			"rev-parse",
+			"--path-format=absolute",
+			"--git-common-dir",
+		]);
+		const expected =
+			common.status === 0 ? dirname(common.stdout.trim()) : folder;
+		expect(sameSourcePath(primaryCheckout(folder), expected)).toBe(true);
+	}
+	expect(headBranch(main)).toBe("main");
+	git(["switch", "--detach"]);
+	try {
+		expect(headBranch(main)).toBe("");
+	} finally {
+		git(["switch", "main"]);
+	}
+	// With Git's discovery overridden only Git can answer: GIT_DIR makes the folder itself the top.
+	const saved = process.env.GIT_DIR;
+	process.env.GIT_DIR = join(main, ".git");
+	try {
+		const web = join(main, "apps/web");
+		const top = gitAnswer(web, [
+			"rev-parse",
+			"--path-format=absolute",
+			"--show-toplevel",
+		]).stdout.trim();
+		expect(sameSourcePath(primaryCheckout(web), top)).toBe(true);
+		expect(sameSourcePath(top, main)).toBe(false);
+	} finally {
+		if (saved === undefined) {
+			delete process.env.GIT_DIR;
+		} else {
+			process.env.GIT_DIR = saved;
+		}
 	}
 });

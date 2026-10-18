@@ -1,8 +1,69 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 
 const LINES = /\r?\n/;
+const BRANCH_REF = "ref: refs/heads/";
+/** Git finds the repository differently when any of these is set; only Git itself can answer then. */
+const GIT_DISCOVERY = [
+	"GIT_DIR",
+	"GIT_WORK_TREE",
+	"GIT_COMMON_DIR",
+	"GIT_CEILING_DIRECTORIES",
+];
+
+/**
+ * The nearest `.git` above a folder, as Git's discovery finds it, without starting Git (tens of
+ * milliseconds per call on Windows, for every project, manifest and service folder). A directory
+ * there is a primary checkout's own repository; a file is a linked worktree or a submodule.
+ */
+function nearestGit(path: string): { directory: boolean; top: string } | null {
+	let folder = path;
+	for (;;) {
+		try {
+			return {
+				directory: lstatSync(join(folder, ".git")).isDirectory(),
+				top: folder,
+			};
+		} catch {
+			// No .git here: Git looks in the parent next.
+		}
+		const parent = dirname(folder);
+		if (parent === folder) {
+			return null;
+		}
+		folder = parent;
+	}
+}
+
+const gitDiscoveryChanged = (): boolean =>
+	GIT_DISCOVERY.some((name) => process.env[name]);
+
+/** `git symbolic-ref --short HEAD` of a primary checkout: its branch, or "" while HEAD is detached. */
+export function headBranch(primary: string): string {
+	if (!gitDiscoveryChanged()) {
+		try {
+			if (lstatSync(join(primary, ".git")).isDirectory()) {
+				const head = readFileSync(join(primary, ".git", "HEAD"), "utf8").trim();
+				// A reftable repository keeps HEAD elsewhere and leaves this stub.
+				if (head.startsWith(BRANCH_REF) && head !== `${BRANCH_REF}.invalid`) {
+					return head.slice(BRANCH_REF.length);
+				}
+				if (!head.startsWith("ref:")) {
+					return "";
+				}
+			}
+		} catch {
+			// Unreadable: ask Git.
+		}
+	}
+	return (
+		spawnSync("git", ["-C", primary, "symbolic-ref", "--short", "HEAD"], {
+			encoding: "utf8",
+			windowsHide: true,
+		}).stdout?.trim() ?? ""
+	);
+}
 
 /** Resolve junctions as well as path spelling before comparing source folders. */
 export function sourcePath(folder: string): string {
@@ -23,6 +84,16 @@ export function primaryCheckout(folder: string): string {
 	const path = sourcePath(folder);
 	if (!existsSync(path)) {
 		return path;
+	}
+	if (!gitDiscoveryChanged()) {
+		const found = nearestGit(path);
+		if (!found) {
+			// Outside any repository Git fails, and a non-Git project is its own checkout.
+			return path;
+		}
+		if (found.directory) {
+			return sourcePath(found.top);
+		}
 	}
 	const result = spawnSync(
 		"git",
@@ -107,11 +178,7 @@ export function developmentSourceIssue(
 		const branchKey = `branch:${primary}`;
 		let branch = cache?.get(branchKey);
 		if (branch === undefined) {
-			branch =
-				spawnSync("git", ["-C", primary, "symbolic-ref", "--short", "HEAD"], {
-					encoding: "utf8",
-					windowsHide: true,
-				}).stdout?.trim() ?? "";
+			branch = headBranch(primary);
 			cache?.set(branchKey, branch);
 		}
 		const expected =
