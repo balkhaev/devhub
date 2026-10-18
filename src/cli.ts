@@ -482,7 +482,7 @@ async function logs(catalogue: Catalogue, options: Arguments): Promise<void> {
 async function attach(catalogue: Catalogue, options: Arguments): Promise<void> {
 	const target = serviceTarget(options);
 	validateTargets(catalogue, [target], options.action);
-	const address = await ensureHub();
+	const address = await ensureHub(catalogue.port);
 	await requestHub(
 		address,
 		`/api/services/${target}/start`,
@@ -547,15 +547,16 @@ export async function main(args = process.argv.slice(2)): Promise<void> {
 		throw new Error(`неизвестное действие ${options.action}\n${HELP}`);
 	}
 	const targets = await resolveTargets(catalogue, options);
-	const address = await ensureHub();
-	const token = await clientToken(ROOT);
+	const address = await ensureHub(catalogue.port);
 	if (options.action === "status") {
+		// Reading state needs no client token: protecting its file costs Windows tools on every call.
 		printStatus(
-			(await requestHub(address, "/api/state", token)) as HubView,
+			(await requestHub(address, "/api/state", "")) as HubView,
 			options.json
 		);
 		return;
 	}
+	const token = await clientToken(ROOT);
 	for (const target of targets) {
 		const path = target.includes("/")
 			? `services/${target}`
