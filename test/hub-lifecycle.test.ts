@@ -181,6 +181,73 @@ test("the background monitor recovers a failed launcher with no page subscribed"
 	expect(processes.launches).toEqual(["app/queue", "app/queue"]);
 });
 
+test("an unattended hub refreshes launcher identity before recovery even when its numeric PID is alive", async () => {
+	const { hub, processes, crash, advance } = await recoveryFixture([
+		recoveringService("fixture"),
+	]);
+	await hub.startService("app/fixture");
+	let observed = false;
+	processes.identityPids = () => [process.pid];
+	processes.sweep = (info?: Map<number, unknown>) => {
+		if (info?.has(process.pid) && !observed) {
+			observed = true;
+			crash("app/fixture");
+			advance(100);
+			return true;
+		}
+		return false;
+	};
+	const deadline = Date.now() + 3000;
+	while (processes.launches.length < 2 && Date.now() < deadline) {
+		// biome-ignore lint/performance/noAwaitInLoops: observe the real background tick with neutral fake processes
+		await sleep(20);
+	}
+	expect(observed).toBe(true);
+	expect(processes.launches).toEqual(["app/fixture", "app/fixture"]);
+	hub.stop();
+});
+
+test("a failed pending-cancellation write cannot prevent the serialized stop of a known service", async () => {
+	const { hub, processes } = await fixture([configService("fixture")]);
+	await hub.startService("app/fixture");
+	processes.cancelPending = () =>
+		Promise.reject(new Error("cancellation disk failure"));
+	await expect(hub.stopService("app/fixture")).rejects.toThrow(
+		"cancellation disk failure"
+	);
+	expect(processes.stops).toEqual(["app/fixture"]);
+});
+
+test("a pending recovery cannot hold the unattended identity scan for unrelated services", async () => {
+	let snapshots = 0;
+	const { hub, processes } = await recoveryFixture(
+		[recoveringService("fixture")],
+		{
+			processInfo: () => {
+				snapshots += 1;
+				return Promise.resolve(new Map());
+			},
+		}
+	);
+	processes.identityPids = () => [process.pid];
+	let release: () => void = () => undefined;
+	const pending = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	hub.recoverExited = () => pending;
+	const deadline = Date.now() + 5000;
+	try {
+		while (snapshots < 2 && Date.now() < deadline) {
+			// biome-ignore lint/performance/noAwaitInLoops: observe two actual monitor ticks while readiness is pending
+			await sleep(20);
+		}
+		expect(snapshots).toBeGreaterThanOrEqual(2);
+	} finally {
+		hub.stop();
+		release();
+	}
+});
+
 test("a stop during retry backoff, including a project stop, cancels recovery until an explicit start", async () => {
 	const { hub, processes, crash, advance } = await recoveryFixture([
 		recoveringService("queue"),

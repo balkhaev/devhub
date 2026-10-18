@@ -110,6 +110,8 @@ export async function listeningPortsV6(): Promise<Map<number, number>> {
 
 export interface ProcessInfo {
 	command: string;
+	/** UTC CIM creation ticks; unlike a numeric PID, this identifies one lifetime. */
+	created?: string;
 	name: string;
 	parent: number;
 	pid: number;
@@ -125,7 +127,7 @@ export async function processInfo(
 		return found;
 	}
 	const filter = ids.map((pid) => `ProcessId=${pid}`).join(" or ");
-	const script = `Get-CimInstance Win32_Process -Filter '${filter}' | Select-Object ProcessId,ParentProcessId,Name,CommandLine | ConvertTo-Json -Compress`;
+	const script = `Get-CimInstance Win32_Process -Filter '${filter}' | Select-Object ProcessId,ParentProcessId,Name,CommandLine,@{Name='Created';Expression={$_.CreationDate.ToUniversalTime().Ticks.ToString()}} | ConvertTo-Json -Compress`;
 	const text = await capture("powershell", [
 		"-NoProfile",
 		"-NonInteractive",
@@ -143,6 +145,7 @@ export async function processInfo(
 			const pid = Number(entry.ProcessId);
 			found.set(pid, {
 				command: String(entry.CommandLine ?? ""),
+				created: String(entry.Created ?? ""),
 				name: String(entry.Name ?? ""),
 				parent: Number(entry.ParentProcessId ?? 0),
 				pid,

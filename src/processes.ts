@@ -1,18 +1,20 @@
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import {
 	appendFileSync,
 	closeSync,
 	existsSync,
 	openSync,
 	readFileSync,
-	rmSync,
 } from "node:fs";
 import {
 	appendFile,
 	mkdir,
 	open,
+	readdir,
 	readFile,
 	rename,
+	rm,
 	stat,
 	writeFile,
 } from "node:fs/promises";
@@ -20,14 +22,29 @@ import { delimiter, dirname, join, resolve } from "node:path";
 
 import { developmentSourceIssue } from "./checkouts";
 import type { Service } from "./config";
-import { capture, processInfo } from "./probes";
+import {
+	approveLaunch,
+	awaitReceipt,
+	cancelLaunch,
+	isLauncherIdentity,
+	isLaunchMarker,
+	type LauncherIdentity,
+	type LaunchFiles,
+	type LaunchIntent,
+	launchFiles,
+	matchesLauncher,
+	namesBatch,
+	readIntent,
+	readReceipt,
+	saveIntent,
+} from "./desktop-launch";
+import { capture, type ProcessInfo, processInfo } from "./probes";
 
 /**
  * The dev servers the hub starts. Each runs on its own, hidden, with its output in `.logs/<project>-<service>.log`,
  * so it outlives the hub, which finds it again from `.state/processes.json`. On Windows a small batch file in
- * `.state/run` starts it: launched through `Start-Process -WindowStyle Hidden` it gets a console of its own that
- * nobody sees (a detached process would open a terminal window for every server under it), and it writes the exit
- * code to `.state/exit` when the server ends. Stopping ends the whole process tree.
+ * `.state/run` starts it through Explorer, hidden and outside the hub's process tree. A receipt identifies the CMD
+ * lifetime before its service is approved to run; `.state/exit` records that attempt's exit code.
  */
 
 export interface Managed {
@@ -35,6 +52,8 @@ export interface Managed {
 	cwd: string;
 	/** Set when the process ended while the hub watched it; the code is unknown when it was killed. */
 	exit: { at: number; code: number | null } | null;
+	/** Absent only for legacy launchers created before the desktop receipt protocol. */
+	launcher?: LauncherIdentity;
 	log: string;
 	pid: number;
 	startedAt: number;
@@ -51,7 +70,6 @@ const LAUNCH_MS = 20_000;
 const UNSAFE_VALUE = /["\r\n]/;
 const SERVICE_KEY = /^[a-z0-9][a-z0-9-]*\/[a-z0-9][a-z0-9-]*$/;
 const FRAME_ORIGIN = /^http:\/\/127\.0\.0\.1(?::[1-9]\d{0,4})?$/;
-const COMMAND_ARGUMENT = /"([^"]+)"|([^\s"]+)/g;
 const LEADING_EXECUTABLE = /^(?:"([^"]+)"|([^\s]+))/;
 const NEWLINE = 0x0a;
 /** The shell's list of its windows (the ShellWindows COM class): Explorer serves it from its own process. */
@@ -65,12 +83,7 @@ export const logFileOf = (root: string, service: Service): string =>
 
 /** A reused PID only belongs to this hub when its launcher names this exact batch file. */
 export function commandNamesBatch(command: string, batch: string): boolean {
-	const normalize = (value: string) =>
-		value.replaceAll("/", "\\").toLowerCase();
-	const expected = normalize(batch);
-	return [...command.matchAll(COMMAND_ARGUMENT)].some(
-		(match) => normalize(match[1] ?? match[2] ?? "") === expected
-	);
+	return namesBatch(command, batch);
 }
 
 const stamp = (): string => new Date().toLocaleString("ru-RU");
@@ -194,7 +207,8 @@ export function batchOf(
 	log: string,
 	exitFile: string,
 	root = resolve(dirname(dirname(log))),
-	frameOrigin = ""
+	frameOrigin = "",
+	launch?: { files: LaunchFiles; intent: LaunchIntent }
 ): string {
 	const env = Object.entries(environment(service, root, frameOrigin)).map(
 		([name, value]) => {
@@ -208,12 +222,25 @@ export function batchOf(
 	);
 	return [
 		"@echo off",
+		...(launch
+			? [
+					`powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${join(import.meta.dir, "desktop-launch.ps1")}" -Marker "${launch.intent.marker}" -Batch "${launch.intent.batch}" -Intent "${launch.files.intent}" -Receipt "${launch.files.receipt}" -Approval "${launch.files.approval}"`,
+					"if errorlevel 1 goto launch_failed",
+				]
+			: []),
 		"chcp 65001 > nul",
 		`cd /d "${service.workdir}"`,
 		...env,
 		`call :run >> "${log}" 2>&1`,
-		`> "${exitFile}" echo %errorlevel%`,
+		`> "${exitFile}" echo ${launch ? `${launch.intent.marker} ` : ""}%errorlevel%`,
 		"exit /b",
+		...(launch
+			? [
+					":launch_failed",
+					`> "${exitFile}" echo ${launch.intent.marker} 125`,
+					"exit /b 125",
+				]
+			: []),
 		":run",
 		// `call`, so a command that is itself a batch file (npm, npx) returns here.
 		...batchRun(service),
@@ -247,13 +274,13 @@ export async function launchHidden(batch: string): Promise<number> {
  * shell's windows (SWC_DESKTOP = 8) as a scriptable object (SWFO_NEEDDISPATCH = 1), and its `ShellExecute` runs in
  * Explorer's own process. It prints `started`, or why it could not.
  */
-export function shellLaunchScript(batch: string): string {
+export function shellLaunchScript(batch: string, argumentsText = ""): string {
 	const quoted = (value: string) => `'${value.replaceAll("'", "''")}'`;
 	return [
 		`try { $windows = [Activator]::CreateInstance([Type]::GetTypeFromCLSID([Guid]'${SHELL_WINDOWS}'))`,
 		"$hwnd = 0",
 		"$desktop = $windows.FindWindowSW([ref]0, [ref]$null, 8, [ref]$hwnd, 1)",
-		`$desktop.Document.Application.ShellExecute(${quoted(batch)}, '', ${quoted(dirname(batch))}, 'open', 0)`,
+		`$desktop.Document.Application.ShellExecute(${quoted(batch)}, ${quoted(argumentsText)}, ${quoted(dirname(batch))}, 'open', 0)`,
 		"'started' } catch { 'failed: ' + $_.Exception.Message }",
 	].join("; ");
 }
@@ -263,7 +290,10 @@ export function shellLaunchScript(batch: string): string {
  * the `%LOCALAPPDATA%` view of the app this one was started from (`app-view.ts`); this one sees the real folder.
  * No process id comes back.
  */
-export async function launchOutside(batch: string): Promise<void> {
+export async function launchOutside(
+	batch: string,
+	argumentsText = ""
+): Promise<void> {
 	const out = await capture(
 		"powershell",
 		[
@@ -272,7 +302,7 @@ export async function launchOutside(batch: string): Promise<void> {
 			"-ExecutionPolicy",
 			"Bypass",
 			"-Command",
-			shellLaunchScript(batch),
+			shellLaunchScript(batch, argumentsText),
 		],
 		LAUNCH_MS
 	);
@@ -310,12 +340,31 @@ export class Processes {
 	private readonly stateFile: string;
 	private readonly running = new Map<string, Managed>();
 	private readonly stopTree: typeof killTree;
+	private readonly inspect: typeof processInfo;
+	private readonly dispatch: typeof launchOutside;
+	private readonly launchTimeoutMs: number | undefined;
+	private readonly pending = new Map<
+		string,
+		{ cancelled: boolean; files: LaunchFiles; intent: LaunchIntent }
+	>();
 	private saving: Promise<void> = Promise.resolve();
 
-	constructor(root: string, frameOrigin = "", stopTree = killTree) {
+	constructor(
+		root: string,
+		frameOrigin = "",
+		stopTree = killTree,
+		runtime: {
+			inspect?: typeof processInfo;
+			dispatch?: typeof launchOutside;
+			launchTimeoutMs?: number;
+		} = {}
+	) {
 		this.root = resolve(root);
 		this.stateFile = join(this.root, ".state", "processes.json");
 		this.stopTree = stopTree;
+		this.inspect = runtime.inspect ?? processInfo;
+		this.dispatch = runtime.dispatch ?? launchOutside;
+		this.launchTimeoutMs = runtime.launchTimeoutMs;
 		if (frameOrigin) {
 			this.setFrameOrigin(frameOrigin);
 		}
@@ -336,16 +385,53 @@ export class Processes {
 		this.frameOrigin = origin;
 	}
 
-	private exitFileOf(key: string): string {
-		return join(this.root, ".state", "exit", `${key.replace("/", "-")}.txt`);
+	private exitFileOf(key: string, marker?: string): string {
+		return join(
+			this.root,
+			".state",
+			"exit",
+			`${key.replace("/", "-")}${marker ? `-${marker}` : ""}.txt`
+		);
 	}
 
-	private exitCode(key: string): number | null {
-		const file = this.exitFileOf(key);
-		const written = existsSync(file)
-			? Number.parseInt(readFileSync(file, "utf8").trim(), 10)
-			: Number.NaN;
+	private exitCode(key: string, marker?: string): number | null {
+		const file = this.exitFileOf(key, marker);
+		const text = existsSync(file) ? readFileSync(file, "utf8").trim() : "";
+		if (marker && !text.startsWith(`${marker} `)) {
+			return null;
+		}
+		const written = Number.parseInt(
+			marker ? text.slice(marker.length + 1) : text,
+			10
+		);
 		return Number.isNaN(written) ? null : written;
+	}
+
+	private recordedExit(key: string, entry: Managed): number | null {
+		if (entry.launcher !== undefined && !isLauncherIdentity(entry.launcher)) {
+			return null;
+		}
+		return this.exitCode(key, entry.launcher?.marker);
+	}
+
+	private recordedOwner(
+		entry: Managed,
+		info: ProcessInfo | undefined,
+		batch: string
+	): boolean {
+		if (!WINDOWS) {
+			return true;
+		}
+		if (entry.launcher === undefined) {
+			return commandNamesBatch(info?.command ?? "", batch);
+		}
+		// A missing or malformed identity is uncertainty, never permission to kill or launch a duplicate.
+		if (
+			!(isLauncherIdentity(entry.launcher) && info?.created && info.command)
+		) {
+			return true;
+		}
+		return matchesLauncher(info, entry.launcher);
 	}
 
 	/**
@@ -390,26 +476,49 @@ export class Processes {
 		);
 		const living = known.filter(([, entry]) => alive(entry.pid));
 		const info = WINDOWS
-			? await processInfo(living.map(([, entry]) => entry.pid))
+			? await this.inspect(living.map(([, entry]) => entry.pid))
 			: null;
 		for (const [key, entry] of known) {
-			const command = info?.get(entry.pid)?.command ?? "";
 			const batch = join(
 				this.root,
 				".state",
 				"run",
 				`${key.replace("/", "-")}.cmd`
 			);
+			const details = info?.get(entry.pid);
 			const ours =
-				alive(entry.pid) && (!info || commandNamesBatch(command, batch));
+				alive(entry.pid) && this.recordedOwner(entry, details, batch);
 			this.running.set(key, {
 				...entry,
 				exit: ours
 					? null
-					: (entry.exit ?? { at: Date.now(), code: this.exitCode(key) }),
+					: (entry.exit ?? {
+							at: Date.now(),
+							code: this.recordedExit(key, entry),
+						}),
 			});
+			if (isLauncherIdentity(entry.launcher) && ours) {
+				// biome-ignore lint/performance/noAwaitInLoops: reconcile each persisted launch independently
+				await this.reconcilePermission(key, entry.launcher.marker);
+			}
 		}
 		await this.save();
+	}
+
+	private async reconcilePermission(
+		key: string,
+		marker: string
+	): Promise<void> {
+		// The hub may have exited after saving ownership but before granting permission.
+		const files = launchFiles(join(this.root, ".state", "launch"), key, marker);
+		const intent = await readIntent(files.intent);
+		if (
+			intent?.marker === marker &&
+			(intent.state === "pending" ||
+				(intent.state === "approved" && !existsSync(files.approval)))
+		) {
+			await cancelLaunch(files, intent);
+		}
 	}
 
 	get(key: string): Managed | undefined {
@@ -423,14 +532,27 @@ export class Processes {
 		).length;
 	}
 
+	/** Refresh these identities in the hub's existing batched process snapshot, including portless services. */
+	identityPids(): number[] {
+		return [...this.running.values()]
+			.filter((entry) => entry.launcher && !entry.exit)
+			.map((entry) => entry.pid);
+	}
+
 	/** Notes the processes that ended, with their exit codes; returns whether any did. */
-	sweep(): boolean {
+	sweep(info?: Map<number, ProcessInfo>): boolean {
 		let changed = false;
 		for (const [key, entry] of this.running) {
-			if (entry.exit || alive(entry.pid)) {
+			const details = info?.get(entry.pid);
+			const replaced =
+				isLauncherIdentity(entry.launcher) &&
+				details?.created &&
+				details.command &&
+				!matchesLauncher(details, entry.launcher);
+			if (entry.exit || (alive(entry.pid) && !replaced)) {
 				continue;
 			}
-			const code = this.exitCode(key);
+			const code = this.recordedExit(key, entry);
 			entry.exit = { at: Date.now(), code };
 			let words = "процесс завершился";
 			if (entry.stopping) {
@@ -451,7 +573,11 @@ export class Processes {
 		return changed;
 	}
 
-	async start(service: Service): Promise<Managed> {
+	async start(
+		service: Service,
+		wanted: () => void = () => undefined
+	): Promise<Managed> {
+		wanted();
 		const sourceIssue = developmentSourceIssue(
 			service.project.path,
 			service.workdir
@@ -482,24 +608,9 @@ export class Processes {
 		);
 		let pid = 0;
 		if (WINDOWS) {
-			const exitFile = this.exitFileOf(service.key);
-			const batch = join(
-				this.root,
-				".state",
-				"run",
-				`${fileName(service)}.cmd`
-			);
-			await mkdir(dirname(exitFile), { recursive: true });
-			await mkdir(dirname(batch), { recursive: true });
-			rmSync(exitFile, { force: true });
-			await writeFile(
-				batch,
-				batchOf(service, log, exitFile, this.root, this.frameOrigin)
-			);
-			pid = await launchHidden(batch);
-		} else {
-			pid = launchDetached(service, log, this.root, this.frameOrigin);
+			return this.startDesktop(service, log, wanted);
 		}
+		pid = launchDetached(service, log, this.root, this.frameOrigin);
 		if (!(pid > 0)) {
 			throw new Error(`${service.command} не запустился`);
 		}
@@ -517,10 +628,178 @@ export class Processes {
 		return entry;
 	}
 
+	/** Synchronous cancellation flag closes the discovery window before Hub waits for its serialized start. */
+	async cancelPending(key: string): Promise<void> {
+		const pending = this.pending.get(key);
+		if (!pending) {
+			return;
+		}
+		pending.cancelled = true;
+		await cancelLaunch(pending.files, pending.intent);
+	}
+
+	private async startDesktop(
+		service: Service,
+		log: string,
+		wanted: () => void
+	): Promise<Managed> {
+		const directory = join(this.root, ".state", "launch");
+		await mkdir(directory, { recursive: true });
+		const previous = await readIntent(
+			launchFiles(directory, service.key, "").intent
+		);
+		let intent = previous?.state === "pending" ? previous : null;
+		if (
+			previous?.state === "approved" &&
+			previous.marker !== this.get(service.key)?.launcher?.marker
+		) {
+			// Approved intent without its durable Managed record must be reconciled, never dispatched again.
+			throw new Error(
+				`${service.key}: approved desktop launch has no matching ownership record`
+			);
+		}
+		if (!intent) {
+			const marker = randomUUID();
+			intent = {
+				batch: join(
+					this.root,
+					".state",
+					"run",
+					`${fileName(service)}-${marker}.cmd`
+				),
+				marker,
+				requestedAt: Date.now(),
+				state: "pending",
+			};
+		}
+		const files = launchFiles(directory, service.key, intent.marker);
+		const pending = { cancelled: false, files, intent };
+		this.pending.set(service.key, pending);
+		const checkWanted = () => {
+			wanted();
+			if (this.pending.get(service.key)?.cancelled) {
+				throw new Error(`${service.key}: desktop launch cancelled`);
+			}
+		};
+		try {
+			if (intent !== previous) {
+				const exitFile = this.exitFileOf(service.key, intent.marker);
+				await mkdir(dirname(exitFile), { recursive: true });
+				await mkdir(dirname(intent.batch), { recursive: true });
+				await writeFile(
+					intent.batch,
+					batchOf(service, log, exitFile, this.root, this.frameOrigin, {
+						files,
+						intent,
+					})
+				);
+				checkWanted();
+				await saveIntent(files.intent, intent);
+				await this.retireAttempts(service.key, intent.marker);
+				checkWanted();
+				try {
+					await this.dispatch(intent.batch, intent.marker);
+				} catch {
+					// ShellExecute may have dispatched before its caller timed out. Reconcile this marker only.
+				}
+			}
+			const receipt = await awaitReceipt(
+				files,
+				intent,
+				this.launchTimeoutMs,
+				() => pending.cancelled
+			);
+			checkWanted();
+			const info = (await this.inspect([receipt.pid])).get(receipt.pid);
+			if (!matchesLauncher(info, receipt)) {
+				throw new Error(
+					`${service.key}: desktop launcher identity could not be verified`
+				);
+			}
+			const entry: Managed = {
+				command: service.command ?? "",
+				cwd: service.workdir,
+				exit: null,
+				launcher: {
+					batch: intent.batch,
+					created: receipt.created,
+					marker: intent.marker,
+				},
+				log,
+				pid: receipt.pid,
+				startedAt: intent.requestedAt,
+				stopping: false,
+			};
+			this.running.set(service.key, entry);
+			await this.save();
+			checkWanted();
+			await approveLaunch(files, intent, checkWanted);
+			return entry;
+		} catch (error) {
+			await cancelLaunch(files, intent);
+			const entry = this.get(service.key);
+			if (pending.cancelled && entry?.launcher?.marker === intent.marker) {
+				entry.stopping = true;
+				await this.save();
+			}
+			throw error;
+		} finally {
+			this.pending.delete(service.key);
+		}
+	}
+
+	/** Bounded per-attempt metadata; live or unidentifiable approved launchers retain their receipts. */
+	private async retireAttempts(key: string, keep: string): Promise<void> {
+		const directory = join(this.root, ".state", "run");
+		const prefix = `${key.replace("/", "-")}-`;
+		const markers = (await readdir(directory))
+			.filter((name) => name.startsWith(prefix) && name.endsWith(".cmd"))
+			.map((name) => name.slice(prefix.length, -4))
+			.filter((marker) => marker !== keep && isLaunchMarker(marker));
+		await Promise.all(markers.map((marker) => this.retireAttempt(key, marker)));
+	}
+
+	private async retireAttempt(key: string, marker: string): Promise<void> {
+		const files = launchFiles(join(this.root, ".state", "launch"), key, marker);
+		const batch = join(
+			this.root,
+			".state",
+			"run",
+			`${key.replace("/", "-")}-${marker}.cmd`
+		);
+		const receipt = await readReceipt(files.receipt, {
+			batch,
+			marker,
+			requestedAt: 0,
+			state: "cancelled",
+		});
+		if (!receipt && (existsSync(files.receipt) || existsSync(files.approval))) {
+			return;
+		}
+		if (receipt && alive(receipt.pid)) {
+			const info = (await this.inspect([receipt.pid])).get(receipt.pid);
+			if (!(info?.created && info.command) || matchesLauncher(info, receipt)) {
+				return;
+			}
+		}
+		await Promise.all(
+			[files.receipt, files.approval, this.exitFileOf(key, marker), batch].map(
+				(path) => rm(path, { force: true })
+			)
+		);
+	}
+
 	/** Stops the process the hub started for a service. */
 	async stop(service: Service): Promise<boolean> {
+		let cancellationError: unknown;
+		await this.cancelPending(service.key).catch((error: unknown) => {
+			cancellationError = error;
+		});
 		const entry = this.get(service.key);
 		if (!entry) {
+			if (cancellationError) {
+				throw cancellationError;
+			}
 			return false;
 		}
 		entry.stopping = true;
@@ -530,12 +809,34 @@ export class Processes {
 		} finally {
 			// A storage failure must not prevent an explicit stop of our live process.
 			if (!entry.exit && alive(entry.pid)) {
-				await this.stopTree(entry.pid);
+				await this.stopOwned(service.key, entry);
 				stopped = true;
 			}
 			this.sweep();
 		}
+		if (cancellationError) {
+			throw cancellationError;
+		}
 		return stopped;
+	}
+
+	private async stopOwned(key: string, entry: Managed): Promise<void> {
+		const info = WINDOWS
+			? (await this.inspect([entry.pid])).get(entry.pid)
+			: undefined;
+		const owned =
+			entry.launcher === undefined
+				? commandNamesBatch(
+						info?.command ?? "",
+						join(this.root, ".state", "run", `${key.replace("/", "-")}.cmd`)
+					)
+				: matchesLauncher(info, entry.launcher);
+		if (WINDOWS && !owned) {
+			throw new Error(
+				`${key}: launcher identity changed or could not be verified; refusing to stop PID ${entry.pid}`
+			);
+		}
+		await this.stopTree(entry.pid);
 	}
 
 	/** A service's log from an offset on (its last part when there is none), and the offset to read on from. */
@@ -579,7 +880,7 @@ export class Processes {
 			.catch(() => undefined)
 			.then(async () => {
 				await mkdir(dirname(this.stateFile), { recursive: true });
-				const temporary = `${this.stateFile}.${process.pid}.tmp`;
+				const temporary = `${this.stateFile}.${randomUUID()}.tmp`;
 				await writeFile(temporary, snapshot);
 				await rename(temporary, this.stateFile);
 			});

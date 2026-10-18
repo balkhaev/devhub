@@ -255,10 +255,28 @@ test("a failed state write still attempts the explicit stop and reports the pers
 			return entry;
 		}
 	}
-	const processes = new StopFixture(isolated, "", async (pid) => {
-		stopped.push(pid);
-		await Promise.resolve();
-	});
+	const processes = new StopFixture(
+		isolated,
+		"",
+		async (pid) => {
+			stopped.push(pid);
+			await Promise.resolve();
+		},
+		{
+			inspect: async () =>
+				new Map([
+					[
+						process.pid,
+						{
+							command: `cmd /c "${join(isolated, ".state", "run", "altay-site.cmd")}"`,
+							name: "cmd.exe",
+							parent: 0,
+							pid: process.pid,
+						},
+					],
+				]),
+		}
+	);
 	await expect(
 		processes.stop(serviceWith({ command: "neutral-fixture" }))
 	).rejects.toThrow();
