@@ -330,6 +330,7 @@ export class Hub {
 	private readonly runtime: Required<HubRuntime>;
 	private readonly starting = new Map<string, Promise<void>>();
 	private readonly cancelledStarts = new Set<string>();
+	private identityReading: Promise<void> | null = null;
 	private readonly stoppedServices = new Set<string>();
 	private readonly recoveryAfter = new Map<string, number>();
 	private readonly recoveries = new Map<string, Promise<void>>();
@@ -420,6 +421,22 @@ export class Hub {
 		this.processes.sweep();
 		this.recoverExited().catch(() => undefined);
 		if (this.listeners.size === 0) {
+			const pids = this.processes.identityPids();
+			if (pids.length && !this.identityReading) {
+				this.identityReading = this.runtime
+					.processInfo(pids)
+					.then((info) => {
+						this.processes.sweep(info);
+					})
+					.catch(() => undefined)
+					.finally(() => {
+						this.identityReading = null;
+					});
+				// Readiness belongs to the existing per-service recovery promises, never to the snapshot lock.
+				this.identityReading
+					.then(() => this.recoverExited())
+					.catch(() => undefined);
+			}
 			return;
 		}
 		if (!this.reading) {
@@ -589,6 +606,7 @@ export class Hub {
 			await this.readDocker();
 		}
 		await this.readOwners();
+		this.processes.sweep(this.info);
 		await this.readHealth(full);
 		this.claims = this.claim();
 		const next = this.build();
@@ -619,9 +637,12 @@ export class Hub {
 				this.info.delete(pid);
 			}
 		}
-		let wanted = [...new Set(this.ports.values())].filter(
-			(pid) => !this.info.has(pid)
-		);
+		let wanted = [
+			...new Set([
+				...[...this.ports.values()].filter((pid) => !this.info.has(pid)),
+				...this.processes.identityPids(),
+			]),
+		];
 		for (let level = 0; level < ANCESTORS && wanted.length > 0; level += 1) {
 			// biome-ignore lint/performance/noAwaitInLoops: each level asks for the parents of the one before
 			const found = await this.runtime.processInfo(wanted);
@@ -1114,7 +1135,9 @@ export class Hub {
 				await this.refresh();
 				this.assertStartWanted(service.key, automatic);
 				this.assertPortFree(service);
-				await this.processes.start(service);
+				await this.processes.start(service, () =>
+					this.assertStartWanted(service.key, automatic)
+				);
 			});
 		this.launching = launching;
 		await launching;
@@ -1194,6 +1217,10 @@ export class Hub {
 		if (this.starting.has(key)) {
 			this.cancelledStarts.add(key);
 		}
+		let cancellationError: unknown;
+		await this.processes.cancelPending(key).catch((error: unknown) => {
+			cancellationError = error;
+		});
 		await this.serialize(key, async () => {
 			await this.refresh();
 			const stopped = await this.processes.stop(service);
@@ -1207,6 +1234,9 @@ export class Hub {
 			}
 			await this.refresh();
 		});
+		if (cancellationError) {
+			throw cancellationError;
+		}
 	}
 
 	async restartService(key: string, external = true): Promise<void> {
