@@ -68,7 +68,9 @@ export function restartQuestion(
 function serviceLabel(service: ServiceView): string {
 	const port = service.port ? `:${service.port}` : "";
 	const state =
-		service.status === "running" ? "" : ` · ${STATUS_SHORT[service.status]}`;
+		service.status === "running" || service.status === "external"
+			? ""
+			: ` · ${STATUS_SHORT[service.status]}`;
 	return `${service.name}${port}${state}`;
 }
 
@@ -156,14 +158,13 @@ function RunningProjectRow({
 					onClick={onNavigate}
 				>
 					<span className={cx("dot", `dot--${toneOf(live)}`)} />
-					{project.name}
+					<span className="running-project__title">{project.name}</span>
 				</a>
-				<span className="running-project__services muted small">
-					{live.map((service) => (
-						<a href={`#/${service.key}`} key={service.key} onClick={onNavigate}>
-							{serviceLabel(service)}
-						</a>
-					))}
+				<span
+					className="running-project__services muted"
+					title={live.map(serviceLabel).join(" · ")}
+				>
+					{live.map(serviceLabel).join(" · ")}
 				</span>
 			</div>
 			<div className="running-project__actions">
@@ -174,18 +175,20 @@ function RunningProjectRow({
 						data-path={restartPath}
 						disabled={busy}
 						onClick={restart}
+						title="Перезапустить"
 						type="button"
 					>
-						{pending === "restart" ? "Перезапускаю…" : "Перезапустить"}
+						{pending === "restart" ? "…" : "Заново"}
 					</button>
 				) : null}
 				<button
 					className="button button--small"
 					disabled={busy}
 					onClick={stop}
+					title="Остановить"
 					type="button"
 				>
-					{pending === "stop" ? "Останавливаю…" : "Остановить"}
+					{pending === "stop" ? "…" : "Стоп"}
 				</button>
 			</div>
 			{error ? (

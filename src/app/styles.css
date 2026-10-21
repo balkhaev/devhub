@@ -232,23 +232,23 @@ code {
 
 .running-projects {
 	display: grid;
+	grid-template-columns: repeat(auto-fill, minmax(176px, 1fr));
 	gap: 8px;
 	padding: 0;
-	margin: 12px 0 0;
+	margin: 10px 0 0;
 	list-style: none;
 }
 
 .running-projects__empty {
-	margin: 12px 0 0;
+	margin: 10px 0 0;
 }
 
 .running-project {
-	display: flex;
-	flex-wrap: wrap;
-	gap: 8px 12px;
-	align-items: center;
-	justify-content: space-between;
-	padding: 8px 10px;
+	display: grid;
+	gap: 4px;
+	align-content: start;
+	min-width: 0;
+	padding: 8px;
 	background: var(--raised);
 	border: 1px solid var(--line);
 	border-radius: 10px;
@@ -256,41 +256,41 @@ code {
 
 .running-project__main {
 	display: grid;
-	gap: 2px;
-	min-width: 140px;
+	gap: 1px;
+	min-width: 0;
 }
 
 .running-project__name {
-	display: inline-flex;
-	gap: 8px;
+	display: flex;
+	gap: 6px;
 	align-items: center;
+	min-width: 0;
 	font-weight: 600;
 	text-decoration: none;
 }
 
+.running-project__title {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
 .running-project__services {
-	display: flex;
-	flex-wrap: wrap;
-	gap: 2px 10px;
-}
-
-.running-project__services a {
-	text-decoration: none;
-}
-
-.running-project__services a:hover {
-	color: var(--text);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	font-size: 11px;
+	white-space: nowrap;
 }
 
 .running-project__actions {
-	display: flex;
-	flex-wrap: wrap;
-	gap: 6px;
+	display: grid;
+	grid-template-columns: 1.15fr 1fr 0.8fr;
+	gap: 4px;
 }
 
 .running-project__error {
-	flex: 1 0 100%;
-	padding: 6px 8px;
+	padding: 4px 6px;
 	margin: 0;
 	color: var(--crashed);
 	white-space: pre-wrap;
@@ -303,7 +303,7 @@ code {
 	top: calc(100% + 8px);
 	left: 0;
 	z-index: 20;
-	width: min(440px, calc(100vw - 32px));
+	width: min(520px, calc(100vw - 32px));
 	max-height: min(520px, calc(100dvh - 100px));
 	padding: 16px;
 	overflow: auto;
@@ -855,6 +855,14 @@ code {
 	color: #062a1c;
 	background: var(--running);
 	border-color: var(--running);
+}
+
+.running-project__actions .button {
+	justify-content: center;
+	width: 100%;
+	min-width: 0;
+	padding: 3px 4px;
+	font-size: 11px;
 }
 
 .button--small {

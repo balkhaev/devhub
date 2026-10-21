@@ -18,6 +18,7 @@ import { Hub, type HubRuntime, type HubView } from "./hub";
 import { frameable } from "./probes";
 import { Projects } from "./projects";
 import { Queue, QueueError } from "./queue";
+import { runningCards } from "./running-cards";
 import { StageProject } from "./stage";
 import { holderWords, type MachineTidy } from "./tidy-words";
 
@@ -216,15 +217,20 @@ export async function startHub(
 		}
 		return projects.delete(id, body.token);
 	};
+	/** The tray asks to take over a process the hub did not start; a browser already may. */
+	const takeover = (request: Request): boolean =>
+		authenticatedClient(request, token) &&
+		request.headers.get("x-devhub-takeover") === "1";
 	const projectRuntime = (request: Request, id: string, action: string) => {
+		const external = !authenticatedClient(request, token) || takeover(request);
 		if (action === "start") {
 			return hub.startProject(id);
 		}
 		if (action === "stop") {
-			return hub.stopProject(id);
+			return hub.stopProject(id, takeover(request));
 		}
 		if (action === "restart") {
-			return hub.restartProject(id, !authenticatedClient(request, token));
+			return hub.restartProject(id, external);
 		}
 		return null;
 	};
@@ -559,6 +565,12 @@ export async function startHub(
 						} | null;
 						return tidy("--apply", ...(body?.kill === true ? ["--kill"] : []));
 					}),
+			},
+			"/api/tray/projects": {
+				GET: (request) =>
+					guarded(request, () => ({
+						projects: runningCards(hub.current.projects),
+					})),
 			},
 		},
 	});

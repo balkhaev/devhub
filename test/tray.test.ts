@@ -122,3 +122,13 @@ windowsTest(
 		});
 	}
 );
+
+windowsTest(
+	"project cards open, restart and stop only from an explicit click",
+	async () => {
+		await run(executable, ["projects", root], {
+			timeout: 10_000,
+			windowsHide: true,
+		});
+	}
+);

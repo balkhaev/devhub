@@ -69,9 +69,11 @@ test("a running project can be opened, restarted and stopped", () => {
 	expect(markup).toContain('href="http://127.0.0.1:5000/"');
 	expect(markup).toContain(">Открыть<");
 	expect(markup).toContain('data-path="/api/projects/sample/restart"');
-	expect(markup).toContain(">Перезапустить<");
-	expect(markup).toContain(">Остановить<");
-	expect(markup).toContain('href="#/sample/web"');
+	expect(markup).toContain('title="Перезапустить"');
+	expect(markup).toContain(">Заново<");
+	expect(markup).toContain('title="Остановить"');
+	expect(markup).toContain(">Стоп<");
+	expect(markup).toContain("web:5000");
 });
 
 test("a down frontend opens the project page, and a stopped project is left out", () => {
@@ -106,7 +108,7 @@ test("nothing running is said plainly", () => {
 		<RunningProjectsList projects={[project()]} />
 	);
 	expect(markup).toContain("Ничего не запущено.");
-	expect(markup).not.toContain("Остановить");
+	expect(markup).not.toContain(">Стоп<");
 });
 
 test("stopping or restarting a foreign process is asked about first", () => {
@@ -160,7 +162,7 @@ test("the header names how many projects are running and keeps the list closed",
 	);
 	expect(markup).toContain("Запущено 2 проекта");
 	expect(markup).toContain('aria-expanded="false"');
-	expect(markup).not.toContain(">Остановить<");
+	expect(markup).not.toContain(">Стоп<");
 });
 
 test("the header says when every project is stopped", () => {

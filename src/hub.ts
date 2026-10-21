@@ -1335,20 +1335,33 @@ export class Hub {
 		return errors;
 	}
 
-	async stopProject(id: string): Promise<void> {
+	async stopProject(id: string, external = false): Promise<void> {
 		const project = this.current.projects.find((entry) => entry.id === id);
 		if (!project) {
 			throw new Error(`нет проекта ${id}`);
 		}
+		const targets = project.services.filter((service) => {
+			if (
+				service.managed ||
+				this.processes.get(service.key) ||
+				this.starting.has(service.key)
+			) {
+				return true;
+			}
+			return external && serviceIsLive(service.status);
+		});
 		await Promise.all(
-			(project?.services ?? [])
-				.filter(
-					(service) =>
-						service.managed ||
-						this.processes.get(service.key) ||
-						this.starting.has(service.key)
+			targets.map((service) =>
+				this.stopService(
+					service.key,
+					external &&
+						!(
+							service.managed ||
+							this.processes.get(service.key) ||
+							this.starting.has(service.key)
+						)
 				)
-				.map((service) => this.stopService(service.key))
+			)
 		);
 	}
 

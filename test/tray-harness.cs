@@ -29,6 +29,7 @@ namespace Devhub
                     case "full-queue": FullQueue(args.Length > 2 ? args[2] : null); break;
                     case "window": Window(args.Length > 2 ? args[2] : null); break;
                     case "actions": Actions(); break;
+                    case "projects": Projects(); break;
                     default: throw new InvalidOperationException("Unknown harness mode");
                 }
                 return 0;
@@ -99,6 +100,18 @@ namespace Devhub
             }
             Require(QueueMenu.Parse("{\"status\":\"invalid\",\"items\":\"invalid\"}").Status == null,
                 "An invalid progress snapshot must be ignored");
+            ProjectList projects = ProjectList.Parse(
+                "{\"projects\":[{\"id\":\"sample\",\"name\":\"Sample\",\"summary\":\"web:5000\","
+                + "\"open\":\"http://127.0.0.1:5000/\",\"restart\":true,\"foreign\":false,\"tone\":\"running\"},"
+                + "{\"id\":\"../evil\",\"name\":\"Nope\"},{\"name\":\"Missing id\"},null]}");
+            Require(projects.Online && projects.Projects.Count == 1 && projects.Projects[0].Id == "sample",
+                "Only a safe running project should survive parsing");
+            Require(projects.Projects[0].Restart && !projects.Projects[0].Foreign
+                && projects.Projects[0].Open == "http://127.0.0.1:5000/",
+                "Project card fields were lost");
+            Require(!ProjectList.Parse("{").Online && ProjectList.Parse("{\"projects\":[]}").Online
+                && ProjectList.Parse("{\"projects\":[]}").Projects.Count == 0,
+                "A damaged project list is offline and an empty one is a quiet machine");
         }
 
         private static void View(string output)
@@ -516,6 +529,56 @@ namespace Devhub
                     "A lost hub connection must not leave stale queue controls enabled");
                 Require(!HasText(window, "Fixture operation failed"),
                     "A fresh error-free observation must clear the operation error");
+                window.Close();
+            }
+        }
+
+        private static void Projects()
+        {
+            using (var window = new ControlWindow())
+            {
+                PrepareWindow(window);
+                var opened = new List<string>();
+                var commands = new List<string>();
+                window.ProjectOpenRequested += delegate(string url) { opened.Add(url); };
+                window.ProjectCommandRequested += delegate(string id, string action, bool takeover)
+                {
+                    commands.Add(id + ":" + action + ":" + takeover);
+                };
+                window.ProjectConfirmation = delegate { return false; };
+                ProjectList list = ProjectList.Parse(
+                    "{\"projects\":["
+                    + "{\"id\":\"sample\",\"name\":\"Sample\",\"summary\":\"web:5000\",\"open\":\"http://127.0.0.1:5000/\",\"restart\":true,\"foreign\":false,\"tone\":\"running\"},"
+                    + "{\"id\":\"other\",\"name\":\"Other\",\"summary\":\"api\",\"open\":\"http://127.0.0.1:8100/\",\"restart\":true,\"foreign\":true,\"tone\":\"external\"}"
+                    + "]}");
+                window.ApplyState(new Health { Up = true }, new QueueMenu(), "Работает", false, "", list);
+                window.Open();
+                Application.DoEvents();
+                Require(HasText(window, "Sample") && HasText(window, "2 запущено"),
+                    "Running projects must be listed as compact cards");
+                Button(window, "project-open-sample").PerformClick();
+                Button(window, "project-restart-sample").PerformClick();
+                Button(window, "project-stop-sample").PerformClick();
+                Require(opened.Count == 1 && opened[0] == "http://127.0.0.1:5000/",
+                    "Open must use the project's own page");
+                Require(commands.Count == 2 && commands[0] == "sample:restart:False" && commands[1] == "sample:stop:False",
+                    "A hub-owned project restarts and stops without a takeover");
+                Button(window, "project-stop-other").PerformClick();
+                Require(commands.Count == 2, "Declining a foreign stop must not send it");
+                window.ProjectConfirmation = delegate { return true; };
+                Button(window, "project-restart-other").PerformClick();
+                Require(commands.Count == 3 && commands[2] == "other:restart:True",
+                    "A confirmed foreign restart must ask the hub to take the process over");
+                window.ApplyState(new Health { Up = true }, new QueueMenu(), "Работает", true, "", list);
+                Application.DoEvents();
+                Require(!Button(window, "project-stop-sample").Enabled && !Button(window, "project-restart-sample").Enabled
+                    && Button(window, "project-open-sample").Enabled,
+                    "A pending command must leave open available and block stop and restart");
+                Button(window, "project-stop-sample").PerformClick();
+                Require(commands.Count == 3, "A pending stop must not be sent twice");
+                window.Size = window.MinimumSize;
+                Application.DoEvents();
+                RequireButtonsFit(window);
                 window.Close();
             }
         }

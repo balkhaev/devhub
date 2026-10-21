@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Drawing;
 using System.Runtime.InteropServices;
 using System.Windows.Forms;
@@ -15,6 +16,8 @@ namespace Devhub
         private static readonly Color Accent = Color.FromArgb(89, 202, 170);
         private static readonly Color Warning = Color.FromArgb(238, 184, 107);
         private readonly QueueView queueView;
+        private readonly Panel projectsHost;
+        private readonly Label projectsState;
         private readonly Label hubStatus;
         private readonly Label queueState;
         private readonly Label errorLabel;
@@ -32,6 +35,8 @@ namespace Devhub
         private readonly ToolTip hints;
         private readonly Font titleFont;
         private readonly Font smallFont;
+        private readonly int errorRow = 10;
+        private string projectsKey = "";
         private bool disposing;
 
         private sealed class ControlButton : Button
@@ -61,22 +66,29 @@ namespace Devhub
         public event Action LogsRequested;
         public event Action RefreshRequested;
         public event Action<string> QueueCommandRequested;
+        /// <summary>An absolute local page: the project's app, or its page in the hub.</summary>
+        public event Action<string> ProjectOpenRequested;
+        /// <summary>Project id, stop or restart, and whether the person agreed to take over a foreign process.</summary>
+        public event Action<string, string, bool> ProjectCommandRequested;
 
         /// <summary>Only a person clicking the confirmation may stop the owner's queue.</summary>
         internal Func<bool> StopConfirmation { get; set; }
+
+        /// <summary>Asked only when a running project was not started from the hub. Tests replace the dialog.</summary>
+        internal Func<string, string, bool> ProjectConfirmation { get; set; }
 
         [DllImport("dwmapi.dll")]
         private static extern int DwmSetWindowAttribute(IntPtr window, int attribute, ref int value, int size);
 
         public ControlWindow()
         {
-            Text = "Пульт · DevHub и Inference";
+            Text = "Пульт · проекты и Inference";
             Name = "control-window";
             FormBorderStyle = FormBorderStyle.Sizable;
             ShowInTaskbar = true;
             StartPosition = FormStartPosition.CenterScreen;
-            ClientSize = new Size(440, 566);
-            MinimumSize = new Size(400, 500);
+            ClientSize = new Size(460, 790);
+            MinimumSize = new Size(440, 740);
             BackColor = Surface;
             ForeColor = TextColor;
             Font = new Font("Segoe UI", 9F);
@@ -93,14 +105,17 @@ namespace Devhub
             layout.Padding = new Padding(16, 12, 16, 10);
             layout.BackColor = Surface;
             layout.ColumnCount = 1;
-            layout.RowCount = 9;
+            layout.RowCount = 12;
             layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 27));
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 34));
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 22));
-            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 46));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 14));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 30));
             layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 14));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 46));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 176));
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 45));
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 0));
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 31));
@@ -135,8 +150,36 @@ namespace Devhub
             var divider = new Panel();
             divider.BackColor = Color.FromArgb(48, 55, 66);
             divider.Dock = DockStyle.Fill;
-            divider.Margin = new Padding(0, 11, 0, 10);
+            divider.Margin = new Padding(0, 6, 0, 6);
             layout.Controls.Add(divider, 0, 3);
+
+            var projectsHeading = new TableLayoutPanel();
+            projectsHeading.Dock = DockStyle.Fill;
+            projectsHeading.Margin = Padding.Empty;
+            projectsHeading.ColumnCount = 2;
+            projectsHeading.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            projectsHeading.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 150));
+            projectsHeading.Controls.Add(Label("Проекты", titleFont, TextColor), 0, 0);
+            projectsState = Label("Проверяю проекты…", smallFont, Muted);
+            projectsState.Name = "projects-state";
+            projectsState.TextAlign = ContentAlignment.MiddleRight;
+            projectsHeading.Controls.Add(projectsState, 1, 0);
+            layout.Controls.Add(projectsHeading, 0, 4);
+
+            projectsHost = new Panel();
+            projectsHost.Name = "projects-view";
+            projectsHost.Dock = DockStyle.Fill;
+            projectsHost.Margin = Padding.Empty;
+            projectsHost.AutoScroll = true;
+            projectsHost.BackColor = Surface;
+            projectsHost.Resize += delegate { PlaceCards(); };
+            layout.Controls.Add(projectsHost, 0, 5);
+
+            var divider2 = new Panel();
+            divider2.BackColor = Color.FromArgb(48, 55, 66);
+            divider2.Dock = DockStyle.Fill;
+            divider2.Margin = new Padding(0, 6, 0, 6);
+            layout.Controls.Add(divider2, 0, 6);
 
             var inferenceHeading = new TableLayoutPanel();
             inferenceHeading.Dock = DockStyle.Fill;
@@ -148,13 +191,13 @@ namespace Devhub
             inferenceHeading.Controls.Add(Label("Inference", titleFont, TextColor), 0, 0);
             queueState = Label("Проверяю очередь…", smallFont, Muted);
             inferenceHeading.Controls.Add(queueState, 0, 1);
-            layout.Controls.Add(inferenceHeading, 0, 4);
+            layout.Controls.Add(inferenceHeading, 0, 7);
 
             queueView = new QueueView();
             queueView.Name = "queue-view";
             queueView.Dock = DockStyle.Fill;
             queueView.Margin = Padding.Empty;
-            layout.Controls.Add(queueView, 0, 5);
+            layout.Controls.Add(queueView, 0, 8);
 
             pause = Button("queue-pause", "Пауза", delegate { QueueAction("/api/queue/pause"); });
             stop = Button("queue-stop", "Стоп очереди", delegate
@@ -164,7 +207,7 @@ namespace Devhub
             resume = Button("queue-continue", "Продолжить", delegate { QueueAction("/api/queue/continue"); });
             var queueActions = ButtonRow(pause, stop, resume);
             queueActions.Padding = new Padding(0, 10, 0, 0);
-            layout.Controls.Add(queueActions, 0, 6);
+            layout.Controls.Add(queueActions, 0, 9);
             hints.SetToolTip(pause, "Временно не начинать новые задания. Текущие продолжат работу.");
             hints.SetToolTip(stop, "Остановить начало новых заданий до вашей команды «Продолжить».");
             hints.SetToolTip(resume, "Продолжить общую очередь после стопа или паузы.");
@@ -173,7 +216,7 @@ namespace Devhub
             errorLabel.Name = "action-error";
             errorLabel.Padding = new Padding(0, 4, 0, 0);
             errorLabel.AutoEllipsis = true;
-            layout.Controls.Add(errorLabel, 0, 7);
+            layout.Controls.Add(errorLabel, 0, errorRow);
 
             var footer = new TableLayoutPanel();
             footer.Dock = DockStyle.Fill;
@@ -188,7 +231,7 @@ namespace Devhub
             refresh = Button("refresh", "Обновить", delegate { Raise(RefreshRequested); });
             refresh.Font = smallFont;
             footer.Controls.Add(refresh, 1, 0);
-            layout.Controls.Add(footer, 0, 8);
+            layout.Controls.Add(footer, 0, 11);
 
             StopConfirmation = delegate
             {
@@ -196,6 +239,15 @@ namespace Devhub
                     "Новые задания не будут запускаться, пока вы не нажмёте «Продолжить». "
                     + "Выполняющиеся задания продолжат работу.\n\nОстановить общую очередь?",
                     "Стоп общей очереди", MessageBoxButtons.YesNo, MessageBoxIcon.Question,
+                    MessageBoxDefaultButton.Button2) == DialogResult.Yes;
+            };
+            ProjectConfirmation = delegate(string name, string action)
+            {
+                string text = action == "restart"
+                    ? name + " запущен не из пульта.\n\nПульт остановит его и запустит заново сам. Продолжить?"
+                    : name + " запущен не из пульта.\n\nОстановить его и всё, что он запустил?";
+                return MessageBox.Show(this, text, "Проект " + name,
+                    MessageBoxButtons.YesNo, MessageBoxIcon.Question,
                     MessageBoxDefaultButton.Button2) == DialogResult.Yes;
             };
             ApplyState(null, null, null, false, null);
@@ -282,7 +334,7 @@ namespace Devhub
                 ? value as string ?? "" : "";
         }
 
-        public void ApplyState(Health health, QueueMenu queue, string hubText, bool pending, string error)
+        public void ApplyState(Health health, QueueMenu queue, string hubText, bool pending, string error, ProjectList projects = null)
         {
             bool up = health != null && health.Up;
             hubStatus.Text = !string.IsNullOrEmpty(hubText) ? hubText : health == null ? "Проверяю пульт…"
@@ -300,6 +352,7 @@ namespace Devhub
             stop.Enabled = !pending && up && Can(queue, "/api/queue/stop");
             resume.Enabled = !pending && up && Can(queue, "/api/queue/continue");
             queueView.UpdateStatus(up && queue != null ? queue.Status : null);
+            ShowProjects(health == null, up, pending, projects);
 
             string state = QueueState(queue);
             queueState.Text = !up ? "Нет связи с пультом" : state == "stopped" ? "Стоп владельца · новые задания ожидают"
@@ -311,8 +364,220 @@ namespace Devhub
             string message = error ?? "";
             errorLabel.Text = message;
             hints.SetToolTip(errorLabel, message);
-            layout.RowStyles[7].Height = message.Length > 0 ? 38 : 0;
+            layout.RowStyles[errorRow].Height = message.Length > 0 ? 38 : 0;
             footnote.Text = pending ? "Выполняю команду…" : "Обновляется автоматически";
+        }
+
+        private void ShowProjects(bool unknown, bool up, bool pending, ProjectList projects)
+        {
+            if (unknown)
+            {
+                projectsState.Text = "Проверяю проекты…";
+                projectsState.ForeColor = Muted;
+                ClearProjects();
+                return;
+            }
+            if (!up)
+            {
+                projectsState.Text = "Нет связи с пультом";
+                projectsState.ForeColor = Muted;
+                ClearProjects();
+                return;
+            }
+            if (projects != null && !projects.Online)
+            {
+                projectsState.Text = "Список недоступен";
+                projectsState.ForeColor = Warning;
+                ClearProjects();
+                return;
+            }
+            List<ProjectCard> cards = projects == null ? new List<ProjectCard>() : projects.Projects;
+            if (cards.Count == 0)
+            {
+                projectsState.Text = "Ничего не запущено";
+                projectsState.ForeColor = Muted;
+                ClearProjects();
+                return;
+            }
+            projectsState.Text = cards.Count + " запущено";
+            projectsState.ForeColor = Accent;
+            string key = projects.Json ?? "";
+            if (key != projectsKey || projectsHost.Controls.Count != cards.Count)
+            {
+                Rebuild(cards);
+                projectsKey = key;
+            }
+            EnableProjectButtons(pending);
+        }
+
+        private void ClearProjects()
+        {
+            projectsKey = "";
+            while (projectsHost.Controls.Count > 0)
+            {
+                Control child = projectsHost.Controls[0];
+                projectsHost.Controls.Remove(child);
+                child.Dispose();
+            }
+        }
+
+        private void Rebuild(List<ProjectCard> cards)
+        {
+            int scroll = -projectsHost.AutoScrollPosition.Y;
+            projectsHost.SuspendLayout();
+            while (projectsHost.Controls.Count > 0)
+            {
+                Control child = projectsHost.Controls[0];
+                projectsHost.Controls.Remove(child);
+                child.Dispose();
+            }
+            foreach (ProjectCard card in cards)
+            {
+                projectsHost.Controls.Add(MakeCard(card));
+            }
+            projectsHost.ResumeLayout();
+            PlaceCards();
+            projectsHost.AutoScrollPosition = new Point(0, scroll);
+        }
+
+        private void PlaceCards()
+        {
+            if (projectsHost == null)
+            {
+                return;
+            }
+            int width = projectsHost.ClientSize.Width;
+            if (projectsHost.VerticalScroll.Visible)
+            {
+                width -= SystemInformation.VerticalScrollBarWidth;
+            }
+            if (width < 120)
+            {
+                width = Math.Max(120, projectsHost.Width - 8);
+            }
+            int y = 0;
+            foreach (Control card in projectsHost.Controls)
+            {
+                card.SetBounds(0, y, Math.Max(120, width - 2), 62);
+                Control[] parts = card.Tag as Control[];
+                if (parts != null && parts.Length == 3)
+                {
+                    parts[0].Width = card.Width - 30;
+                    parts[1].Width = card.Width - 30;
+                    parts[2].SetBounds(8, 38, card.Width - 16, 22);
+                }
+                y += 66;
+            }
+            projectsHost.AutoScrollMinSize = new Size(0, y);
+        }
+
+        private Control MakeCard(ProjectCard card)
+        {
+            var box = new Panel();
+            box.Name = "project-card-" + card.Id;
+            box.Height = 62;
+            box.BackColor = Raised;
+            var dot = new Panel();
+            dot.Size = new Size(8, 8);
+            dot.Location = new Point(8, 10);
+            dot.BackColor = ToneColor(card.Tone);
+            box.Controls.Add(dot);
+            Label name = Label(card.Name, Font, TextColor);
+            name.Dock = DockStyle.None;
+            name.Location = new Point(22, 3);
+            name.Height = 18;
+            box.Controls.Add(name);
+            Label summary = Label(string.IsNullOrEmpty(card.Summary) ? "работает" : card.Summary, smallFont, Muted);
+            summary.Dock = DockStyle.None;
+            summary.Location = new Point(22, 21);
+            summary.Height = 14;
+            box.Controls.Add(summary);
+            hints.SetToolTip(name, card.Name);
+            hints.SetToolTip(summary, card.Summary);
+
+            var actions = new TableLayoutPanel();
+            actions.ColumnCount = 3;
+            actions.RowCount = 1;
+            actions.Margin = Padding.Empty;
+            actions.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            for (int column = 0; column < 3; column++)
+            {
+                actions.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100F / 3));
+            }
+            string id = card.Id;
+            string openUrl = card.Open ?? "";
+            bool foreign = card.Foreign;
+            string projectName = card.Name;
+            Button open = Button("project-open-" + id, "Открыть", delegate { RaiseOpen(openUrl); });
+            Button again = Button("project-restart-" + id, "Заново", delegate { RaiseCommand(id, projectName, "restart", foreign); });
+            Button halt = Button("project-stop-" + id, "Стоп", delegate { RaiseCommand(id, projectName, "stop", foreign); });
+            again.Enabled = card.Restart;
+            again.Tag = card.Restart;
+            hints.SetToolTip(open, string.IsNullOrEmpty(openUrl) ? "Страница проекта" : openUrl);
+            hints.SetToolTip(again, "Перезапустить");
+            hints.SetToolTip(halt, "Остановить");
+            actions.Controls.Add(open, 0, 0);
+            actions.Controls.Add(again, 1, 0);
+            actions.Controls.Add(halt, 2, 0);
+            box.Controls.Add(actions);
+            box.Tag = new Control[] { name, summary, actions };
+            return box;
+        }
+
+        private static Color ToneColor(string tone)
+        {
+            if (tone == "external") { return Color.FromArgb(96, 165, 250); }
+            if (tone == "starting") { return Warning; }
+            if (tone == "unhealthy") { return Color.FromArgb(251, 146, 60); }
+            return Accent;
+        }
+
+        private void EnableProjectButtons(bool pending)
+        {
+            EnableProjectButtons(projectsHost, pending);
+        }
+
+        private static void EnableProjectButtons(Control parent, bool pending)
+        {
+            foreach (Control child in parent.Controls)
+            {
+                Button button = child as Button;
+                if (button != null && button.Name.StartsWith("project-open-"))
+                {
+                    button.Enabled = true;
+                }
+                else if (button != null && button.Name.StartsWith("project-restart-"))
+                {
+                    button.Enabled = !pending && button.Tag is bool && (bool)button.Tag;
+                }
+                else if (button != null && button.Name.StartsWith("project-stop-"))
+                {
+                    button.Enabled = !pending;
+                }
+                EnableProjectButtons(child, pending);
+            }
+        }
+
+        private void RaiseOpen(string url)
+        {
+            Action<string> action = ProjectOpenRequested;
+            if (action != null && url.Length > 0)
+            {
+                action(url);
+            }
+        }
+
+        private void RaiseCommand(string id, string name, string action, bool foreign)
+        {
+            if (foreign && (ProjectConfirmation == null || !ProjectConfirmation(name, action)))
+            {
+                return;
+            }
+            Action<string, string, bool> command = ProjectCommandRequested;
+            if (command != null)
+            {
+                command(id, action, foreign);
+            }
         }
 
         public void Open()

@@ -390,6 +390,108 @@ namespace Devhub
         }
     }
 
+    /// <summary>One running project, as the tray window's card list draws it.</summary>
+    internal sealed class ProjectCard
+    {
+        public bool Foreign;
+        public string Id;
+        public string Name;
+        public string Open;
+        public string Page;
+        public bool Restart;
+        public string Summary;
+        public string Tone;
+    }
+
+    /// <summary>The hub's compact list of running projects. A damaged answer is offline, not an empty machine.</summary>
+    internal sealed class ProjectList
+    {
+        public readonly List<ProjectCard> Projects = new List<ProjectCard>();
+        public bool Online;
+        public string Json = "";
+
+        public static ProjectList Parse(string json)
+        {
+            var list = new ProjectList();
+            try
+            {
+                var data = new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(json);
+                object projects;
+                if (!data.TryGetValue("projects", out projects) || projects is string || !(projects is IEnumerable))
+                {
+                    return list;
+                }
+                foreach (object raw in (IEnumerable)projects)
+                {
+                    var entry = raw as Dictionary<string, object>;
+                    ProjectCard card = entry == null ? null : From(entry);
+                    if (card != null)
+                    {
+                        list.Projects.Add(card);
+                    }
+                }
+                list.Online = true;
+                list.Json = json;
+            }
+            catch (Exception)
+            {
+                return new ProjectList();
+            }
+            return list;
+        }
+
+        public static bool SafeId(string id)
+        {
+            if (id == null || id.Length == 0 || id.Length > 80)
+            {
+                return false;
+            }
+            foreach (char letter in id)
+            {
+                bool ok = (letter >= 'a' && letter <= 'z') || (letter >= 'A' && letter <= 'Z')
+                    || (letter >= '0' && letter <= '9') || letter == '.' || letter == '_' || letter == '-';
+                if (!ok)
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        private static ProjectCard From(Dictionary<string, object> entry)
+        {
+            string id = Word(entry, "id");
+            string name = Word(entry, "name");
+            if (!SafeId(id) || string.IsNullOrEmpty(name))
+            {
+                return null;
+            }
+            return new ProjectCard
+            {
+                Foreign = Flag(entry, "foreign"),
+                Id = id,
+                Name = name,
+                Open = Word(entry, "open"),
+                Page = Word(entry, "page") ?? "",
+                Restart = Flag(entry, "restart"),
+                Summary = Word(entry, "summary") ?? "",
+                Tone = Word(entry, "tone") ?? "running",
+            };
+        }
+
+        private static bool Flag(Dictionary<string, object> entry, string key)
+        {
+            object value;
+            return entry.TryGetValue(key, out value) && value is bool && (bool)value;
+        }
+
+        private static string Word(Dictionary<string, object> entry, string key)
+        {
+            object value;
+            return entry.TryGetValue(key, out value) ? value as string : null;
+        }
+    }
+
     /// <summary>The full queue and measured progress, embedded in the tray's persistent control window.</summary>
     internal sealed class QueueView : Control
     {
@@ -934,6 +1036,40 @@ namespace Devhub
             return status == 200 && body != null ? QueueMenu.Parse(body) : new QueueMenu();
         }
 
+        /// <summary>The running projects as compact cards; offline when the hub's answer cannot be read.</summary>
+        public ProjectList ReadProjects()
+        {
+            int status;
+            string body = Authorized("GET", "api/tray/projects", 4000, out status);
+            return status == 200 && body != null ? ProjectList.Parse(body) : new ProjectList();
+        }
+
+        /// <summary>Stops or restarts one project. Takeover is the person's explicit click on a foreign process.</summary>
+        public string ProjectCommand(string id, string action, bool takeover)
+        {
+            if ((action != "stop" && action != "restart") || !ProjectList.SafeId(id))
+            {
+                return "Неизвестная команда проекта";
+            }
+            int status;
+            string body = Authorized(
+                "POST",
+                "api/projects/" + Uri.EscapeDataString(id) + "/" + action,
+                20000,
+                out status,
+                takeover);
+            if (status == 200)
+            {
+                return null;
+            }
+            string said = ErrorOf(body);
+            if (said != null)
+            {
+                return said;
+            }
+            return status == 0 ? "Пульт не отвечает" : "Пульт ответил HTTP " + status;
+        }
+
         /// <summary>Sends one of the queue menu's commands to the hub; returns what went wrong, or null.</summary>
         public string Command(string path)
         {
@@ -988,20 +1124,20 @@ namespace Devhub
         }
 
         /// <summary>A request with the client token; refused once, it is repeated with the token read again.</summary>
-        private string Authorized(string method, string path, int timeoutMs, out int status)
+        private string Authorized(string method, string path, int timeoutMs, out int status, bool takeover = false)
         {
             string used = Token(false);
-            string body = Ask(method, path, used, timeoutMs, out status);
+            string body = Ask(method, path, used, timeoutMs, out status, takeover);
             if (status != 403)
             {
                 return body;
             }
             string current = Token(true);
-            return current == used ? body : Ask(method, path, current, timeoutMs, out status);
+            return current == used ? body : Ask(method, path, current, timeoutMs, out status, takeover);
         }
 
         /// <summary>The answer's text and status; status 0 and no text when the hub did not answer at all.</summary>
-        private string Ask(string method, string path, string credential, int timeoutMs, out int status)
+        private string Ask(string method, string path, string credential, int timeoutMs, out int status, bool takeover = false)
         {
             status = 0;
             if (credential.Length == 0)
@@ -1016,6 +1152,10 @@ namespace Devhub
                 request.ReadWriteTimeout = timeoutMs;
                 request.Proxy = null;
                 request.Headers["x-devhub-client"] = credential;
+                if (takeover)
+                {
+                    request.Headers["x-devhub-takeover"] = "1";
+                }
                 if (method == "POST")
                 {
                     request.ContentLength = 0;
@@ -1469,6 +1609,7 @@ namespace Devhub
         private string commandError = "";
         private bool pollAgain;
         private QueueMenu queueLatest = new QueueMenu();
+        private ProjectList projectsLatest = new ProjectList();
         private string queueShown = "";
         private DateTime startedAt = DateTime.MinValue;
 
@@ -1491,6 +1632,8 @@ namespace Devhub
             window.LogsRequested += OpenLogs;
             window.RefreshRequested += Poll;
             window.QueueCommandRequested += SendQueue;
+            window.ProjectOpenRequested += OpenProject;
+            window.ProjectCommandRequested += SendProject;
 
             menu = new ContextMenuStrip();
             menu.ShowItemToolTips = true;
@@ -1567,7 +1710,7 @@ namespace Devhub
 
         private void ApplyWindow()
         {
-            window.ApplyState(last, queueLatest, status.Text, actionPending || restarting, commandError);
+            window.ApplyState(last, queueLatest, status.Text, actionPending || restarting, commandError, projectsLatest);
         }
 
         /// <summary>
@@ -1677,6 +1820,11 @@ namespace Devhub
             {
                 Health health = hub.Check();
                 QueueMenu queue = health.Up ? hub.ReadQueueMenu() : new QueueMenu();
+                ProjectList projects = health.Up ? hub.ReadProjects() : new ProjectList();
+                if (health.Up)
+                {
+                    ResolveProjects(projects);
+                }
                 Post(() =>
                 {
                     if (epoch != readingEpoch)
@@ -1686,16 +1834,17 @@ namespace Devhub
                         Poll();
                         return;
                     }
-                    Apply(health, queue);
+                    Apply(health, queue, projects);
                 });
             });
         }
 
-        private void Apply(Health health, QueueMenu queue)
+        private void Apply(Health health, QueueMenu queue, ProjectList projects)
         {
             checking = false;
             last = health;
             queueLatest = queue;
+            projectsLatest = projects ?? new ProjectList();
             ShowQueue();
             ShowHealth(health, queue.Tip);
             ApplyWindow();
@@ -1786,6 +1935,83 @@ namespace Devhub
                     {
                         string text = error.Length <= BalloonLimit ? error : error.Substring(0, BalloonLimit - 1) + "…";
                         icon.ShowBalloonTip(8000, "Общая очередь", text, ToolTipIcon.Warning);
+                    }
+                    ApplyWindow();
+                    Poll();
+                });
+            });
+        }
+
+        /// <summary>A project without its own page opens inside the hub. Only a local http address is kept.</summary>
+        private void ResolveProjects(ProjectList projects)
+        {
+            if (projects == null)
+            {
+                return;
+            }
+            string root = hub.Url.TrimEnd('/');
+            foreach (ProjectCard card in projects.Projects)
+            {
+                if (!string.IsNullOrEmpty(card.Open))
+                {
+                    continue;
+                }
+                string page = card.Page ?? "";
+                if (!page.StartsWith("#"))
+                {
+                    page = "#" + page;
+                }
+                card.Open = root + "/" + page.TrimStart('/');
+            }
+        }
+
+        private static bool LocalPage(string url)
+        {
+            Uri parsed;
+            if (url == null || !Uri.TryCreate(url, UriKind.Absolute, out parsed) || parsed.Scheme != "http")
+            {
+                return false;
+            }
+            return parsed.Host == "127.0.0.1" || parsed.Host == "localhost";
+        }
+
+        private void OpenProject(string url)
+        {
+            if (!LocalPage(url))
+            {
+                return;
+            }
+            try
+            {
+                Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+            }
+            catch (Exception error)
+            {
+                commandError = error.Message;
+                ApplyWindow();
+            }
+        }
+
+        /// <summary>Stops or restarts one project the person chose in the control window.</summary>
+        private void SendProject(string id, string action, bool takeover)
+        {
+            if (actionPending || restarting) { return; }
+            actionPending = true;
+            readingEpoch++;
+            commandError = "";
+            ApplyWindow();
+            ThreadPool.QueueUserWorkItem(delegate
+            {
+                string error = hub.ProjectCommand(id, action, takeover);
+                Post(() =>
+                {
+                    actionPending = false;
+                    readingEpoch++;
+                    commandError = error ?? "";
+                    if (!string.IsNullOrEmpty(error))
+                    {
+                        string text = error.Length <= BalloonLimit ? error : error.Substring(0, BalloonLimit - 1) + "…";
+                        icon.ShowBalloonTip(8000, "Проекты", text, ToolTipIcon.Warning);
                     }
                     ApplyWindow();
                     Poll();
