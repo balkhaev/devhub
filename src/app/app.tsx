@@ -9,10 +9,10 @@ import { ProjectPage } from "./project";
 import { ProjectPreferencesProvider } from "./project-preferences";
 import { projectRoute } from "./project-ui";
 import { QueueProvider } from "./queue";
+import { RunningProjectsMenu } from "./running-projects";
 import { ServicePage } from "./service";
 import { Sidebar } from "./sidebar";
 import { TidyPage } from "./tidy";
-import { isUp } from "./words";
 
 /**
  * The hub: every local project's dev servers on the left, the chosen one's pages, log and details on the right, and
@@ -121,8 +121,6 @@ export function App() {
 			go(null);
 		}
 	}, [go, route, view]);
-	const services = view?.projects.flatMap((project) => project.services) ?? [];
-	const up = services.filter((service) => isUp(service.status)).length;
 	return (
 		<ProjectPreferencesProvider>
 			<QueueProvider>
@@ -132,11 +130,13 @@ export function App() {
 							<span aria-hidden="true" className="brand__mark" />
 							<strong>Пульт</strong>
 						</a>
-						<span className="header__services muted">
-							{view
-								? `работают ${up} из ${services.length}`
-								: "читаю, что запущено…"}
-						</span>
+						{view ? (
+							<RunningProjectsMenu projects={view.projects} />
+						) : (
+							<span className="header__services muted">
+								читаю, что запущено…
+							</span>
+						)}
 						<HeaderStatus connected={connected} />
 					</header>
 					<Sidebar onOpen={go} selected={route} view={view} />

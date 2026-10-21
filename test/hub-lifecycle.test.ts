@@ -774,4 +774,34 @@ test("unknown project operations fail explicitly", async () => {
 	const { hub } = await fixture([]);
 	await expect(hub.startProject("missing")).rejects.toThrow("нет проекта");
 	await expect(hub.stopProject("missing")).rejects.toThrow("нет проекта");
+	await expect(hub.restartProject("missing")).rejects.toThrow("нет проекта");
+});
+
+test("restarting a project brings its running services back and leaves stopped ones down", async () => {
+	const { hub, processes } = await fixture([
+		configService("primary"),
+		configService("alternate"),
+	]);
+	await hub.startService("app/primary");
+	expect(await hub.restartProject("app")).toEqual([]);
+	expect(processes.stops).toEqual(["app/primary"]);
+	expect(processes.launches).toEqual(["app/primary", "app/primary"]);
+	expect(
+		hub.current.projects[0]?.services.map((service) => [
+			service.key,
+			service.status,
+		])
+	).toEqual([
+		["app/primary", "running"],
+		["app/alternate", "stopped"],
+	]);
+});
+
+test("restarting a project with nothing running says so", async () => {
+	const { hub, processes } = await fixture([configService("primary")]);
+	await expect(hub.restartProject("app")).rejects.toThrow(
+		"нечего перезапускать"
+	);
+	expect(processes.launches).toEqual([]);
+	expect(processes.stops).toEqual([]);
 });

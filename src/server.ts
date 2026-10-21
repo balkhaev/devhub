@@ -203,6 +203,31 @@ export async function startHub(
 			releaseBranch: stage.policy.releaseBranch,
 		};
 	};
+	const deleteProject = async (request: Request, id: string) => {
+		const body: unknown = await request.json();
+		if (
+			!body ||
+			typeof body !== "object" ||
+			!("token" in body) ||
+			typeof body.token !== "string" ||
+			body.token.length > 100
+		) {
+			throw new Error("Нужен подтверждённый список папок для удаления");
+		}
+		return projects.delete(id, body.token);
+	};
+	const projectRuntime = (request: Request, id: string, action: string) => {
+		if (action === "start") {
+			return hub.startProject(id);
+		}
+		if (action === "stop") {
+			return hub.stopProject(id);
+		}
+		if (action === "restart") {
+			return hub.restartProject(id, !authenticatedClient(request, token));
+		}
+		return null;
+	};
 	/** Git inspection of every checkout takes seconds: it runs beside the hub, not inside its event loop. */
 	const tidy = async (...flags: string[]): Promise<MachineTidy> => {
 		const child = spawn(
@@ -407,7 +432,7 @@ export async function startHub(
 				})),
 			"/api/projects/:id/:action": {
 				POST: (request) =>
-					act(request, async () => {
+					act(request, () => {
 						const { action, id } = request.params;
 						if (action === "mode") {
 							return changeProjectMode(request, id);
@@ -416,27 +441,12 @@ export async function startHub(
 							return projects.plan(id);
 						}
 						if (action === "delete") {
-							const body: unknown = await request.json();
-							if (
-								!body ||
-								typeof body !== "object" ||
-								!("token" in body) ||
-								typeof body.token !== "string" ||
-								body.token.length > 100
-							) {
-								throw new Error(
-									"Нужен подтверждённый список папок для удаления"
-								);
-							}
-							return projects.delete(id, body.token);
+							return deleteProject(request, id);
 						}
-						if (action === "start") {
-							return hub.startProject(id);
-						}
-						if (action === "stop") {
-							return hub.stopProject(id);
-						}
-						throw new Error(`неизвестное действие ${action}`);
+						return (
+							projectRuntime(request, id, action) ??
+							Promise.reject(new Error(`неизвестное действие ${action}`))
+						);
 					}),
 			},
 			"/api/queue": {

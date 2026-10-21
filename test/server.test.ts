@@ -19,6 +19,9 @@ test("an action's address is said in words for the journal", () => {
 	expect(words("/api/projects/montage/start")).toBe(
 		"проект montage: запустить"
 	);
+	expect(words("/api/projects/montage/restart")).toBe(
+		"проект montage: перезапустить"
+	);
 	expect(words("/api/services/altay/site/restart")).toBe(
 		"altay/site: перезапустить"
 	);

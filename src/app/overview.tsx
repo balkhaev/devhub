@@ -13,6 +13,7 @@ import {
 import { favoriteProjects, useProjectPreferences } from "./project-preferences";
 import { projectRoute } from "./project-ui";
 import { QueueSection } from "./queue";
+import { RunningProjectsList } from "./running-projects";
 import {
 	composeStatus,
 	composeWords,
@@ -341,17 +342,7 @@ export function Overview({
 					Работают {servicesWord(up.length)} из {services.length}; из пульта
 					запущено {managed.length}.
 				</p>
-				<div className="chips">
-					{up.map((service) => (
-						<a className="chip" href={`#/${service.key}`} key={service.key}>
-							<span className={cx("dot", `dot--${service.status}`)} />
-							{service.name}
-							{service.port ? (
-								<span className="muted">:{service.port}</span>
-							) : null}
-						</a>
-					))}
-				</div>
+				<RunningProjectsList projects={view.projects} />
 			</section>
 			<QueueSection view={view} />
 			<section>

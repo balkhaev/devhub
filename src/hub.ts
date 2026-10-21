@@ -138,6 +138,17 @@ const WARMUP_MS = 300_000;
 /** How long a Docker project brought up for a service may take to become healthy. */
 const COMPOSE_READY_MS = 90_000;
 const PORT_FREE_MS = 15_000;
+
+/** A service that is on the machine and can be stopped or restarted. */
+function serviceIsLive(status: ServiceStatus): boolean {
+	return (
+		status === "running" ||
+		status === "external" ||
+		status === "starting" ||
+		status === "unhealthy"
+	);
+}
+
 const NO_PORT_WARMUP_MS = 500;
 const START_POLL_MS = 500;
 const ANCESTORS = 4;
@@ -1339,6 +1350,33 @@ export class Hub {
 				)
 				.map((service) => this.stopService(service.key))
 		);
+	}
+
+	/**
+	 * Stops every running service of a project and starts it again. A service that is down stays down.
+	 * `external` is the same choice as for one service: the page may take over a process it did not start.
+	 */
+	async restartProject(id: string, external = true): Promise<string[]> {
+		const project = this.current.projects.find((entry) => entry.id === id);
+		if (!project) {
+			throw new Error(`нет проекта ${id}`);
+		}
+		const live = project.services.filter(
+			(service) => service.canStart && serviceIsLive(service.status)
+		);
+		if (live.length === 0) {
+			throw new Error(`в проекте ${project.name} нечего перезапускать`);
+		}
+		const errors: string[] = [];
+		for (const service of live) {
+			try {
+				// biome-ignore lint/performance/noAwaitInLoops: one after another, so a shared port is free first
+				await this.restartService(service.key, external);
+			} catch (error) {
+				errors.push(`${service.name}: ${(error as Error).message}`);
+			}
+		}
+		return errors;
 	}
 
 	/** Brings a Docker project up or stops it; when a port it needs is taken, says who holds it. */

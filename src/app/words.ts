@@ -26,6 +26,10 @@ export const STATUS_SHORT: Record<ServiceStatus, string> = {
 export const isUp = (status: ServiceStatus): boolean =>
 	status === "running" || status === "external" || status === "starting";
 
+/** Up, or listening but failing its health check: still something to stop or restart. */
+export const isLive = (status: ServiceStatus): boolean =>
+	isUp(status) || status === "unhealthy";
+
 /** Joins class names, leaving out the ones that do not apply. */
 export const cx = (...names: (string | false | null | undefined)[]): string =>
 	names.filter(Boolean).join(" ");
@@ -61,6 +65,9 @@ export function since(at: number, now = Date.now()): string {
 
 export const servicesWord = (n: number): string =>
 	`${n} ${plural(n, "сервис", "сервиса", "сервисов")}`;
+
+export const projectsWord = (n: number): string =>
+	`${n} ${plural(n, "проект", "проекта", "проектов")}`;
 
 /** A container's state as a status dot: a one-off job that finished well is not a failure. */
 export function containerStatus(container: ContainerView): string {
