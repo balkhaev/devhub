@@ -568,7 +568,7 @@ export async function startHub(
 			},
 			"/api/tray/projects": {
 				GET: (request) =>
-					guarded(request, () => ({
+					guarded(request, async () => ({
 						projects: runningCards(hub.current.projects),
 					})),
 			},
