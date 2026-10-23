@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "devhub": {
+      "command": "bun",
+      "args": ["F:/code/devhub/src/mcp.ts"]
+    }
+  }
+}

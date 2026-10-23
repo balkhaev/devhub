@@ -15,6 +15,7 @@ import {
 	registerCreationFolder,
 } from "./create";
 import { Hub, type HubRuntime, type HubView } from "./hub";
+import { KnowledgeError, KnowledgeStore, searchKnowledge } from "./knowledge";
 import { frameable } from "./probes";
 import { Projects } from "./projects";
 import { Queue, QueueError } from "./queue";
@@ -154,6 +155,7 @@ export async function startHub(
 		dev?: boolean;
 		/** How often leftover folders nobody used for a day are removed; never when it is not given. */
 		idleSweepMs?: number;
+		knowledgeFile?: string;
 		port?: number;
 		queue?: Queue;
 		root?: string;
@@ -165,6 +167,17 @@ export async function startHub(
 		options.catalogue ?? (await loadCatalogue(join(root, "services.json")));
 	const token = await clientToken(root);
 	const hub = new Hub(catalogue, root, options.runtime);
+	const knowledge = new KnowledgeStore(
+		options.knowledgeFile ??
+			join(catalogue.data ?? "F:/AI", "devhub", "knowledge.sqlite")
+	);
+	const knowledgeProject = (id: string) => {
+		const project = hub.current.projects.find((entry) => entry.id === id);
+		if (!project) {
+			throw new KnowledgeError(`Нет проекта ${id}`, 404);
+		}
+		return project;
+	};
 	const projects = new Projects(hub, root);
 	const coolify = options.coolify ?? new Coolify(() => hub.configuration);
 	const queue = options.queue ?? new Queue(() => hub.configuration);
@@ -307,7 +320,9 @@ export async function startHub(
 			return json(await work());
 		} catch (error) {
 			const status =
-				error instanceof CoolifyError || error instanceof QueueError
+				error instanceof CoolifyError ||
+				error instanceof QueueError ||
+				error instanceof KnowledgeError
 					? error.status
 					: 409;
 			return json({ error: (error as Error).message }, status);
@@ -423,6 +438,59 @@ export async function startHub(
 							ready ? 200 : 503
 						)
 					: refused(),
+			"/api/knowledge": {
+				GET: (request) =>
+					guarded(request, async () => ({
+						projects: hub.current.projects.map(
+							({ id, name, description, path }) => ({
+								description,
+								id,
+								name,
+								path,
+							})
+						),
+					})),
+			},
+			"/api/knowledge/:id": {
+				GET: (request) =>
+					guarded(request, () => {
+						const project = knowledgeProject(request.params.id);
+						const state = knowledge.read(project.path);
+						const query = new URL(request.url).searchParams.get("q");
+						return Promise.resolve(
+							query === null
+								? state
+								: {
+										hits: searchKnowledge(state, query),
+										revision: state.revision,
+									}
+						);
+					}),
+				POST: (request) =>
+					guarded(request, async () => {
+						if (!ready) {
+							throw new KnowledgeError("Пульт ещё запускается", 503);
+						}
+						const project = knowledgeProject(request.params.id);
+						const body = await request.text();
+						if (body.length > 2_000_000) {
+							throw new KnowledgeError("Слишком большой пакет изменений", 413);
+						}
+						let input: unknown;
+						try {
+							input = JSON.parse(body);
+						} catch (cause) {
+							// biome-ignore lint/style/useErrorCause: KnowledgeError accepts status before ErrorOptions and forwards cause to Error.
+							throw new KnowledgeError("Нужен корректный JSON", 400, { cause });
+						}
+						const state = knowledge.change(project.path, input);
+						journal(
+							`База знаний ${project.id}: ревизия ${state.revision}`,
+							root
+						);
+						return state;
+					}),
+			},
 			"/api/prod": (request) =>
 				guarded(request, () =>
 					coolify.view(new URL(request.url).searchParams.has("refresh"))
@@ -626,6 +694,7 @@ export async function startHub(
 		hub,
 		stop: () => {
 			clearInterval(sweeping);
+			knowledge.close();
 			hub.stop();
 			server.stop(true);
 		},

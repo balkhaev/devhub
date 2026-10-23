@@ -11,6 +11,7 @@
     "fix": "ultracite fix",
     "hub": "bun src/cli.ts",
     "install:client": "bun scripts/install-client.ts",
+    "mcp": "bun src/mcp.ts",
     "migrate": "bun scripts/migrate-projects.ts",
     "open": "bun src/open.ts",
     "project:interfaces": "bun scripts/project-interfaces.ts",
@@ -23,6 +24,7 @@
     "worktree": "node .devhub/worktree.cjs"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.1",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "zod": "^4.5.4"

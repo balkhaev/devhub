@@ -64,6 +64,9 @@ function ProjectGroup({
 	const currentService = project.services.find(
 		(service) => service.key === selected
 	);
+	const currentProject = selected?.startsWith(
+		`projects/${encodeURIComponent(project.id)}/`
+	);
 	return (
 		<section className="side-group">
 			<div className="side-group__head">
@@ -74,8 +77,7 @@ function ProjectGroup({
 						}
 						className={cx(
 							"side-project",
-							(selected === projectRoute(project.id) ||
-								Boolean(currentService)) &&
+							(currentProject || Boolean(currentService)) &&
 								"side-project--selected"
 						)}
 						data-key={projectRoute(project.id)}
@@ -105,6 +107,30 @@ function ProjectGroup({
 				) : null}
 			</div>
 			<ul className="side-group__list" hidden={collapsed} id={details}>
+				{collapsed
+					? null
+					: (["canvas", "kanban"] as const).map((section) => {
+							const key = `projects/${encodeURIComponent(project.id)}/${section}`;
+							return (
+								<li key={section}>
+									<button
+										aria-current={selected === key ? "true" : undefined}
+										className={cx(
+											"side-item",
+											selected === key && "side-item--selected"
+										)}
+										data-key={key}
+										onClick={onOpen}
+										type="button"
+									>
+										<span aria-hidden="true" className="board-side-icon">
+											{section === "canvas" ? "◇" : "▥"}
+										</span>
+										{section === "canvas" ? "Canvas" : "Kanban"}
+									</button>
+								</li>
+							);
+						})}
 				{collapsed
 					? null
 					: project.services.map((service) => (
@@ -155,30 +181,26 @@ export function Sidebar({
 				Обзор
 			</button>
 			<button
-				aria-current={selected === "prod" ? "true" : undefined}
+				aria-current={
+					selected?.startsWith("settings") ||
+					selected === "prod" ||
+					selected === "tidy"
+						? "true"
+						: undefined
+				}
 				className={cx(
 					"side-item",
 					"side-item--home",
-					selected === "prod" && "side-item--selected"
+					(selected?.startsWith("settings") ||
+						selected === "prod" ||
+						selected === "tidy") &&
+						"side-item--selected"
 				)}
-				data-key="prod"
+				data-key="settings"
 				onClick={open}
 				type="button"
 			>
-				Прод
-			</button>
-			<button
-				aria-current={selected === "tidy" ? "true" : undefined}
-				className={cx(
-					"side-item",
-					"side-item--home",
-					selected === "tidy" && "side-item--selected"
-				)}
-				data-key="tidy"
-				onClick={open}
-				type="button"
-			>
-				Порядок
+				Настройки
 			</button>
 			<button
 				aria-current={selected === "new" ? "true" : undefined}
