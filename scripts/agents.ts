@@ -268,7 +268,7 @@ async function main(): Promise<void> {
 		// biome-ignore lint/suspicious/noTemplateCurlyInString: machine catalogue placeholder
 		root: resolve(project.path.replaceAll("${code}", catalogue.code)),
 	}));
-	// The hub is a project too, though its own catalogue does not list it.
+	// Include the hub even when running with a catalogue that does not discover its manifest.
 	const roots = [
 		...new Set([...listed.map((entry) => entry.root), hub]),
 	].filter((root) => existsSync(root));
