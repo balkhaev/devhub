@@ -15,6 +15,10 @@ import { primaryCheckout } from "../src/checkouts";
 import { loadCatalogue } from "../src/config";
 import { commitOwnRewrites } from "../src/instruction-commit";
 import {
+	PROJECT_KNOWLEDGE_MARKER,
+	projectKnowledgeBlock,
+} from "../src/knowledge-instructions";
+import {
 	ownerParentPolicyBlock,
 	ownerProjectPolicyBlock,
 	WORKFLOW_POLICY_MARKER,
@@ -75,6 +79,11 @@ function machineInstructions(
 	shared: Map<string, string>
 ): Change | null {
 	let after = replaceMarkedBlock(read(file), devServerBlock(hub));
+	after = replaceMarkedBlock(
+		after,
+		projectKnowledgeBlock(hub),
+		PROJECT_KNOWLEDGE_MARKER
+	);
 	after = replaceMarkedBlock(
 		after,
 		ownerParentPolicyBlock(),
