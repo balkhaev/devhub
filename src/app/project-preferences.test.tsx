@@ -8,6 +8,7 @@ import { ProjectPage } from "./project";
 import {
 	createProjectPreferenceStore,
 	favoriteProjects,
+	isProjectCollapsed,
 	PROJECT_PREFERENCES_KEY,
 	type ProjectPreferenceStore,
 	ProjectPreferencesProvider,
@@ -126,13 +127,14 @@ test("malformed preferences fall back safely while valid sets keep unknown proje
 		"broken JSON",
 		"null",
 		"[]",
-		'{"version":2}',
+		'{"version":3}',
 		'{"favorites":["sample"]}',
 	]) {
 		expect(parseProjectPreferences(raw)).toEqual({
 			collapsed: { overview: [], sidebar: [] },
+			expanded: { overview: [], sidebar: [] },
 			favorites: [],
-			version: 1,
+			version: 2,
 		});
 	}
 	const parsed = parseProjectPreferences(
@@ -144,8 +146,9 @@ test("malformed preferences fall back safely while valid sets keep unknown proje
 	);
 	expect(parsed).toEqual({
 		collapsed: { overview: ["sample"], sidebar: [] },
+		expanded: { overview: [], sidebar: [] },
 		favorites: ["future-project"],
-		version: 1,
+		version: 2,
 	});
 });
 
@@ -186,7 +189,7 @@ test("both surfaces share favorites while independent collapse preferences survi
 	store.toggleFavorite("beta");
 	store.toggleCollapse("overview", "alpha");
 	expect(store.getSnapshot().favorites).toEqual(["beta"]);
-	expect(store.getSnapshot().collapsed).toEqual({
+	expect(store.getSnapshot().expanded).toEqual({
 		overview: ["alpha"],
 		sidebar: [],
 	});
@@ -198,9 +201,10 @@ test("both surfaces share favorites while independent collapse preferences survi
 	store.toggleFavorite("beta");
 	store.toggleCollapse("overview", "alpha");
 	expect(store.getSnapshot()).toEqual({
-		collapsed: { overview: [], sidebar: ["beta"] },
+		collapsed: { overview: ["alpha"], sidebar: [] },
+		expanded: { overview: [], sidebar: [] },
 		favorites: [],
-		version: 1,
+		version: 2,
 	});
 	offOverview();
 	offSidebar();
@@ -245,7 +249,7 @@ test("other tabs synchronize all preferences without echo writes; remove and cle
 	memory.emit({ key: "unrelated", newValue: external });
 	expect(store.getSnapshot().favorites).toEqual([]);
 	memory.emit({ key: PROJECT_PREFERENCES_KEY, newValue: external });
-	expect(store.getSnapshot()).toEqual(JSON.parse(external));
+	expect(store.getSnapshot()).toEqual(parseProjectPreferences(external));
 	expect(memory.data.writes).toBe(0);
 	memory.emit({ key: PROJECT_PREFERENCES_KEY, newValue: null });
 	expect(store.getSnapshot().collapsed).toEqual({ overview: [], sidebar: [] });
@@ -294,7 +298,7 @@ test("favorites render first in overview and sidebar and are manageable on the p
 test("collapsed cards keep navigation, state and frontend while hiding details independently of the sidebar", () => {
 	const store = createProjectPreferenceStore({ storage: () => undefined });
 	const data = view([project("alpha", "crashed")]);
-	store.toggleCollapse("overview", "alpha");
+	store.toggleCollapse("sidebar", "alpha");
 	const card =
 		render(store, <Overview onDeleted={noop} view={data} />).match(
 			ARTICLE
@@ -350,7 +354,6 @@ test("collapsed cards keep navigation, state and frontend while hiding details i
 test("collapsed projects without services retain their name and controls without an invented frontend", () => {
 	const store = createProjectPreferenceStore({ storage: () => undefined });
 	const empty = { ...project("empty"), devServices: [], services: [] };
-	store.toggleCollapse("overview", "empty");
 	const card =
 		render(store, <Overview onDeleted={noop} view={view([empty])} />).match(
 			ARTICLE
@@ -371,8 +374,6 @@ test("MVP badges remain visible on collapsed cards and sidebar groups", () => {
 			mode: "mvp",
 		},
 	]);
-	store.toggleCollapse("overview", "alpha");
-	store.toggleCollapse("sidebar", "alpha");
 	for (const markup of [
 		render(store, <Overview onDeleted={noop} view={data} />),
 		render(store, <Sidebar onOpen={noop} selected={null} view={data} />),
@@ -384,4 +385,71 @@ test("MVP badges remain visible on collapsed cards and sidebar groups", () => {
 			markup.indexOf('class="project-mode project-mode--mvp"')
 		).toBeLessThan(markup.indexOf('hidden=""'));
 	}
+});
+
+test("new projects start collapsed and starring or unstarring applies the default on both surfaces", () => {
+	const store = createProjectPreferenceStore({ storage: () => undefined });
+	const data = view([project("alpha"), project("beta")]);
+	store.toggleCollapse("overview", "alpha");
+	store.toggleFavorite("alpha");
+	for (const surface of ["overview", "sidebar"] as const) {
+		expect(isProjectCollapsed(store.getSnapshot(), surface, "alpha")).toBe(
+			false
+		);
+		expect(isProjectCollapsed(store.getSnapshot(), surface, "beta")).toBe(true);
+		expect(
+			isProjectCollapsed(store.getSnapshot(), surface, "new-project")
+		).toBe(true);
+	}
+	for (const [surface, markup] of [
+		["overview", render(store, <Overview onDeleted={noop} view={data} />)],
+		[
+			"sidebar",
+			render(store, <Sidebar onOpen={noop} selected={null} view={data} />),
+		],
+	]) {
+		expect(markup).toContain(
+			`aria-controls="${surface}-project-alpha" aria-expanded="true"`
+		);
+		expect(markup).toContain(
+			`aria-controls="${surface}-project-beta" aria-expanded="false"`
+		);
+	}
+	store.toggleCollapse("sidebar", "alpha");
+	store.toggleFavorite("alpha");
+	for (const surface of ["overview", "sidebar"] as const) {
+		expect(isProjectCollapsed(store.getSnapshot(), surface, "alpha")).toBe(
+			true
+		);
+	}
+});
+
+test("legacy favorites migrate without retaining the old expanded-by-default state", () => {
+	const memory = memoryPreferences(
+		JSON.stringify({
+			collapsed: { overview: ["beta"], sidebar: [] },
+			favorites: ["beta"],
+			version: 1,
+		})
+	);
+	const store = createProjectPreferenceStore(memory.environment);
+	expect(isProjectCollapsed(store.getSnapshot(), "overview", "alpha")).toBe(
+		true
+	);
+	expect(isProjectCollapsed(store.getSnapshot(), "overview", "beta")).toBe(
+		true
+	);
+	expect(isProjectCollapsed(store.getSnapshot(), "sidebar", "beta")).toBe(
+		false
+	);
+	store.toggleCollapse("overview", "alpha");
+	const reopened = createProjectPreferenceStore(memory.environment);
+	expect(isProjectCollapsed(reopened.getSnapshot(), "overview", "alpha")).toBe(
+		false
+	);
+	expect(isProjectCollapsed(reopened.getSnapshot(), "sidebar", "alpha")).toBe(
+		true
+	);
+	expect(reopened.getSnapshot().favorites).toEqual(["beta"]);
+	expect(JSON.parse(memory.data.raw ?? "null").version).toBe(2);
 });

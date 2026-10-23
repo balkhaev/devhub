@@ -10,7 +10,11 @@ import {
 	ProjectCollapseButton,
 	ProjectStatus,
 } from "./project-preference-controls";
-import { favoriteProjects, useProjectPreferences } from "./project-preferences";
+import {
+	favoriteProjects,
+	isProjectCollapsed,
+	useProjectPreferences,
+} from "./project-preferences";
 import { projectRoute } from "./project-ui";
 import { QueueSection } from "./queue";
 import { RunningProjectsList } from "./running-projects";
@@ -105,7 +109,7 @@ function ProjectCard({
 	const { dialog, error, pending, run } = useAction();
 	const { docker } = project;
 	const { preferences, toggleCollapse } = useProjectPreferences();
-	const collapsed = preferences.collapsed.overview.includes(project.id);
+	const collapsed = isProjectCollapsed(preferences, "overview", project.id);
 	const details = `overview-project-${project.id}`;
 	const collapse = useCallback(
 		() => toggleCollapse("overview", project.id),

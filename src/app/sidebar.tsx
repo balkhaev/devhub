@@ -7,7 +7,11 @@ import {
 	ProjectStatus,
 	SidebarFrontendLink,
 } from "./project-preference-controls";
-import { favoriteProjects, useProjectPreferences } from "./project-preferences";
+import {
+	favoriteProjects,
+	isProjectCollapsed,
+	useProjectPreferences,
+} from "./project-preferences";
 import { projectRoute } from "./project-ui";
 import { composeStatus, cx, STATUS_SHORT } from "./words";
 
@@ -55,7 +59,7 @@ function ProjectGroup({
 	selected: string | null;
 }) {
 	const { preferences, toggleCollapse } = useProjectPreferences();
-	const collapsed = preferences.collapsed.sidebar.includes(project.id);
+	const collapsed = isProjectCollapsed(preferences, "sidebar", project.id);
 	const details = `sidebar-project-${project.id}`;
 	const collapse = useCallback(
 		() => toggleCollapse("sidebar", project.id),
