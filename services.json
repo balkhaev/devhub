@@ -11,7 +11,8 @@
   "exclude": [
     "C:\\Users\\user\\Documents\\ChatGPT\\gameradar-postgres-only-20260908",
     "C:\\Users\\user\\Documents\\ChatGPT\\vibecoder",
-    "F:\\code\\balkhaev"
+    "F:\\code\\balkhaev",
+    "F:\\code\\predict"
   ],
   "port": 4700,
   "projects": []
