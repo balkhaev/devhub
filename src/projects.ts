@@ -15,7 +15,7 @@ import {
 	servicesOf,
 } from "./config";
 import type { Hub } from "./hub";
-import { filesystemReferenceBlockers } from "./project-references";
+import { filesystemReferences } from "./project-references";
 import { StageProject } from "./stage";
 
 export interface DeletionPath {
@@ -28,6 +28,7 @@ export interface DeletionPlan {
 	id: string;
 	name: string;
 	paths: DeletionPath[];
+	referenceWarnings: string[];
 	token: string;
 	warnings: string[];
 }
@@ -362,7 +363,8 @@ export class Projects {
 			}
 		}
 		blockers.push(...dependencyBlockers(catalogue, project, roots));
-		blockers.push(...(await filesystemReferenceBlockers(catalogue, id, roots)));
+		const references = await filesystemReferences(catalogue, id, roots);
+		blockers.push(...references.blockers);
 		const external =
 			this.hub.current.projects
 				.find((entry) => entry.id === id)
@@ -383,12 +385,21 @@ export class Projects {
 			id,
 			name: project.name,
 			paths: roots,
+			referenceWarnings: references.warnings,
 			token: "",
 			warnings,
 		};
 		return {
 			catalogue,
-			digest: hash(JSON.stringify({ identities, plan, raw })),
+			// Advisory scan coverage can vary with the time budget. Only changes
+			// to deletion boundaries, real blockers or catalogue invalidate consent.
+			digest: hash(
+				JSON.stringify({
+					identities,
+					plan: { ...plan, referenceWarnings: [] },
+					raw,
+				})
+			),
 			identities,
 			plan,
 			policy,
