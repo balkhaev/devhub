@@ -3,6 +3,7 @@ import { ProjectProd } from "./prod";
 import { FrontendLink, ProjectControls } from "./project-controls";
 import { DeleteProjectButton } from "./project-delete";
 import { ProjectModeBadge, ProjectModeControl } from "./project-mode";
+import { ProjectNav } from "./project-nav";
 import { FavoriteProjectButton } from "./project-preference-controls";
 import { mainFrontend } from "./project-ui";
 import { cx, STATUS_WORDS } from "./words";
@@ -35,6 +36,7 @@ export function ProjectPage({
 					<FrontendLink project={project} />
 				</div>
 			</header>
+			<ProjectNav id={project.id} section="manage" />
 			<div className="card project-stage">
 				<h2>Dev и выпуск</h2>
 				<ProjectModeControl project={project} />

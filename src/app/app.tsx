@@ -3,23 +3,31 @@ import { useCallback, useEffect } from "react";
 import { useHub, useRoute } from "./api";
 import { CreatePage } from "./create";
 import { HeaderStatus } from "./header-status";
+import { KnowledgePage } from "./knowledge";
 import { ComposeCard, Overview } from "./overview";
-import { ProdPage } from "./prod";
 import { ProjectPage } from "./project";
 import { ProjectPreferencesProvider } from "./project-preferences";
 import { projectRoute } from "./project-ui";
 import { QueueProvider } from "./queue";
 import { RunningProjectsMenu } from "./running-projects";
 import { ServicePage } from "./service";
+import { SettingsPage } from "./settings";
 import { Sidebar } from "./sidebar";
-import { TidyPage } from "./tidy";
 
 /**
  * The hub: every local project's dev servers on the left, the chosen one's pages, log and details on the right, and
  * an overview of what runs, Docker and every listening port. It follows the computer live.
  */
 
-const STATIC_ROUTES = new Set(["new", "prod", "tidy"]);
+const STATIC_ROUTES = new Set([
+	"new",
+	"prod",
+	"tidy",
+	"settings",
+	"settings/prod",
+	"settings/tidy",
+	"settings/mcp",
+]);
 
 const reloadPage = () => window.location.reload();
 
@@ -51,11 +59,17 @@ function Main({
 	if (route === "new") {
 		return <CreatePage />;
 	}
-	if (route === "prod") {
-		return <ProdPage projects={view.projects} />;
-	}
-	if (route === "tidy") {
-		return <TidyPage projects={view.projects} />;
+	if (route && STATIC_ROUTES.has(route)) {
+		return (
+			<SettingsPage
+				projects={view.projects}
+				section={
+					route === "settings/mcp"
+						? "mcp"
+						: route.replace("settings/", "").replace("settings", "tidy")
+				}
+			/>
+		);
 	}
 	if (route?.startsWith("docker/")) {
 		const name = route.slice("docker/".length);
@@ -73,6 +87,20 @@ function Main({
 	const selectedProject = view.projects.find(
 		(entry) => projectRoute(entry.id) === route
 	);
+	const boardProject = view.projects.find(
+		(entry) =>
+			route === `projects/${encodeURIComponent(entry.id)}/canvas` ||
+			route === `projects/${encodeURIComponent(entry.id)}/kanban`
+	);
+	if (boardProject) {
+		return (
+			<KnowledgePage
+				key={boardProject.id}
+				project={boardProject}
+				section={route?.endsWith("/canvas") ? "canvas" : "kanban"}
+			/>
+		);
+	}
 	if (selectedProject) {
 		return (
 			<ProjectPage
@@ -115,6 +143,8 @@ export function App() {
 		const exists = view.projects.some(
 			(project) =>
 				projectRoute(project.id) === route ||
+				route === `projects/${encodeURIComponent(project.id)}/canvas` ||
+				route === `projects/${encodeURIComponent(project.id)}/kanban` ||
 				project.services.some((service) => service.key === route)
 		);
 		if (!exists) {
