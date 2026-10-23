@@ -6,13 +6,15 @@ import {
 	useSyncExternalStore,
 } from "react";
 
+// Keep the original key so saved favorites and explicit choices migrate in place.
 export const PROJECT_PREFERENCES_KEY = "devhub.project-preferences.v1";
 export type ProjectSurface = "overview" | "sidebar";
 
 export interface ProjectPreferences {
 	collapsed: Record<ProjectSurface, string[]>;
+	expanded: Record<ProjectSurface, string[]>;
 	favorites: string[];
-	version: 1;
+	version: 2;
 }
 
 type PreferenceStorage = Pick<Storage, "getItem" | "setItem">;
@@ -28,8 +30,9 @@ interface PreferenceEnvironment {
 const PROJECT_ID = /^[a-z0-9][a-z0-9-]*$/;
 const emptyPreferences = (): ProjectPreferences => ({
 	collapsed: { overview: [], sidebar: [] },
+	expanded: { overview: [], sidebar: [] },
 	favorites: [],
-	version: 1,
+	version: 2,
 });
 
 function ids(value: unknown): string[] {
@@ -49,23 +52,49 @@ export function parseProjectPreferences(
 	raw: string | null
 ): ProjectPreferences {
 	try {
-		const parsed = JSON.parse(
-			raw ?? "null"
-		) as Partial<ProjectPreferences> | null;
-		if (parsed?.version !== 1) {
+		const parsed = JSON.parse(raw ?? "null") as
+			| (Partial<Omit<ProjectPreferences, "version">> & { version?: number })
+			| null;
+		if (parsed?.version !== 1 && parsed?.version !== 2) {
 			return emptyPreferences();
 		}
+		const collapsed = {
+			overview: ids(parsed.collapsed?.overview),
+			sidebar: ids(parsed.collapsed?.sidebar),
+		};
+		const expanded = (surface: ProjectSurface) =>
+			parsed.version === 2
+				? ids(parsed.expanded?.[surface]).filter(
+						(id) => !collapsed[surface].includes(id)
+					)
+				: [];
 		return {
-			collapsed: {
-				overview: ids(parsed.collapsed?.overview),
-				sidebar: ids(parsed.collapsed?.sidebar),
+			collapsed,
+			expanded: {
+				overview: expanded("overview"),
+				sidebar: expanded("sidebar"),
 			},
 			favorites: ids(parsed.favorites),
-			version: 1,
+			version: 2,
 		};
 	} catch {
 		return emptyPreferences();
 	}
+}
+
+/** Manual choices override the default: only favorites start expanded. */
+export function isProjectCollapsed(
+	preferences: ProjectPreferences,
+	surface: ProjectSurface,
+	id: string
+): boolean {
+	if (preferences.collapsed[surface].includes(id)) {
+		return true;
+	}
+	return !(
+		preferences.expanded[surface].includes(id) ||
+		preferences.favorites.includes(id)
+	);
 }
 
 /** Stable partition: preserve catalogue order within both groups and leave live data intact. */
@@ -182,16 +211,36 @@ export function createProjectPreferenceStore(
 				}
 			};
 		},
-		toggleCollapse: (surface, id) =>
+		toggleCollapse: (surface, id) => {
+			const collapsed = isProjectCollapsed(preferences, surface, id);
 			update({
 				...preferences,
 				collapsed: {
 					...preferences.collapsed,
-					[surface]: toggled(preferences.collapsed[surface], id),
+					[surface]: collapsed
+						? preferences.collapsed[surface].filter((value) => value !== id)
+						: [...preferences.collapsed[surface], id],
 				},
-			}),
-		toggleFavorite: (id) =>
-			update({ ...preferences, favorites: toggled(preferences.favorites, id) }),
+				expanded: {
+					...preferences.expanded,
+					[surface]: collapsed
+						? [...preferences.expanded[surface], id]
+						: preferences.expanded[surface].filter((value) => value !== id),
+				},
+			});
+		},
+		toggleFavorite: (id) => {
+			const withoutProject = (values: Record<ProjectSurface, string[]>) => ({
+				overview: values.overview.filter((value) => value !== id),
+				sidebar: values.sidebar.filter((value) => value !== id),
+			});
+			update({
+				...preferences,
+				collapsed: withoutProject(preferences.collapsed),
+				expanded: withoutProject(preferences.expanded),
+				favorites: toggled(preferences.favorites, id),
+			});
+		},
 	};
 }
 
