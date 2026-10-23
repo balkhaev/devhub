@@ -55,10 +55,10 @@
 	content: "";
 	background: var(--accent);
 }
-.board-side-icon {
-	width: 12px;
-	color: var(--faint);
-	text-align: center;
+.project-board[aria-current="page"] {
+	color: var(--accent);
+	background: var(--raised-2);
+	border-color: var(--line-strong);
 }
 .knowledge-page {
 	display: flex;

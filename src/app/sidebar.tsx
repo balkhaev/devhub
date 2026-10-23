@@ -88,6 +88,26 @@ function ProjectGroup({
 					</button>
 				</h3>
 				<div className="side-group__actions">
+					{(["canvas", "kanban"] as const).map((section) => {
+						const key = `projects/${encodeURIComponent(project.id)}/${section}`;
+						const label = `Открыть ${section === "canvas" ? "Canvas" : "Kanban"}: ${project.name}`;
+						return (
+							<button
+								aria-current={selected === key ? "page" : undefined}
+								aria-label={label}
+								className="project-icon project-board"
+								data-key={key}
+								key={section}
+								onClick={onOpen}
+								title={label}
+								type="button"
+							>
+								<span aria-hidden="true">
+									{section === "canvas" ? "◇" : "▥"}
+								</span>
+							</button>
+						);
+					})}
 					<SidebarFrontendLink project={project} />
 					<FavoriteProjectButton project={project} />
 					<ProjectCollapseButton
@@ -107,30 +127,6 @@ function ProjectGroup({
 				) : null}
 			</div>
 			<ul className="side-group__list" hidden={collapsed} id={details}>
-				{collapsed
-					? null
-					: (["canvas", "kanban"] as const).map((section) => {
-							const key = `projects/${encodeURIComponent(project.id)}/${section}`;
-							return (
-								<li key={section}>
-									<button
-										aria-current={selected === key ? "true" : undefined}
-										className={cx(
-											"side-item",
-											selected === key && "side-item--selected"
-										)}
-										data-key={key}
-										onClick={onOpen}
-										type="button"
-									>
-										<span aria-hidden="true" className="board-side-icon">
-											{section === "canvas" ? "◇" : "▥"}
-										</span>
-										{section === "canvas" ? "Canvas" : "Kanban"}
-									</button>
-								</li>
-							);
-						})}
 				{collapsed
 					? null
 					: project.services.map((service) => (
