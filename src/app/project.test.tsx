@@ -181,6 +181,7 @@ const plan: DeletionPlan = {
 		{ kind: "worktree", path: "F:/code/.worktrees/sample/task" },
 		{ kind: "alias", path: "D:/old/sample" },
 	],
+	referenceWarnings: ["other: oversized <payload.json> was not inspected"],
 	token: "private-review-token",
 	warnings: ["Local files <including env> will be deleted"],
 };
@@ -195,6 +196,9 @@ test("deletion review shows every included path, impact and blocker without expo
 	expect(markup).toContain("Пока нельзя удалить");
 	expect(markup).toContain(plan.blockers[0] ?? "");
 	expect(markup).toContain("&lt;including env&gt;");
+	expect(markup).toContain("<details");
+	expect(markup).not.toContain("<details open");
+	expect(markup).toContain("&lt;payload.json&gt;");
 	expect(markup).not.toContain(plan.token);
 });
 

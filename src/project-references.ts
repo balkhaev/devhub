@@ -12,6 +12,8 @@ const MAX_FILES = 15_000;
 const MAX_FILE_BYTES = 2 * 1024 * 1024;
 const MAX_TOTAL_BYTES = 128 * 1024 * 1024;
 const MAX_DATA_DEPTH = 32;
+const MAX_PROJECT_MS = 2000;
+const MAX_ISSUE_SAMPLES = 3;
 const FILE_BATCH = 32;
 const CONFIG_OR_CODE =
 	/\.(?:toml|ya?ml|jsonc?|ini|conf|cfg|ts|tsx|js|jsx|mjs|cjs|py|go|rs|ps1|sh|bat|cmd)$/i;
@@ -32,6 +34,7 @@ const ENV_LINE = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/;
 const ENV_VARIABLE = /\$\{([A-Za-z_][A-Za-z0-9_]*)(?:(:-|-)([^}]*))?\}/g;
 const LINE_BREAK = /\r?\n/;
 const DRIVE_PATH = /^[A-Za-z]:[\\/]/;
+const NETWORK_PATH = /^[\\/]{2}/;
 const GENERATED_FOLDER =
 	/^(?:\.?venv(?:[-_.]|$)|\.next(?:[-_.]|$)|test-results(?:[-_.]|$)|playwright-report(?:[-_.]|$)|site-packages$|vendor$|\.openai$|\.vinext$|\.wrangler$|\.svelte-kit$)/;
 // biome-ignore lint/suspicious/noTemplateCurlyInString: catalogue path expansion uses this literal placeholder.
@@ -109,11 +112,21 @@ const FILE_SKIP = new Set([
 interface Scan {
 	blockers: Set<string>;
 	bytes: number;
+	deadline: number;
 	entries: number;
+	exhausted: boolean;
 	files: number;
+	issues: Set<string>;
 	paths: Map<string, string>;
 	roots: DeletionPath[];
 }
+
+export interface FilesystemReferences {
+	blockers: string[];
+	warnings: string[];
+}
+
+class InspectionError extends Error {}
 
 function normalized(value: string): string {
 	return value.replace(BACKSLASH, "/").replace(SLASHES, "/").toLowerCase();
@@ -129,9 +142,24 @@ function failure(
 	file: string,
 	reason: string
 ) {
-	scan.blockers.add(
-		`${ownerFile(project, file)}: ${reason}; проверка зависимостей не завершена`
-	);
+	scan.issues.add(`${relative(project.path, file) || "."}: ${reason}`);
+}
+
+/** Source inspection is advisory: a limit or unreadable file is not a dependency. */
+function withinBudget(scan: Scan): boolean {
+	if (!scan.exhausted && Date.now() > scan.deadline) {
+		scan.exhausted = true;
+		scan.issues.add("Достигнут предел времени проверки исходников");
+	}
+	return !scan.exhausted;
+}
+
+function countEntry(scan: Scan) {
+	scan.entries += 1;
+	if (scan.entries > MAX_ENTRIES) {
+		scan.exhausted = true;
+		throw new InspectionError("Превышен предел числа файлов и папок");
+	}
 }
 
 function literalReferences(
@@ -152,7 +180,7 @@ function literalReferences(
 				(!after || after === "/" || PATH_END.test(after))
 			) {
 				scan.blockers.add(
-					`${ownerFile(project, file)} ссылается на удаляемую папку ${root.path}`
+					`${ownerFile(project, file)} использует файлы в удаляемой папке ${root.path}`
 				);
 				break;
 			}
@@ -192,7 +220,10 @@ function resolvedReference(
 		!ownerOffset
 			.split(PATH_PARTS)
 			.some((part) => HARD_SKIP.has(part) || GENERATED_FOLDER.test(part));
-	const canonical = withinInspectedOwner ? path : cachedPath(path);
+	// Arbitrary source strings must not initiate SMB/network probes. Registered
+	// project roots and actual local junctions are still resolved and checked.
+	const canonical =
+		withinInspectedOwner || NETWORK_PATH.test(value) ? path : cachedPath(path);
 	for (const root of scan.roots) {
 		const offset = relative(cachedPath(root.path), canonical);
 		if (insideOffset(offset)) {
@@ -252,10 +283,6 @@ async function junctionReference(
 }
 
 async function inspectEntry(path: string, scan: Scan, project: ProjectConfig) {
-	scan.entries += 1;
-	if (scan.entries > MAX_ENTRIES) {
-		throw new Error("Превышен предел числа файлов и папок");
-	}
 	const stat = await lstat(path);
 	if (stat.isSymbolicLink()) {
 		await junctionReference(path, scan, project);
@@ -294,10 +321,7 @@ async function dataEntry(
 	scan: Scan,
 	project: ProjectConfig
 ): Promise<boolean> {
-	scan.entries += 1;
-	if (scan.entries > MAX_ENTRIES) {
-		throw new Error("Directory metadata budget exceeded");
-	}
+	countEntry(scan);
 	if (entry.isDirectory()) {
 		return !generatedFolder(project, file, entry.name);
 	}
@@ -315,7 +339,7 @@ async function dataJunctions(
 	project: ProjectConfig
 ) {
 	const folders = [{ depth: 0, folder }];
-	for (let offset = 0; offset < folders.length; ) {
+	for (let offset = 0; offset < folders.length && withinBudget(scan); ) {
 		const batch = folders.slice(offset, offset + FILE_BATCH);
 		offset += batch.length;
 		// biome-ignore lint/performance/noAwaitInLoops: bounded batches inspect metadata only, with at most 32 concurrent directory/link reads.
@@ -327,6 +351,9 @@ async function dataJunctions(
 				for (const entry of await readdir(directory.folder, {
 					withFileTypes: true,
 				})) {
+					if (!withinBudget(scan)) {
+						break;
+					}
 					if (entry.isFile()) {
 						continue;
 					}
@@ -366,6 +393,10 @@ async function sourceEntry(
 	scan: Scan,
 	project: ProjectConfig
 ): Promise<{ file: string; name: string } | null> {
+	if (!withinBudget(scan)) {
+		return null;
+	}
+	countEntry(scan);
 	const file = join(folder, entry.name);
 	if (entry.isSymbolicLink()) {
 		await junctionReference(file, scan, project);
@@ -392,18 +423,20 @@ async function inspectText(
 	scan: Scan,
 	project: ProjectConfig
 ) {
+	if (size > MAX_FILE_BYTES) {
+		throw new InspectionError("Файл больше 2 МБ, содержимое не проверялось");
+	}
 	scan.files += 1;
 	scan.bytes += size;
-	if (
-		scan.files > MAX_FILES ||
-		size > MAX_FILE_BYTES ||
-		scan.bytes > MAX_TOTAL_BYTES
-	) {
-		throw new Error("Превышен безопасный предел проверки конфигурации");
+	if (scan.files > MAX_FILES || scan.bytes > MAX_TOTAL_BYTES) {
+		scan.exhausted = true;
+		throw new InspectionError(
+			"Превышен безопасный предел проверки конфигурации"
+		);
 	}
 	const text = await readFile(file, "utf8");
 	if (text.includes("\0")) {
-		throw new Error("Файл конфигурации содержит бинарные данные");
+		throw new InspectionError("Файл конфигурации содержит бинарные данные");
 	}
 	literalReferences(text, scan, project, file);
 	for (const match of text.matchAll(QUOTED)) {
@@ -422,35 +455,63 @@ async function inspectText(
 	}
 }
 
+async function sourceBatch(
+	entries: Dirent[],
+	folder: string,
+	scan: Scan,
+	project: ProjectConfig
+) {
+	const directories: { file: string; name: string }[] = [];
+	const results = await Promise.allSettled(
+		entries.map((entry) => sourceEntry(entry, folder, scan, project))
+	);
+	for (const [index, result] of results.entries()) {
+		if (result.status === "rejected") {
+			const entry = entries[index];
+			failure(
+				scan,
+				project,
+				entry ? join(folder, entry.name) : folder,
+				result.reason instanceof InspectionError
+					? result.reason.message
+					: "Не удалось прочитать файл или проверить ссылку"
+			);
+		} else if (result.value) {
+			directories.push(result.value);
+		}
+	}
+	return directories;
+}
+
 async function walk(
 	folder: string,
 	scan: Scan,
 	project: ProjectConfig
 ): Promise<void> {
+	if (!withinBudget(scan)) {
+		return;
+	}
 	try {
 		const entries = await readdir(folder, { withFileTypes: true });
 		const directories: { file: string; name: string }[] = [];
-		for (let offset = 0; offset < entries.length; offset += FILE_BATCH) {
+		for (
+			let offset = 0;
+			offset < entries.length && withinBudget(scan);
+			offset += FILE_BATCH
+		) {
 			// biome-ignore lint/performance/noAwaitInLoops: independent files are read in fixed-size batches under the shared byte budget.
-			const results = await Promise.allSettled(
-				entries
-					.slice(offset, offset + FILE_BATCH)
-					.map((entry) => sourceEntry(entry, folder, scan, project))
+			const found = await sourceBatch(
+				entries.slice(offset, offset + FILE_BATCH),
+				folder,
+				scan,
+				project
 			);
-			for (const result of results) {
-				if (result.status === "rejected") {
-					failure(
-						scan,
-						project,
-						folder,
-						"Не удалось полностью проверить конфигурацию или ссылки"
-					);
-				} else if (result.value) {
-					directories.push(result.value);
-				}
-			}
+			directories.push(...found);
 		}
 		for (const directory of directories) {
+			if (!withinBudget(scan)) {
+				break;
+			}
 			if (dataFolder(project, directory.file, directory.name)) {
 				// biome-ignore lint/performance/noAwaitInLoops: directory traversal stays serial so file batches retain a fixed global concurrency bound.
 				await dataJunctions(directory.file, scan, project);
@@ -527,11 +588,8 @@ function composeVolume(
 	}
 	const expanded = expandedSource(source, env);
 	if (expanded === null) {
-		failure(
-			scan,
-			project,
-			file,
-			"Не удалось определить источник Docker mount из переменной окружения"
+		scan.blockers.add(
+			`${ownerFile(project, file)}: не удалось определить источник Docker mount из переменной окружения; проверка зависимостей не завершена`
 		);
 		return;
 	}
@@ -579,7 +637,9 @@ async function composeLayer(file: string, project: ProjectConfig, scan: Scan) {
 			}
 		}
 	} catch {
-		failure(scan, project, file, "Не удалось проверить Docker bind mounts");
+		scan.blockers.add(
+			`${ownerFile(project, file)}: не удалось проверить Docker bind mounts; проверка зависимостей не завершена`
+		);
 	}
 }
 
@@ -595,26 +655,33 @@ async function composeReferences(project: ProjectConfig, scan: Scan) {
 }
 
 /** Inspect live source/configuration and incoming junctions without exposing configuration values or reading model/data contents. */
-export async function filesystemReferenceBlockers(
+export async function filesystemReferences(
 	catalogue: Catalogue,
 	id: string,
 	roots: DeletionPath[]
-): Promise<string[]> {
-	const scan: Scan = {
-		blockers: new Set(),
-		bytes: 0,
-		entries: 0,
-		files: 0,
-		paths: new Map(),
-		roots,
-	};
+): Promise<FilesystemReferences> {
+	const blockers = new Set<string>();
+	const warnings: string[] = [];
 	for (const project of catalogue.projects.filter((entry) => entry.id !== id)) {
+		// Budgets belong to one project. A large repository must not exhaust the
+		// allowance of every subsequent project or produce thousands of blockers.
+		const scan: Scan = {
+			blockers,
+			bytes: 0,
+			deadline: Date.now() + MAX_PROJECT_MS,
+			entries: 0,
+			exhausted: false,
+			files: 0,
+			issues: new Set(),
+			paths: new Map(),
+			roots,
+		};
 		try {
 			const absolute = resolve(
 				project.path.replaceAll(CODE_TOKEN, catalogue.code)
 			);
 			const owner = { ...project, path: absolute };
-			// biome-ignore lint/performance/noAwaitInLoops: projects share a strict global file/byte budget.
+			// biome-ignore lint/performance/noAwaitInLoops: projects are inspected serially with independent bounded budgets.
 			await walk(owner.path, scan, owner);
 			await composeReferences(owner, scan);
 		} catch {
@@ -625,6 +692,13 @@ export async function filesystemReferenceBlockers(
 				"Не удалось безопасно проверить проект"
 			);
 		}
+		if (scan.issues.size) {
+			const samples = [...scan.issues].sort();
+			const remaining = samples.length - MAX_ISSUE_SAMPLES;
+			warnings.push(
+				`${project.id}: дополнительная проверка исходников выполнена не полностью. ${samples.slice(0, MAX_ISSUE_SAMPLES).join("; ")}${remaining > 0 ? `; ещё ${remaining}` : ""}. Это предупреждение не означает зависимость от удаляемого проекта.`
+			);
+		}
 	}
-	return [...scan.blockers].sort();
+	return { blockers: [...blockers].sort(), warnings };
 }

@@ -189,6 +189,25 @@ test("cross-project service and data dependencies block removal", async () => {
 	expect(existsSync(f.app)).toBe(true);
 });
 
+test("unrelated oversized files warn but do not prevent reviewed deletion or invalidate its token", async () => {
+	const f = await fixture();
+	const other = join(f.code, "other");
+	await mkdir(other);
+	const payload = join(other, "payload.json");
+	await writeFile(payload, "x".repeat(2 * 1024 * 1024 + 1));
+	const policy = JSON.parse(await readFile(f.file, "utf8"));
+	policy.projects.push({ id: "other", name: "Other", path: other });
+	await writeFile(f.file, JSON.stringify(policy));
+	const plan = await f.manager.plan("app");
+	expect(plan.blockers).toEqual([]);
+	expect(plan.referenceWarnings).toHaveLength(1);
+	// Coverage warnings may change between review and the repeated pre-delete scan.
+	await writeFile(payload, "{}");
+	await f.manager.delete("app", plan.token);
+	expect(existsSync(f.app)).toBe(false);
+	expect(await readFile(payload, "utf8")).toBe("{}");
+});
+
 test("DevHub and catalogue roots are protected even if explicitly configured as a project", async () => {
 	const f = await fixture();
 	const policy = JSON.parse(await readFile(f.file, "utf8"));

@@ -38,6 +38,19 @@ export function DeletionDetails({ plan }: { plan: DeletionPlan }) {
 					</ul>
 				</div>
 			) : null}
+			{plan.referenceWarnings.length > 0 ? (
+				<details className="warn">
+					<summary>
+						Дополнительная проверка исходников: предупреждений —{" "}
+						{plan.referenceWarnings.length}
+					</summary>
+					<ul className="delete-notes">
+						{plan.referenceWarnings.map((warning) => (
+							<li key={warning}>{warning}</li>
+						))}
+					</ul>
+				</details>
+			) : null}
 			{plan.blockers.length > 0 ? (
 				<div className="error" role="alert">
 					<strong>Пока нельзя удалить</strong>

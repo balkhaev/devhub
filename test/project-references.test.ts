@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import {
 	mkdir,
 	mkdtemp,
@@ -11,7 +11,13 @@ import { tmpdir } from "node:os";
 import { basename, isAbsolute, join, relative, resolve } from "node:path";
 
 import { catalogueSchema } from "../src/config";
-import { filesystemReferenceBlockers } from "../src/project-references";
+import { filesystemReferences } from "../src/project-references";
+
+async function filesystemReferenceBlockers(
+	...args: Parameters<typeof filesystemReferences>
+) {
+	return (await filesystemReferences(...args)).blockers;
+}
 
 const fixtures: string[] = [];
 afterEach(async () => {
@@ -251,7 +257,7 @@ test("package temporary archives skip payloads but retain incoming nested juncti
 	);
 });
 
-test("oversized configuration and invalid Compose documents fail closed", async () => {
+test("oversized source files warn while invalid active Compose documents fail closed", async () => {
 	const f = await fixture();
 	await writeFile(
 		join(f.owner, "settings.json"),
@@ -264,10 +270,15 @@ test("oversized configuration and invalid Compose documents fail closed", async 
 		project: "inference",
 		services: [],
 	};
-	const blockers = await filesystemReferenceBlockers(
+	const { blockers, warnings } = await filesystemReferences(
 		f.catalogue,
 		"victim",
 		f.roots
+	);
+	expect(warnings).toHaveLength(1);
+	expect(warnings[0]).toContain("settings.json");
+	expect(blockers.some((message) => message.includes("settings.json"))).toBe(
+		false
 	);
 	expect(
 		blockers.some((message) =>
@@ -277,6 +288,77 @@ test("oversized configuration and invalid Compose documents fail closed", async 
 	expect(
 		blockers.some((message) => message.includes("Docker bind mounts"))
 	).toBe(true);
+});
+
+test("exhausting one project's budget stops its scan, summarizes warnings and still checks the next project", async () => {
+	const f = await fixture();
+	await Promise.all(
+		Array.from({ length: 64 }, (_, index) =>
+			writeFile(join(f.owner, `source-${index}.ts`), "export const value = 1;")
+		)
+	);
+	const later = join(f.root, "later");
+	await mkdir(later);
+	await writeFile(join(later, ".env"), `STATE=${f.victim}\n`);
+	await mkdir(join(f.owner, ".devhub"));
+	await writeFile(
+		join(f.owner, ".devhub", "compose.yaml"),
+		`services:\n  api:\n    volumes:\n      - type: bind\n        source: ${JSON.stringify(f.victim)}\n        target: /data\n`
+	);
+	f.ownerProject.compose = {
+		file: ".devhub/compose.yaml",
+		overrides: [],
+		project: "inference",
+		services: [],
+	};
+	f.catalogue.projects.push({
+		...f.ownerProject,
+		compose: undefined,
+		id: "later",
+		name: "Later",
+		path: later,
+	});
+	let now = 0;
+	const clock = spyOn(Date, "now").mockImplementation(() => {
+		now += 500;
+		return now;
+	});
+	try {
+		const { blockers, warnings } = await filesystemReferences(
+			f.catalogue,
+			"victim",
+			f.roots
+		);
+		expect(warnings).toHaveLength(1);
+		expect(warnings[0]).toContain("предел времени");
+		expect(blockers).toHaveLength(2);
+		expect(blockers.join("\n")).toContain("later:");
+		expect(blockers.join("\n")).toContain("compose.yaml");
+	} finally {
+		clock.mockRestore();
+	}
+});
+
+test("incomplete scans produce one bounded warning without hiding a real dependency", async () => {
+	const f = await fixture();
+	await Promise.all(
+		Array.from({ length: 8 }, (_, index) =>
+			writeFile(
+				join(f.owner, `payload-${index}.json`),
+				"x".repeat(2 * 1024 * 1024 + 1)
+			)
+		)
+	);
+	await writeFile(join(f.owner, ".env"), `STATE=${f.victim}\n`);
+	const { blockers, warnings } = await filesystemReferences(
+		f.catalogue,
+		"victim",
+		f.roots
+	);
+	expect(blockers).toHaveLength(1);
+	expect(blockers[0]).toContain(".env");
+	expect(warnings).toHaveLength(1);
+	expect(warnings[0]).toContain("ещё 5");
 });
 
 test("source folders named models and data retain configuration inspection", async () => {
