@@ -43,7 +43,10 @@ const MATCHER = "Bash|PowerShell|mcp__.*preview_start";
 const HOOK_TIMEOUT_S = 10;
 const CURSOR_RULE = join(".cursor", "rules", "devhub-staging.mdc");
 /** Rules a project keeps for every agent of the machine: its AGENTS.md holds the text, the machine-wide files mirror it. */
-const SHARED: Record<string, string> = { "INFERENCE:QUEUE-PAUSE": "inference" };
+const SHARED: Record<string, string> = {
+	"INFERENCE:QUEUE-PAUSE": "inference",
+	"AGENT:ASTRA-WORKER": "agent",
+};
 const COMMIT_MESSAGE =
 	"Point agent instructions at the machine-wide DevHub rules";
 
