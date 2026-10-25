@@ -18,7 +18,7 @@ import {
 	stat,
 	writeFile,
 } from "node:fs/promises";
-import { delimiter, dirname, join, resolve } from "node:path";
+import { basename, delimiter, dirname, join, resolve } from "node:path";
 
 import { developmentSourceIssue } from "./checkouts";
 import type { Service } from "./config";
@@ -62,8 +62,17 @@ export interface Managed {
 }
 
 const TAIL_BYTES = 256 * 1024;
-/** A log longer than this is moved aside to `.old` when its service starts again. */
-const LOG_LIMIT_BYTES = 8 * 1024 * 1024;
+/** A log longer than this is set aside (see `rotateLog`) when its service starts again. */
+export const LOG_LIMIT_BYTES = 8 * 1024 * 1024;
+/** How many set-aside logs a service keeps, besides the newest one that holds a crash. */
+const LOG_ROTATIONS = 3;
+/** What follows `<service>.` in the name of a set-aside log. */
+const ROTATED = /^\d{8}-\d{6}(?:\.crash)?\.log$/;
+/** The hub's lines for an end nobody asked for (see `sweep`); a stop from the page reads «остановлен из пульта». */
+const CRASH_WORDS = ["· завершился", "· процесс завершился"].map((words) =>
+	Buffer.from(words)
+);
+const SCAN_BYTES = 1024 * 1024;
 const WINDOWS = process.platform === "win32";
 const LAUNCH_MS = 20_000;
 /** What a batch `set "NAME=value"` cannot carry. */
@@ -80,6 +89,82 @@ const fileName = (service: Service): string => service.key.replace("/", "-");
 
 export const logFileOf = (root: string, service: Service): string =>
 	join(root, ".logs", `${fileName(service)}.log`);
+
+const two = (value: number): string => String(value).padStart(2, "0");
+
+/** A local time as `yyyyMMdd-HHmmss`, which sorts by time. */
+const fileStamp = (at: Date): string =>
+	`${at.getFullYear()}${two(at.getMonth() + 1)}${two(at.getDate())}-${two(at.getHours())}${two(at.getMinutes())}${two(at.getSeconds())}`;
+
+/** Whether a log holds an end nobody asked for; read in parts, since a log can grow large between starts. */
+async function holdsCrash(file: string): Promise<boolean> {
+	const overlap = Math.max(...CRASH_WORDS.map((words) => words.length)) - 1;
+	const buffer = Buffer.alloc(overlap + SCAN_BYTES);
+	const handle = await open(file, "r");
+	try {
+		let kept = 0;
+		for (;;) {
+			// biome-ignore lint/performance/noAwaitInLoops: one file read in order
+			const { bytesRead } = await handle.read(buffer, kept, SCAN_BYTES, null);
+			const part = buffer.subarray(0, kept + bytesRead);
+			if (CRASH_WORDS.some((words) => part.includes(words))) {
+				return true;
+			}
+			if (bytesRead === 0) {
+				return false;
+			}
+			// Words cut between two reads are found with the next one.
+			kept = Math.min(overlap, part.length);
+			part.copy(buffer, 0, part.length - kept);
+		}
+	} finally {
+		await handle.close();
+	}
+}
+
+async function setAside(file: string, log: string, at: Date): Promise<void> {
+	const crash = (await holdsCrash(file)) ? ".crash" : "";
+	await rename(
+		file,
+		join(dirname(log), `${basename(log, ".log")}.${fileStamp(at)}${crash}.log`)
+	);
+}
+
+/**
+ * Before a start, sets a log over the limit aside as `<service>.<yyyyMMdd-HHmmss>.log`, or `….crash.log` when it
+ * holds an end nobody asked for, and keeps the newest few of them plus the newest crash: a busy service rotating
+ * several times a day never loses the log of its last crash. A `<service>.log.old` from the earlier single rotation
+ * joins them under the time it was last written.
+ */
+export async function rotateLog(log: string, now = new Date()): Promise<void> {
+	const legacy = `${log}.old`;
+	if (existsSync(legacy)) {
+		await setAside(legacy, log, (await stat(legacy)).mtime);
+	}
+	if (existsSync(log) && (await stat(log)).size > LOG_LIMIT_BYTES) {
+		await setAside(log, log, now);
+	}
+	const directory = dirname(log);
+	const prefix = `${basename(log, ".log")}.`;
+	// Newest first: the stamp sorts by time.
+	const aside = (await readdir(directory))
+		.filter(
+			(name) =>
+				name.startsWith(prefix) && ROTATED.test(name.slice(prefix.length))
+		)
+		.sort()
+		.reverse();
+	const crash = aside.find((name) => name.endsWith(".crash.log"));
+	await Promise.all(
+		aside
+			.slice(LOG_ROTATIONS)
+			.filter((name) => name !== crash)
+			// One that someone holds open goes at a later start.
+			.map((name) =>
+				rm(join(directory, name), { force: true }).catch(() => undefined)
+			)
+	);
+}
 
 /** A reused PID only belongs to this hub when its launcher names this exact batch file. */
 export function commandNamesBatch(command: string, batch: string): boolean {
@@ -599,9 +684,7 @@ export class Processes {
 		}
 		const log = logFileOf(this.root, service);
 		await mkdir(dirname(log), { recursive: true });
-		if (existsSync(log) && (await stat(log)).size > LOG_LIMIT_BYTES) {
-			await rename(log, `${log}.old`);
-		}
+		await rotateLog(log);
 		await appendFile(
 			log,
 			`\n=== ${stamp()} · ${service.command} (в ${service.workdir})\n`
