@@ -2,21 +2,25 @@ import { afterAll, expect, test } from "bun:test";
 import {
 	mkdirSync,
 	mkdtempSync,
+	readdirSync,
 	readFileSync,
 	rmSync,
+	utimesSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import { catalogueSchema, type Service, servicesOf } from "../src/config";
 import {
 	batchOf,
 	commandNamesBatch,
 	detachedCommand,
+	LOG_LIMIT_BYTES,
 	logFileOf,
 	type Managed,
 	Processes,
+	rotateLog,
 	shellLaunchScript,
 } from "../src/processes";
 
@@ -327,4 +331,101 @@ test("the log is read in whole lines, from its last part and then on from where 
 	const again = await processes.tail(service, second.offset);
 	expect(again.reset).toBe(true);
 	expect(again.text).toBe("заново\n");
+});
+
+/** A service log in a folder of its own. */
+function freshLog(): { log: string; logs: string } {
+	const log = logFileOf(
+		mkdtempSync(join(root, "rotate-")),
+		serviceWith({ command: "npm run dev" })
+	);
+	mkdirSync(dirname(log), { recursive: true });
+	return { log, logs: dirname(log) };
+}
+
+/** A log just over the limit that ends with these lines. */
+function writeLargeLog(log: string, lines: string): void {
+	writeFileSync(
+		log,
+		Buffer.concat([
+			Buffer.alloc(LOG_LIMIT_BYTES, "a"),
+			Buffer.from(`\n${lines}`),
+		])
+	);
+}
+
+test("a log over the limit is set aside under the time of the start; a smaller one stays", async () => {
+	const { log, logs } = freshLog();
+	writeFileSync(log, "немного\n");
+	await rotateLog(log, new Date(2026, 9, 25, 9, 31, 40));
+	expect(readdirSync(logs)).toEqual(["altay-site.log"]);
+
+	writeLargeLog(log, "=== 25.10.2026, 09:31:39 · остановлен из пульта\n");
+	await rotateLog(log, new Date(2026, 9, 25, 9, 31, 40));
+	// A stop from the page is not a crash.
+	expect(readdirSync(logs)).toEqual(["altay-site.20261025-093140.log"]);
+});
+
+test("rotation keeps the newest three set-aside logs and the newest crash, however many come after it", async () => {
+	const { log, logs } = freshLog();
+	writeFileSync(join(logs, "altay-site-two.20261001-000000.log"), "сосед\n");
+	writeLargeLog(log, "=== 24.10.2026, 22:56:08 · завершился с кодом 1\n");
+	await rotateLog(log, new Date(2026, 9, 25, 9, 31, 40));
+	for (const hour of [10, 11, 12, 13]) {
+		writeLargeLog(log, "=== 25.10.2026 · остановлен из пульта\n");
+		// biome-ignore lint/performance/noAwaitInLoops: rotations happen one after another
+		await rotateLog(log, new Date(2026, 9, 25, hour));
+	}
+	expect(readdirSync(logs).sort()).toEqual([
+		"altay-site-two.20261001-000000.log",
+		"altay-site.20261025-093140.crash.log",
+		"altay-site.20261025-110000.log",
+		"altay-site.20261025-120000.log",
+		"altay-site.20261025-130000.log",
+	]);
+	expect(
+		readFileSync(join(logs, "altay-site.20261025-093140.crash.log"), "utf8")
+	).toEndWith("· завершился с кодом 1\n");
+
+	// A newer crash takes the place of the older one.
+	writeLargeLog(log, "=== 25.10.2026, 14:00:00 · процесс завершился\n");
+	await rotateLog(log, new Date(2026, 9, 25, 14));
+	expect(readdirSync(logs).sort()).toEqual([
+		"altay-site-two.20261001-000000.log",
+		"altay-site.20261025-120000.log",
+		"altay-site.20261025-130000.log",
+		"altay-site.20261025-140000.crash.log",
+	]);
+});
+
+test("a crash line cut between two reads of a large log is still found", async () => {
+	const { log, logs } = freshLog();
+	const prefix = "=== 24.10.2026, 22:56:08 ";
+	// The log is read a mebibyte at a time: the first read ends inside «· завершился».
+	writeFileSync(
+		log,
+		Buffer.concat([
+			Buffer.alloc(1024 * 1024 - prefix.length - 4, "a"),
+			Buffer.from(`${prefix}· завершился с кодом 1\n`),
+			Buffer.alloc(LOG_LIMIT_BYTES, "b"),
+		])
+	);
+	await rotateLog(log, new Date(2026, 9, 25, 9, 31, 40));
+	expect(readdirSync(logs)).toEqual(["altay-site.20261025-093140.crash.log"]);
+});
+
+test("a log the earlier single rotation set aside joins the others under the time it was last written", async () => {
+	const { log, logs } = freshLog();
+	writeFileSync(
+		`${log}.old`,
+		"=== 24.10.2026, 22:56:08 · завершился с кодом 1\n"
+	);
+	const written = new Date(2026, 9, 25, 16, 4, 9);
+	utimesSync(`${log}.old`, written, written);
+	writeFileSync(log, "немного\n");
+	await rotateLog(log);
+	expect(readdirSync(logs).sort()).toEqual([
+		"altay-site.20261025-160409.crash.log",
+		"altay-site.log",
+	]);
 });
