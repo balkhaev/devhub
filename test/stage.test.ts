@@ -555,6 +555,50 @@ describe("canonical staging with real disposable Git repositories", () => {
 		expect(existsSync(tree)).toBe(false);
 	}, 30_000);
 
+	test("finish recognizes standard generated Next declarations but preserves added content", () => {
+		const { folder, project } = fixture();
+		writeFileSync(
+			join(folder, ".gitignore"),
+			"ignored/\nfailure.flag\nnext-env.d.ts\n"
+		);
+		const web = join("apps", "web");
+		mkdirSync(join(folder, web), { recursive: true });
+		writeFileSync(
+			join(folder, web, "package.json"),
+			'{"dependencies":{"next":"16"}}\n'
+		);
+		git(folder, "add", ".");
+		git(folder, "commit", "-m", "Fixture Next package");
+		project.init();
+		const tree = project.create("next-generated");
+		commitSource(tree, "finished Next task");
+		project.integrate("codex/next-generated");
+		const template = [
+			'/// <reference types="next" />',
+			'/// <reference types="next/image-types/global" />',
+			'import "./.next/types/routes.d.ts";',
+			"",
+			"// NOTE: This file should not be edited",
+			"// see https://nextjs.org/docs/app/api-reference/config/typescript for more information.",
+			"",
+		].join("\n");
+		writeFileSync(
+			join(folder, web, "next-env.d.ts"),
+			template.replace(".next/types/", ".next/dev/types/")
+		);
+		const declaration = join(tree, web, "next-env.d.ts");
+		const privateContent = `${template}// local declaration\n`;
+		writeFileSync(declaration, privateContent);
+		expect(() => project.finish(tree)).toThrow("приватные ignored-файлы");
+		expect(readFileSync(declaration, "utf8")).toBe(privateContent);
+		writeFileSync(declaration, template);
+		expect(project.finish(tree)).toBe(tree);
+		expect(existsSync(tree)).toBe(false);
+		expect(readFileSync(join(folder, web, "next-env.d.ts"), "utf8")).toContain(
+			".next/dev/types/"
+		);
+	}, 30_000);
+
 	test("finish keeps private ignored data in the working checkout", () => {
 		const { project } = fixture();
 		project.init();

@@ -21,6 +21,7 @@ import { isAbsolute, join, parse, resolve } from "node:path";
 import { isInsideProject, primaryCheckout, sameSourcePath } from "./checkouts";
 import { canonicalProjectFolder, loadCatalogue } from "./config";
 import { changedAt, claudeLogs, lastUse } from "./folder-use";
+import { isGeneratedNextEnv } from "./generated-next-env";
 import {
 	type FolderProcesses,
 	type Holder,
@@ -1078,7 +1079,12 @@ export class StageProject {
 				return;
 			}
 			if (!entry.endsWith("/")) {
-				if (!sameFile(join(this.root, entry), join(folder, entry))) {
+				if (
+					!(
+						isGeneratedNextEnv(folder, entry) ||
+						sameFile(join(this.root, entry), join(folder, entry))
+					)
+				) {
 					found.push(entry);
 				}
 				return;
