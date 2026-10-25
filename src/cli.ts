@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { open, stat } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
@@ -26,6 +27,8 @@ const HELP = `devhub — управление локальной разрабо�
   bun run hub start project             запустить сервисы проекта
   bun run hub stop project[/service]    остановить процессы пульта
   bun run hub restart project/service   перезапустить процесс пульта
+  bun run hub reload                    перезапустить сам пульт через трей: он перечитает devhub.json,
+                                        серверы проектов продолжают работать
   bun run hub start --project PATH --script dev[:name]
   bun run hub logs project/service [--lines N]   последние строки лога
   bun run hub attach project/service    запустить и следить за логом (для превью агентов)
@@ -175,6 +178,20 @@ function validateRouting(parsed: Arguments): void {
 	}
 	if (parsed.idle && (parsed.apply || parsed.action !== "tidy")) {
 		throw new Error("--idle относится только к tidy и не сочетается с --apply");
+	}
+	const reloadsWithOptions =
+		parsed.targets.length ||
+		parsed.project ||
+		parsed.baseDir ||
+		parsed.description ||
+		parsed.json ||
+		parsed.logs ||
+		!parsed.web ||
+		parsed.lines !== DEFAULT_LINES;
+	if (parsed.action === "reload" && reloadsWithOptions) {
+		throw new Error(
+			"reload перезапускает весь пульт и не принимает параметров"
+		);
 	}
 }
 
@@ -516,6 +533,68 @@ function tidy(catalogue: Catalogue, options: Arguments): Promise<void> {
 	return Promise.resolve();
 }
 
+export interface ReloadSteps {
+	now: () => number;
+	/** Asks the tray to restart the hub; returns at once. */
+	signal: () => void;
+	/** The running hub's start time, as `/api/state` reports it; rejects while no hub answers. */
+	started: () => Promise<number>;
+	wait: (ms: number) => Promise<void>;
+}
+
+const RELOAD_POLL_MS = 500;
+const RELOAD_TIMEOUT_MS = 90_000;
+
+/** Restarts the hub and resolves its new start time once a hub of a later run answers. */
+export async function reloadHub(
+	steps: ReloadSteps,
+	timeoutMs = RELOAD_TIMEOUT_MS
+): Promise<number> {
+	const before = await steps.started();
+	steps.signal();
+	const deadline = steps.now() + timeoutMs;
+	while (steps.now() < deadline) {
+		// biome-ignore lint/performance/noAwaitInLoops: polling waits for the next hub run
+		await steps.wait(RELOAD_POLL_MS);
+		// The hub is away for a moment while it restarts.
+		const current = await steps.started().catch(() => null);
+		if (current !== null && current !== before) {
+			return current;
+		}
+	}
+	throw new Error(
+		`пульт не перезапустился за ${Math.round(timeoutMs / 1000)} с: проверьте трей «Пульт»`
+	);
+}
+
+/** The tray owns the hub's life: its `--restart` asks the running tray to restart only the hub. */
+async function reload(catalogue: Catalogue): Promise<void> {
+	const tray = join(ROOT, "tray", "bin", "Пульт.exe");
+	if (process.platform !== "win32" || !existsSync(tray)) {
+		throw new Error(
+			`пульт перезапускается через трей Windows, а его программы нет: ${tray} (bun run tray:install)`
+		);
+	}
+	const address = await ensureHub(catalogue.port);
+	await reloadHub({
+		now: Date.now,
+		signal: () => {
+			// Without a running tray this copy becomes the tray and stays: never wait for it.
+			spawn(tray, ["--restart"], {
+				detached: true,
+				stdio: "ignore",
+				windowsHide: true,
+			}).unref();
+		},
+		started: async () =>
+			((await requestHub(address, "/api/state", "")) as HubView).hub,
+		wait: sleep,
+	});
+	process.stdout.write(
+		`пульт перезапущен · ${address}; серверы проектов продолжают работать\n`
+	);
+}
+
 /** Commands beyond the process actions: they do not resolve launch targets. */
 const COMMANDS: Record<
 	string,
@@ -525,6 +604,7 @@ const COMMANDS: Record<
 	create: (_catalogue, options) => create(options),
 	logs,
 	prod,
+	reload: (catalogue) => reload(catalogue),
 	tidy,
 };
 

@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 
-import { parseArguments, scriptTargets } from "../src/cli";
+import { parseArguments, reloadHub, scriptTargets } from "../src/cli";
 import { authenticatedClient } from "../src/client";
 import { catalogueSchema } from "../src/config";
 
@@ -136,4 +136,58 @@ test("local CLI credential cannot authorize cross-origin browser requests", () =
 	expect(
 		authenticatedClient(request({ "x-devhub-client": "é".repeat(64) }), token)
 	).toBe(false);
+});
+
+/** A clock that moves only when the reload waits, and a hub that answers from a script. */
+function fakeHub(answers: (number | null)[]) {
+	let time = 0;
+	let signals = 0;
+	const asked: number[] = [];
+	return {
+		asked,
+		get signals() {
+			return signals;
+		},
+		steps: {
+			now: () => time,
+			signal: () => {
+				signals += 1;
+			},
+			started: () => {
+				const answer = answers.length > 1 ? answers.shift() : answers[0];
+				asked.push(time);
+				return answer === null || answer === undefined
+					? Promise.reject(new Error("hub is away"))
+					: Promise.resolve(answer);
+			},
+			wait: (ms: number) => {
+				time += ms;
+				return Promise.resolve();
+			},
+		},
+	};
+}
+
+test("reload signals the tray once and waits for a hub of a later run", async () => {
+	const hub = fakeHub([100, 100, null, null, 250]);
+	expect(await reloadHub(hub.steps)).toBe(250);
+	expect(hub.signals).toBe(1);
+	expect(hub.asked).toEqual([0, 500, 1000, 1500, 2000]);
+});
+
+test("reload gives up when no new hub answers in time", async () => {
+	const hub = fakeHub([100]);
+	await expect(reloadHub(hub.steps, 3000)).rejects.toThrow(
+		"пульт не перезапустился за 3 с"
+	);
+	expect(hub.signals).toBe(1);
+});
+
+test("reload takes no targets or options", () => {
+	expect(parseArguments(["reload"]).action).toBe("reload");
+	for (const extra of [["agent"], ["--json"], ["--lines", "5"]]) {
+		expect(() => parseArguments(["reload", ...extra])).toThrow(
+			"reload перезапускает весь пульт"
+		);
+	}
 });
