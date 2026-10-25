@@ -38,6 +38,7 @@ import {
 	readReceipt,
 	saveIntent,
 } from "./desktop-launch";
+import { nextDevNodeOptions } from "./next-dev-memory";
 import { capture, type ProcessInfo, processInfo } from "./probes";
 
 /**
@@ -218,12 +219,17 @@ function environment(
 		process.env.PATH ??
 		process.env.Path ??
 		"";
+	const nodeOptions = nextDevNodeOptions(
+		service.command,
+		service.env.NODE_OPTIONS ?? process.env.NODE_OPTIONS
+	);
 	return {
 		FORCE_COLOR: "0",
 		NO_COLOR: "1",
 		PYTHONIOENCODING: "utf-8",
 		PYTHONUNBUFFERED: "1",
 		...service.env,
+		...(nodeOptions ? { NODE_OPTIONS: nodeOptions } : {}),
 		DEVHUB_FRAME_ORIGIN: frameOrigin,
 		DEVHUB_PROJECT: projectRoot,
 		DEVHUB_ROOT: root,
