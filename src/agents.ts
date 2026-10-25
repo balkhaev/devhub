@@ -258,3 +258,49 @@ export function guardReason(input: HookInput, hubRoot: string): string | null {
 	}
 	return null;
 }
+
+const GUARD = "agent-guard.ts";
+const GUARD_MATCHER = "Bash|PowerShell|mcp__.*preview_start";
+const GUARD_TIMEOUT_S = 10;
+
+export interface HookEntry {
+	hooks?: { command?: string; timeout?: number; type?: string }[];
+	matcher?: string;
+}
+
+/** JSON with object keys sorted: Claude Code and editors rewrite settings in their own key order. */
+const canonicalJson = (value: unknown): string =>
+	JSON.stringify(value, (_key, inner: unknown) =>
+		inner && typeof inner === "object" && !Array.isArray(inner)
+			? Object.fromEntries(
+					Object.entries(inner).sort(([left], [right]) =>
+						left.localeCompare(right)
+					)
+				)
+			: inner
+	);
+
+/**
+ * Claude Code's PreToolUse entries with the DevHub guard last, replacing an older copy of it; null when the
+ * entries already hold exactly that, whatever the key order, so a reformatted settings file is left alone.
+ */
+export function guardHookEntries(
+	entries: HookEntry[],
+	hubRoot: string
+): HookEntry[] | null {
+	const wanted: HookEntry = {
+		hooks: [
+			{
+				command: `bun "${slash(join(hubRoot, "src", GUARD))}"`,
+				timeout: GUARD_TIMEOUT_S,
+				type: "command",
+			},
+		],
+		matcher: GUARD_MATCHER,
+	};
+	const others = entries.filter(
+		(entry) => !entry.hooks?.some((hook) => hook.command?.includes(GUARD))
+	);
+	const next = [...others, wanted];
+	return canonicalJson(next) === canonicalJson(entries) ? null : next;
+}

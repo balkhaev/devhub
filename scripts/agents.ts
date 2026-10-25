@@ -7,6 +7,8 @@ import {
 	claudeLaunchConfig,
 	DEV_SERVER_MARKER,
 	devServerBlock,
+	guardHookEntries,
+	type HookEntry,
 	markedBlock,
 	removeMarkedBlock,
 	replaceMarkedBlock,
@@ -38,9 +40,6 @@ import {
  */
 
 const hub = primaryCheckout(resolve(import.meta.dirname, ".."));
-const GUARD = "agent-guard.ts";
-const MATCHER = "Bash|PowerShell|mcp__.*preview_start";
-const HOOK_TIMEOUT_S = 10;
 const CURSOR_RULE = join(".cursor", "rules", "devhub-staging.mdc");
 /** Rules a project keeps for every agent of the machine: its AGENTS.md holds the text, the machine-wide files mirror it. */
 const SHARED: Record<string, string> = {
@@ -124,11 +123,6 @@ function projectInstructions(root: string): (Change | null)[] {
 const commitInstructions = (root: string): string | null =>
 	commitOwnRewrites(root, ["AGENTS.md", slash(CURSOR_RULE)], COMMIT_MESSAGE);
 
-interface HookEntry {
-	hooks?: { command?: string; timeout?: number; type?: string }[];
-	matcher?: string;
-}
-
 /** The guard hook in Claude Code's user settings, replacing an older copy of itself. */
 function claudeHook(file: string): Change | null {
 	const settings = existsSync(file)
@@ -136,18 +130,9 @@ function claudeHook(file: string): Change | null {
 				hooks?: Record<string, HookEntry[] | undefined>;
 			})
 		: {};
-	const command = `bun "${slash(join(hub, "src", GUARD))}"`;
-	const wanted: HookEntry = {
-		hooks: [{ command, timeout: HOOK_TIMEOUT_S, type: "command" }],
-		matcher: MATCHER,
-	};
 	settings.hooks ??= {};
-	const entries = settings.hooks.PreToolUse ?? [];
-	const others = entries.filter(
-		(entry) => !entry.hooks?.some((hook) => hook.command?.includes(GUARD))
-	);
-	const next = [...others, wanted];
-	if (JSON.stringify(next) === JSON.stringify(entries)) {
+	const next = guardHookEntries(settings.hooks.PreToolUse ?? [], hub);
+	if (!next) {
 		return null;
 	}
 	settings.hooks.PreToolUse = next;

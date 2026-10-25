@@ -9,6 +9,7 @@ import {
 	DEV_SERVER_MARKER,
 	devServerBlock,
 	directDevServer,
+	guardHookEntries,
 	guardReason,
 	markedBlock,
 	removeMarkedBlock,
@@ -216,4 +217,47 @@ test("DevHub's own rewrites of instructions are told apart from someone's edits"
 	expect(withoutDevhubRewrites(rewritten.replace("Run", "Never run"))).not.toBe(
 		withoutDevhubRewrites(head)
 	);
+});
+
+test("the guard hook is rewritten for its content, not for the key order another tool saved", () => {
+	const guard = {
+		hooks: [
+			{
+				command: 'bun "F:/code/devhub/src/agent-guard.ts"',
+				timeout: 10,
+				type: "command",
+			},
+		],
+		matcher: "Bash|PowerShell|mcp__.*preview_start",
+	};
+	expect(guardHookEntries([], "F:\\code\\devhub")).toEqual([guard]);
+
+	// `claude plugin install` saves settings.json with its own key order.
+	const lint = {
+		hooks: [{ command: "bun lint", type: "command" }],
+		matcher: "Edit",
+	};
+	const reversed = <T extends object>(value: T): T =>
+		Object.fromEntries(Object.entries(value).reverse()) as T;
+	const saved = reversed({ ...guard, hooks: guard.hooks.map(reversed) });
+	expect(JSON.stringify(saved)).toBe(
+		'{"matcher":"Bash|PowerShell|mcp__.*preview_start","hooks":[{"type":"command","timeout":10,"command":"bun \\"F:/code/devhub/src/agent-guard.ts\\""}]}'
+	);
+	expect(guardHookEntries([lint, saved], "F:/code/devhub")).toBeNull();
+
+	const moved = {
+		hooks: [
+			{ command: 'bun "C:/old/devhub/src/agent-guard.ts"', type: "command" },
+		],
+		matcher: "Bash",
+	};
+	expect(guardHookEntries([moved, lint], "F:/code/devhub")).toEqual([
+		lint,
+		guard,
+	]);
+	expect(guardHookEntries([lint, guard], "F:/code/devhub")).toBeNull();
+	expect(guardHookEntries([guard, lint], "F:/code/devhub")).toEqual([
+		lint,
+		guard,
+	]);
 });
