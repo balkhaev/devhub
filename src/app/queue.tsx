@@ -50,6 +50,7 @@ export const readQueue = async (): Promise<QueueView | null> =>
 function useQueueReading() {
 	const [queue, setQueue] = useState<QueueView | null>(null);
 	const [available, setAvailable] = useState(false);
+	const [receivedAt, setReceivedAt] = useState<number | null>(null);
 	const asked = useRef(0);
 	const refresh = useCallback(() => {
 		asked.current += 1;
@@ -60,6 +61,7 @@ function useQueueReading() {
 				if (question === asked.current) {
 					setQueue(next);
 					setAvailable(true);
+					setReceivedAt(Date.now());
 				}
 			})
 			.catch(() => {
@@ -83,12 +85,13 @@ function useQueueReading() {
 			document.removeEventListener("visibilitychange", ask);
 		};
 	}, [refresh]);
-	return { available, queue, refresh };
+	return { available, queue, receivedAt, refresh };
 }
 
 const QueueContext = createContext<ReturnType<typeof useQueueReading>>({
 	available: false,
 	queue: null,
+	receivedAt: null,
 	refresh: () => undefined,
 });
 

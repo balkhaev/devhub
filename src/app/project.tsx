@@ -60,8 +60,8 @@ export function ProjectPage({
 				{frontend ? (
 					<div className="project-frontend">
 						<strong>{frontend.label}</strong>
-						<a href={frontend.url} rel="noopener" target="_blank">
-							<code>{frontend.url}</code> ↗
+						<a href={frontend.url} rel="noopener" target="_top">
+							<code>{frontend.url}</code> →
 						</a>
 						<span className="muted small">
 							{frontend.service.name} · {STATUS_WORDS[frontend.service.status]}

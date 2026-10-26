@@ -54,10 +54,10 @@ function Frame({ hidden, url }: { hidden: boolean; url: string }) {
 			<div className="frame-note" hidden={hidden}>
 				<p title={state.reason ?? undefined}>
 					Этот сайт запрещает показывать себя внутри других страниц: откройте
-					его в отдельной вкладке.
+					его в текущей вкладке браузера.
 				</p>
-				<a className="button" href={url} rel="noopener" target="_blank">
-					Открыть в новой вкладке
+				<a className="button" href={url} rel="noopener" target="_top">
+					Открыть в этой вкладке
 				</a>
 			</div>
 		);
@@ -348,8 +348,8 @@ export function ServicePage({
 						</button>
 					) : null}
 					{page ? (
-						<a className="button" href={page} rel="noopener" target="_blank">
-							Открыть отдельно
+						<a className="button" href={page} rel="noopener" target="_top">
+							Открыть в этой вкладке
 						</a>
 					) : null}
 				</div>

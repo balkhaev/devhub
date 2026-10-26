@@ -91,7 +91,7 @@ function OpenProject({
 				href={page.url}
 				onClick={onNavigate}
 				rel="noopener"
-				target="_blank"
+				target="_top"
 				title={`${page.label} · ${page.url}`}
 			>
 				Открыть

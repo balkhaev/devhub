@@ -1,0 +1,163 @@
+.computer-resources {
+	margin-bottom: 32px;
+}
+
+.computer-resources__head {
+	display: flex;
+	gap: 16px;
+	align-items: center;
+	justify-content: space-between;
+	margin-bottom: 12px;
+}
+
+.computer-resources__head h2 {
+	margin: 0;
+	font-size: 12px;
+	font-weight: 500;
+	color: #b7c1cd;
+}
+
+.computer-resources__freshness {
+	display: flex;
+	gap: 6px;
+	align-items: center;
+	font-size: 10px;
+	font-variant-numeric: tabular-nums;
+	color: #6f8092;
+}
+
+.computer-resources__freshness > span {
+	width: 5px;
+	height: 5px;
+	background: #657387;
+	border-radius: 50%;
+}
+
+.computer-resources__freshness--live > span {
+	background: #87c5ad;
+}
+
+.computer-resources__grid {
+	display: grid;
+	grid-template-columns: repeat(4, minmax(0, 1fr));
+	gap: 12px;
+}
+
+.resource-card {
+	--resource-color: #9cc9b5;
+	min-width: 0;
+	padding: 16px 18px;
+	background: #171f26;
+	border: 1px solid #ffffff10;
+	border-radius: 12px;
+}
+
+.resource-card--vram {
+	--resource-color: #9abbd9;
+}
+
+.resource-card--ram {
+	--resource-color: #d3b789;
+}
+
+.resource-card--cpu {
+	--resource-color: #9bb7bc;
+}
+
+.resource-card__head {
+	display: flex;
+	gap: 8px;
+	align-items: center;
+	justify-content: space-between;
+	margin-bottom: 15px;
+}
+
+.resource-card__head h3 {
+	margin: 0;
+	font-size: 11px;
+	font-weight: 400;
+	color: #8fa4b4;
+}
+
+.resource-card__head > span {
+	font-family: var(--mono);
+	font-size: 9px;
+	color: #607787;
+}
+
+.resource-card__value {
+	display: block;
+	font-size: 24px;
+	font-weight: 550;
+	font-variant-numeric: tabular-nums;
+	line-height: 1.2;
+	color: #e3ecf0;
+	letter-spacing: -0.7px;
+}
+
+.resource-card > p {
+	margin: 9px 0 17px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	font-size: 10px;
+	color: #7d95a7;
+	white-space: nowrap;
+}
+
+.resource-card__bar,
+.resource-card__empty-bar {
+	display: block;
+	width: 100%;
+	height: 3px;
+	color: var(--resource-color);
+	appearance: none;
+	background: #ffffff0b;
+	border: 0;
+	border-radius: 2px;
+}
+
+.resource-card__bar::-webkit-progress-bar {
+	background: #ffffff0b;
+	border-radius: 2px;
+}
+
+.resource-card__bar::-webkit-progress-value {
+	background: var(--resource-color);
+	border-radius: 2px;
+}
+
+.resource-card__bar::-moz-progress-bar {
+	background: var(--resource-color);
+	border-radius: 2px;
+}
+
+.resource-card__bar--high {
+	--resource-color: #d6a97b;
+}
+
+.computer-resources__last {
+	margin: 9px 0 0;
+	font-size: 10px;
+	color: #748698;
+}
+
+@media (max-width: 800px) {
+	.computer-resources__grid {
+		grid-template-columns: repeat(2, minmax(0, 1fr));
+	}
+}
+
+@media (max-width: 450px) {
+	.resource-card {
+		padding: 14px 12px;
+	}
+
+	.resource-card__value {
+		font-size: 21px;
+	}
+
+	.computer-resources__head {
+		flex-wrap: wrap;
+		gap: 6px;
+	}
+}

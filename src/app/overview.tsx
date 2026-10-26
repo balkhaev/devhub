@@ -266,7 +266,7 @@ function Ports({ view }: { view: HubView }) {
 							<a
 								href={`http://127.0.0.1:${entry.port}/`}
 								rel="noopener"
-								target="_blank"
+								target="_top"
 							>
 								{entry.port}
 							</a>
