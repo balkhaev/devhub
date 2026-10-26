@@ -4,7 +4,7 @@ import { useHub, useRoute } from "./api";
 import { CreatePage } from "./create";
 import { HeaderStatus } from "./header-status";
 import { KnowledgePage } from "./knowledge";
-import { ComposeCard, Overview } from "./overview";
+import { ComposeCard } from "./overview";
 import { ProjectPage } from "./project";
 import { ProjectPreferencesProvider } from "./project-preferences";
 import { projectRoute } from "./project-ui";
@@ -13,6 +13,7 @@ import { RunningProjectsMenu } from "./running-projects";
 import { ServicePage } from "./service";
 import { SettingsPage } from "./settings";
 import { Sidebar } from "./sidebar";
+import { StartPage } from "./start-page";
 
 /**
  * The hub: every local project's dev servers on the left, the chosen one's pages, log and details on the right, and
@@ -125,7 +126,7 @@ function Main({
 			/>
 		);
 	}
-	return <Overview onDeleted={onDeleted} view={view} />;
+	return <StartPage onDeleted={onDeleted} view={view} />;
 }
 
 export function App() {
@@ -154,11 +155,11 @@ export function App() {
 	return (
 		<ProjectPreferencesProvider>
 			<QueueProvider>
-				<div className="app">
+				<div className={route === null ? "app app--start" : "app"}>
 					<header className="header">
 						<a className="brand" href="#/">
 							<span aria-hidden="true" className="brand__mark" />
-							<strong>Пульт</strong>
+							<strong>DevHub</strong>
 						</a>
 						{view ? (
 							<RunningProjectsMenu projects={view.projects} />
@@ -167,9 +168,14 @@ export function App() {
 								читаю, что запущено…
 							</span>
 						)}
+						<nav aria-label="Быстрые ссылки" className="header__links">
+							<a href="#/settings">Настройки</a>
+						</nav>
 						<HeaderStatus connected={connected} />
 					</header>
-					<Sidebar onOpen={go} selected={route} view={view} />
+					{route === null ? null : (
+						<Sidebar onOpen={go} selected={route} view={view} />
+					)}
 					<main className="main">
 						{view ? (
 							<Main onDeleted={deleted} route={route} view={view} />
