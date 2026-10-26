@@ -83,11 +83,11 @@ export function SidebarFrontendLink({ project }: { project: ProjectView }) {
 			className="project-icon side-frontend"
 			href={frontend.url}
 			rel="noopener"
-			target="_blank"
+			target="_top"
 			title={`Открыть приложение: ${project.name}`}
 		>
 			<span className="sr-only">Открыть приложение: {project.name}</span>
-			<span aria-hidden="true">↗</span>
+			<span aria-hidden="true">→</span>
 		</a>
 	) : null;
 }

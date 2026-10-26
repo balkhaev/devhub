@@ -157,7 +157,9 @@ test("favorite launch respects default services and warnings without starting op
 		<FavoriteLaunchButton project={project("sample", "running")} />
 	);
 	expect(ready).toContain('href="http://127.0.0.1:5000/sample"');
-	expect(ready).toContain("Открыть ↗");
+	expect(ready).toContain("Открыть →");
+	expect(ready).toContain('target="_top"');
+	expect(ready).not.toContain('target="_blank"');
 });
 
 test("quick launch opens only a ready frontend and otherwise routes to project management", () => {
@@ -223,4 +225,6 @@ test("a project tile has separate favorite, launch and management controls", () 
 	expect(markup).toContain('aria-label="Управление проектом: sample"');
 	expect(markup).toContain('href="#/projects/sample/manage"');
 	expect(markup).toContain('aria-label="В избранное: sample"');
+	expect(markup).toContain('target="_top"');
+	expect(markup).not.toContain('target="_blank"');
 });

@@ -10,6 +10,7 @@ import {
 
 import type { HubView, ProjectView } from "../hub";
 import { useAction } from "./actions";
+import { ResourceOverview } from "./computer-resources";
 import { Overview } from "./overview";
 import { FavoriteProjectButton } from "./project-preference-controls";
 import { useProjectPreferences } from "./project-preferences";
@@ -106,9 +107,9 @@ function RunningAccess({ projects }: { projects: ProjectView[] }) {
 								className="running-launch__action"
 								href={destination.url}
 								rel={destination.external ? "noopener" : undefined}
-								target={destination.external ? "_blank" : undefined}
+								target={destination.external ? "_top" : undefined}
 							>
-								{destination.external ? "Открыть ↗" : "К проекту →"}
+								{destination.external ? "Открыть →" : "К проекту →"}
 							</a>
 						</li>
 					);
@@ -148,9 +149,9 @@ export function FavoriteLaunchButton({ project }: { project: ProjectView }) {
 				className="favorite-launch__button favorite-launch__button--open"
 				href={destination.url}
 				rel="noopener"
-				target="_blank"
+				target="_top"
 			>
-				Открыть ↗
+				Открыть →
 			</a>
 		);
 	} else if (down.length > 0 || starting) {
@@ -234,7 +235,7 @@ export function StartProjectCard({ project }: { project: ProjectView }) {
 				className="project-tile__open"
 				href={destination.url}
 				rel={destination.external ? "noopener" : undefined}
-				target={destination.external ? "_blank" : undefined}
+				target={destination.external ? "_top" : undefined}
 			>
 				<ProjectMark project={project} />
 				<h3>{project.name}</h3>
@@ -253,7 +254,7 @@ export function StartProjectCard({ project }: { project: ProjectView }) {
 						{project.services.length > 0 ? status : "Рабочее пространство"}
 					</span>
 					<span aria-hidden="true" className="project-tile__launch">
-						{destination.external ? "Открыть ↗" : "К проекту →"}
+						{destination.external ? "Открыть →" : "К проекту →"}
 					</span>
 				</div>
 			</a>
@@ -392,6 +393,7 @@ export function StartPage({
 	return (
 		<div className="start-page">
 			<RunningAccess projects={view.projects} />
+			<ResourceOverview />
 			<header className="start-hero">
 				<div>
 					<p className="start-eyebrow">

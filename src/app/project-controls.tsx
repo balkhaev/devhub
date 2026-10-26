@@ -10,10 +10,10 @@ export function FrontendLink({ project }: { project: ProjectView }) {
 			className="button button--primary"
 			href={frontend.url}
 			rel="noopener"
-			target="_blank"
+			target="_top"
 			title={`${frontend.label} · ${frontend.url}`}
 		>
-			Открыть приложение ↗
+			Открыть приложение →
 		</a>
 	) : null;
 }

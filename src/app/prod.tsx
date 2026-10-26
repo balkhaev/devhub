@@ -222,8 +222,8 @@ function Application({ app }: { app: ProdApplication }) {
 			</div>
 			<div className="prod-app__facts muted small">
 				{app.domains.map((domain) => (
-					<a href={domain} key={domain} rel="noopener" target="_blank">
-						{domain.replace(SCHEME, "")} ↗
+					<a href={domain} key={domain} rel="noopener" target="_top">
+						{domain.replace(SCHEME, "")} →
 					</a>
 				))}
 				{app.domains.length === 0 ? <span>без домена</span> : null}
