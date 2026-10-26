@@ -9,6 +9,7 @@ import {
 } from "react";
 
 import type { HubView, ProjectView } from "../hub";
+import { useAction } from "./actions";
 import { Overview } from "./overview";
 import { FavoriteProjectButton } from "./project-preference-controls";
 import { useProjectPreferences } from "./project-preferences";
@@ -21,7 +22,7 @@ import {
 	projectIdentity,
 	projectIsRunning,
 } from "./start-page-model";
-import { cx } from "./words";
+import { cx, isUp } from "./words";
 
 function SearchIcon() {
 	return (
@@ -72,51 +73,144 @@ function ProjectMark({ project }: { project: ProjectView }) {
 	);
 }
 
+function RunningAccess({ projects }: { projects: ProjectView[] }) {
+	const running = projects.filter(projectIsRunning);
+	if (running.length === 0) {
+		return null;
+	}
+	return (
+		<section aria-labelledby="running-access-title" className="running-access">
+			<div className="start-section-heading">
+				<h2 id="running-access-title">
+					<span aria-hidden="true" className="running-access__dot" />
+					Сейчас работают <span>{running.length}</span>
+				</h2>
+				<span>Можно продолжать</span>
+			</div>
+			<ul className="running-access__list">
+				{running.map((project) => {
+					const destination = projectDestination(project);
+					return (
+						<li className="running-launch" key={project.id}>
+							<ProjectMark project={project} />
+							<div className="running-launch__name">
+								<a href={`#/${projectRoute(project.id)}`}>{project.name}</a>
+								<span>
+									{projectHasAttention(project)
+										? "Требует внимания"
+										: "В работе"}
+								</span>
+							</div>
+							<a
+								aria-label={`${destination.external ? "Открыть работающее приложение" : "Открыть управление"}: ${project.name}`}
+								className="running-launch__action"
+								href={destination.url}
+								rel={destination.external ? "noopener" : undefined}
+								target={destination.external ? "_blank" : undefined}
+							>
+								{destination.external ? "Открыть ↗" : "К проекту →"}
+							</a>
+						</li>
+					);
+				})}
+			</ul>
+		</section>
+	);
+}
+
+/** Uses the same default service selection and warnings as the project's regular start control. */
+export function FavoriteLaunchButton({ project }: { project: ProjectView }) {
+	const { dialog, error, pending, run } = useAction();
+	const destination = projectDestination(project);
+	const defaults = new Set(project.devServices);
+	const down = project.services.filter(
+		(service) =>
+			defaults.has(service.key) &&
+			service.canStart &&
+			!isUp(service.status) &&
+			service.status !== "busy"
+	);
+	const warnings = down.flatMap((service) =>
+		service.warn ? [`${service.name}: ${service.warn}`] : []
+	);
+	const starting = project.services.some(
+		(service) => defaults.has(service.key) && service.status === "starting"
+	);
+	let action = (
+		<a className="favorite-launch__button" href={destination.url}>
+			К проекту →
+		</a>
+	);
+	if (destination.external) {
+		action = (
+			<a
+				aria-label={`Открыть избранное приложение: ${project.name}`}
+				className="favorite-launch__button favorite-launch__button--open"
+				href={destination.url}
+				rel="noopener"
+				target="_blank"
+			>
+				Открыть ↗
+			</a>
+		);
+	} else if (down.length > 0 || starting) {
+		const busy = pending !== null || starting;
+		action = (
+			<button
+				aria-label={`Запустить избранный проект: ${project.name}`}
+				className="favorite-launch__button favorite-launch__button--start"
+				data-confirm={
+					warnings.length > 0
+						? `${warnings.join("\n\n")}\n\nЗапустить dev?`
+						: undefined
+				}
+				data-path={`/api/projects/${encodeURIComponent(project.id)}/start`}
+				disabled={busy}
+				onClick={run}
+				title={down.map((service) => service.name).join(", ")}
+				type="button"
+			>
+				{busy ? "Запускается…" : "▶ Запустить"}
+			</button>
+		);
+	}
+	return (
+		<div className="favorite-launch">
+			{action}
+			{error ? (
+				<p className="favorite-launch__error" role="alert">
+					{error}
+				</p>
+			) : null}
+			{dialog}
+		</div>
+	);
+}
+
 function QuickAccess({ projects }: { projects: ProjectView[] }) {
 	const { preferences } = useProjectPreferences();
 	const favorites = projects.filter((project) =>
 		preferences.favorites.includes(project.id)
 	);
-	const selected =
-		favorites.length > 0
-			? favorites
-			: projects.filter(projectIsRunning).slice(0, 6);
-	if (selected.length === 0) {
+	if (favorites.length === 0) {
 		return null;
 	}
 	return (
 		<section aria-labelledby="quick-access-title" className="quick-access">
 			<div className="start-section-heading">
-				<h2 id="quick-access-title">
-					{favorites.length > 0 ? "Избранное" : "Продолжить работу"}
-				</h2>
-				<span>
-					{favorites.length > 0
-						? "Всегда под рукой"
-						: "Добавляйте проекты сюда с помощью ☆"}
-				</span>
+				<h2 id="quick-access-title">Избранное</h2>
+				<span>Быстрый запуск ваших проектов</span>
 			</div>
 			<ul className="quick-access__list">
-				{selected.map((project) => {
-					const destination = projectDestination(project);
-					return (
-						<li key={project.id}>
-							<a
-								className="quick-link"
-								href={destination.url}
-								rel={destination.external ? "noopener" : undefined}
-								target={destination.external ? "_blank" : undefined}
-								title={`${destination.external ? "Открыть приложение" : "Открыть проект"}: ${project.name}`}
-							>
-								<ProjectMark project={project} />
-								<span>{project.name}</span>
-								<span aria-hidden="true" className="quick-link__arrow">
-									{destination.external ? "↗" : "→"}
-								</span>
-							</a>
-						</li>
-					);
-				})}
+				{favorites.map((project) => (
+					<li className="favorite-quick" key={project.id}>
+						<a className="quick-link" href={`#/${projectRoute(project.id)}`}>
+							<ProjectMark project={project} />
+							<span>{project.name}</span>
+						</a>
+						<FavoriteLaunchButton project={project} />
+					</li>
+				))}
 			</ul>
 		</section>
 	);
@@ -297,6 +391,7 @@ export function StartPage({
 	}
 	return (
 		<div className="start-page">
+			<RunningAccess projects={view.projects} />
 			<header className="start-hero">
 				<div>
 					<p className="start-eyebrow">

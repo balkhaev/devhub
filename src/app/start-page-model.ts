@@ -30,7 +30,12 @@ export function findProjects(
 	filter: ProjectFilter
 ): ProjectView[] {
 	const terms = searchable(query).trim().split(SEARCH_WORDS).filter(Boolean);
-	return favoriteProjects(projects, favorites).filter((project) => {
+	const ordered = favoriteProjects(projects, favorites);
+	const activeFirst = [
+		...ordered.filter(projectIsRunning),
+		...ordered.filter((project) => !projectIsRunning(project)),
+	];
+	return activeFirst.filter((project) => {
 		if (
 			(filter === "favorites" && !favorites.includes(project.id)) ||
 			(filter === "running" && !projectIsRunning(project)) ||
