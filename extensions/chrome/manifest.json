@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "DevHub — стартовая страница",
+  "version": "1.0.0",
+  "description": "Открывает локальный DevHub при запуске Chrome и в каждой новой вкладке.",
+  "chrome_settings_overrides": {
+    "startup_pages": ["http://127.0.0.1:4700/"]
+  },
+  "chrome_url_overrides": {
+    "newtab": "newtab.html"
+  }
+}
