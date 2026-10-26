@@ -6,7 +6,11 @@ import {
 	createProjectPreferenceStore,
 	ProjectPreferencesProvider,
 } from "./project-preferences";
-import { StartPage, StartProjectCard } from "./start-page";
+import {
+	FavoriteLaunchButton,
+	StartPage,
+	StartProjectCard,
+} from "./start-page";
 import { findProjects, projectDestination } from "./start-page-model";
 
 const noop = () => undefined;
@@ -93,8 +97,67 @@ test("start page filters distinguish stopped, live and attention states and comb
 	).toEqual(["running", "starting", "unhealthy"]);
 	expect(
 		findProjects(projects, [], "", "attention").map((entry) => entry.id)
-	).toEqual(["crashed", "busy", "unhealthy"]);
+	).toEqual(["unhealthy", "crashed", "busy"]);
 	expect(findProjects(projects, [], "running", "attention")).toEqual([]);
+});
+
+test("live projects precede stopped favorites and the live section appears before the hero", () => {
+	const stopped = project("favorite");
+	const running = project("running", "running");
+	expect(findProjects([stopped, running], ["favorite"], "", "all")).toEqual([
+		running,
+		stopped,
+	]);
+	const view: HubView = {
+		docker: { available: true, projects: [] },
+		hub: 1,
+		ports: [],
+		projects: [stopped, running],
+		updatedAt: 1,
+	};
+	const markup = renderToStaticMarkup(
+		<StartPage onDeleted={noop} view={view} />
+	);
+	expect(markup.indexOf('id="running-access-title"')).toBeLessThan(
+		markup.indexOf("С чего начнём?")
+	);
+	expect(markup.indexOf('data-project-id="running"')).toBeLessThan(
+		markup.indexOf('data-project-id="favorite"')
+	);
+});
+
+test("favorite launch respects default services and warnings without starting optional or busy services", () => {
+	const sample = project("sample");
+	sample.services = sample.services.map((service) => ({
+		...service,
+		warn: "Запуск использует платный API",
+	}));
+	const markup = renderToStaticMarkup(
+		<FavoriteLaunchButton project={sample} />
+	);
+	expect(markup).toContain('data-path="/api/projects/sample/start"');
+	expect(markup).toContain("Запуск использует платный API");
+	expect(markup).toContain("▶ Запустить");
+	const optional = project("optional");
+	optional.devServices = [];
+	expect(
+		renderToStaticMarkup(<FavoriteLaunchButton project={optional} />)
+	).not.toContain("data-path");
+	for (const status of ["busy", "starting", "running"] as const) {
+		const result = renderToStaticMarkup(
+			<FavoriteLaunchButton project={project("sample", status)} />
+		);
+		if (status === "starting") {
+			expect(result).toContain('disabled=""');
+		} else {
+			expect(result).not.toContain("data-path");
+		}
+	}
+	const ready = renderToStaticMarkup(
+		<FavoriteLaunchButton project={project("sample", "running")} />
+	);
+	expect(ready).toContain('href="http://127.0.0.1:5000/sample"');
+	expect(ready).toContain("Открыть ↗");
 });
 
 test("quick launch opens only a ready frontend and otherwise routes to project management", () => {
