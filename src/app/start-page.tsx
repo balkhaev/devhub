@@ -23,6 +23,7 @@ import {
 	projectIdentity,
 	projectIsRunning,
 } from "./start-page-model";
+import { StartQueue } from "./start-queue";
 import { cx, isUp } from "./words";
 
 function SearchIcon() {
@@ -394,6 +395,7 @@ export function StartPage({
 		<div className="start-page">
 			<RunningAccess projects={view.projects} />
 			<ResourceOverview />
+			<StartQueue />
 			<header className="start-hero">
 				<div>
 					<p className="start-eyebrow">

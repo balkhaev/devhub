@@ -1,0 +1,127 @@
+.start-queue {
+	padding: 18px;
+	margin-bottom: 32px;
+	background: #171f26;
+	border: 1px solid #ffffff10;
+	border-radius: 12px;
+}
+
+.start-queue__head {
+	display: flex;
+	gap: 16px;
+	align-items: center;
+	justify-content: space-between;
+}
+
+.start-queue__head h2 {
+	margin: 0;
+	font-size: 14px;
+	font-weight: 550;
+	color: #e3ecf0;
+}
+
+.start-queue__head p,
+.start-queue__meta {
+	margin: 5px 0 0;
+	font-size: 11px;
+	color: #8fa4b4;
+}
+
+.start-queue__link {
+	flex-shrink: 0;
+	font-size: 12px;
+	color: #9cc9b5;
+	text-decoration: none;
+}
+
+.start-queue__link:hover {
+	text-decoration: underline;
+}
+
+.start-queue__link:focus-visible {
+	outline: 2px solid #9cc9b5;
+	outline-offset: 4px;
+}
+
+.start-queue__groups {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(min(100%, 340px), 1fr));
+	gap: 20px;
+	margin-top: 18px;
+}
+
+.start-queue__group {
+	min-width: 0;
+}
+
+.start-queue__group h3 {
+	margin: 0 0 8px;
+	font-size: 11px;
+	font-weight: 500;
+	color: #b7c1cd;
+}
+
+.start-queue__group h3 > span {
+	margin-left: 5px;
+	color: #718798;
+}
+
+.start-queue__jobs {
+	padding: 0;
+	margin: 0;
+	list-style: none;
+}
+
+.start-queue__jobs > li {
+	display: flex;
+	gap: 10px;
+	padding: 10px 0;
+	border-top: 1px solid #ffffff09;
+}
+
+.start-queue__position {
+	flex: 0 0 16px;
+	padding-top: 2px;
+	font-family: var(--mono);
+	font-size: 10px;
+	color: #718798;
+	text-align: center;
+}
+
+.start-queue__running > .start-queue__position {
+	color: #9cc9b5;
+}
+
+.start-queue__job {
+	flex: 1;
+	min-width: 0;
+	font-size: 12px;
+}
+
+.start-queue__job > strong {
+	font-weight: 450;
+	color: #d4e0e8;
+	overflow-wrap: anywhere;
+}
+
+.start-queue__job > .start-queue__meta {
+	display: block;
+}
+
+.start-queue__notice {
+	padding: 10px 12px;
+	margin: 14px 0 0;
+	font-size: 11px;
+	line-height: 1.5;
+	color: #d3b789;
+	overflow-wrap: anywhere;
+	background: #d3b7890c;
+	border-radius: 6px;
+}
+
+@media (max-width: 450px) {
+	.start-queue__head {
+		flex-wrap: wrap;
+		gap: 10px;
+	}
+}

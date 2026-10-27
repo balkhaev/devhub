@@ -24,6 +24,7 @@ import { cx, since } from "./words";
  */
 
 const POLL_MS = 3000;
+export const QUEUE_STALE_MS = 15_000;
 const STOP = "/api/queue/stop";
 const PAUSE = "/api/queue/pause";
 const CONTINUE = "/api/queue/continue";

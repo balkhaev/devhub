@@ -1,8 +1,7 @@
 import type { QueueView } from "../queue";
-import { useQueue } from "./queue";
+import { QUEUE_STALE_MS, useQueue } from "./queue";
 import { cx } from "./words";
 
-const STALE_MS = 15_000;
 const QUEUE_WORDS = {
 	offline: "Нет связи",
 	paused: "На паузе",
@@ -94,7 +93,7 @@ function readingState({
 	queue: QueueView | null;
 	receivedAt: number | null;
 }) {
-	const stale = receivedAt !== null && now - receivedAt > STALE_MS;
+	const stale = receivedAt !== null && now - receivedAt > QUEUE_STALE_MS;
 	const fresh = receivedAt !== null && !stale;
 	const current =
 		available && fresh && queue?.state !== "offline" ? queue : null;
